@@ -692,6 +692,7 @@ function openNew() {
       <div class="body">
         <div class="choices">
           <button type="button" class="choice" data-choice="github">${ICON.git}<strong>Desde GitHub</strong><small>Clona uno de tus repositorios, instala sus dependencias y te propone el comando y el puerto.</small></button>
+          <button type="button" class="choice" data-choice="template">${ICON.grid}<strong>Desde una plantilla</strong><small>Empieza un proyecto nuevo (web, API, bot…) con los archivos de inicio ya creados y funcionando.</small></button>
           <button type="button" class="choice" data-choice="blank">${ICON.plus}<strong>En blanco</strong><small>Rellena tú el comando y la carpeta de un programa que ya está en el servidor.</small></button>
         </div>
       </div>
@@ -700,8 +701,115 @@ function openNew() {
     const c = e.target.closest("[data-choice]")?.dataset.choice;
     if (!c) return;
     dlg.close();
-    if (c === "github") openGithub(); else openForm(null);
+    if (c === "github") openGithub();
+    else if (c === "template") openTemplates();
+    else openForm(null);
   });
+}
+
+// Galería de plantillas → formulario corto → progreso en vivo → ficha del servicio creado.
+async function openTemplates() {
+  const dlg = modal(`
+    <form id="tpl-form" novalidate>
+      <header><h2>Desde una plantilla</h2><button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
+      <div class="body" id="tpl-body"><div class="pane-msg">Cargando plantillas…</div></div>
+      <footer>
+        <button type="button" class="btn ghost" data-close>Cancelar</button>
+        <button type="submit" class="btn primary" id="tpl-go" hidden>${ICON.plus}Crear servicio</button>
+      </footer>
+    </form>`);
+  const body = $("#tpl-body", dlg), go = $("#tpl-go", dlg);
+  let data, chosen;
+  const slug = (t) => t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32);
+
+  const gallery = () => {
+    go.hidden = true;
+    body.innerHTML = `<div class="tpl-grid">${data.templates.map((t) => `
+      <button type="button" class="tpl${t.missing.length ? " blocked" : ""}" data-tpl="${t.id}">
+        <strong>${esc(t.name)}</strong>
+        <small>${esc(t.desc)}</small>
+        <span class="tpl-meta">${t.port ? `<span class="lcd">:${t.port}</span>` : ""}${t.publishable ? '<span class="status svc">Publicable</span>' : ""}</span>
+        ${t.missing.map((m) => `<span class="tpl-missing">Falta ${esc(m.what)}: <code>${esc(m.install)}</code></span>`).join("")}
+      </button>`).join("")}</div>`;
+  };
+
+  const form = (t) => {
+    chosen = t;
+    go.hidden = false;
+    go.disabled = false;
+    body.innerHTML = `
+      <button type="button" class="btn sm" data-back>${ICON.back}Plantillas</button>
+      <div class="tpl-head"><strong>${esc(t.name)}</strong><small>${esc(t.desc)}</small></div>
+      <div class="form-error" id="tpl-error"></div>
+      <label class="field"><span>Nombre *</span><input id="tpl-name" maxlength="60" placeholder="Mi proyecto" autocomplete="off"></label>
+      <div class="row2">
+        <label class="field"><span>Carpeta</span><input id="tpl-dest" class="mono" spellcheck="false" autocomplete="off"></label>
+        ${t.port ? `<label class="field"><span>Puerto</span><input id="tpl-port" inputmode="numeric" value="${t.port}"></label>` : ""}
+      </div>
+      ${t.publishable && ui.publishDomain ? `<label class="field"><span>Publicar en internet</span>
+        <div class="affix"><input id="tpl-sub" class="mono" spellcheck="false" autocapitalize="off" placeholder="opcional"><span>.${esc(ui.publishDomain)}</span></div>
+        <small>Déjalo vacío para que solo funcione en tu red local.</small></label>` : ""}
+      ${t.fields.map((f) => `<label class="field"><span>${esc(f.label)}${f.required ? " *" : ""}</span>
+        <input data-field="${esc(f.key)}" type="${f.secret ? "password" : "text"}" value="${esc(f.default || "")}" autocomplete="off" spellcheck="false">
+        ${f.help ? `<small>${esc(f.help)}</small>` : ""}</label>`).join("")}
+      ${t.note ? `<p class="git-note">${esc(t.note)}</p>` : ""}
+      <label class="chk tpl-start"><input type="checkbox" id="tpl-start" checked><span>Arrancarlo al crearlo</span></label>`;
+    const name = $("#tpl-name", dlg), dest = $("#tpl-dest", dlg);
+    let touched = false;
+    dest.addEventListener("input", () => { touched = true; });
+    const sync = () => { if (!touched) dest.value = `${data.projects_dir}/${slug(name.value) || "mi-proyecto"}`; };
+    name.addEventListener("input", sync);
+    sync();
+    name.focus();
+  };
+
+  body.addEventListener("click", (e) => {
+    if (e.target.closest("[data-back]")) return gallery();
+    const b = e.target.closest("[data-tpl]");
+    if (!b) return;
+    const t = data.templates.find((x) => x.id === b.dataset.tpl);
+    if (t.missing.length) return toast(`Falta instalar ${t.missing[0].what}: ${t.missing[0].install}`, "error");
+    form(t);
+  });
+
+  $("#tpl-form", dlg).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!chosen) return;
+    const fields = {};
+    body.querySelectorAll("[data-field]").forEach((i) => { fields[i.dataset.field] = i.value; });
+    go.disabled = true;
+    try {
+      const { job } = await api("POST", "/api/templates/create", {
+        template: chosen.id, name: $("#tpl-name", dlg).value, dest: $("#tpl-dest", dlg).value,
+        port: $("#tpl-port", dlg)?.value, subdomain: $("#tpl-sub", dlg)?.value || "", fields, start: $("#tpl-start", dlg).checked,
+      });
+      body.innerHTML = `<p class="label">Creando «${esc(chosen.name)}»</p><pre class="git-out gh-log" id="tpl-log">Empezando…</pre>`;
+      go.textContent = "Creando…";
+      const poll = async () => {
+        if (!dlg.open) return;
+        const j = await api("GET", `/api/deploy/jobs/${job}`);
+        const log = $("#tpl-log", dlg);
+        log.textContent = j.log.join("\n");
+        log.scrollTop = log.scrollHeight;
+        if (j.status === "running") return setTimeout(poll, 1000);
+        if (j.status === "error") { go.textContent = "Error"; return toast(`No se pudo crear: ${j.error}`, "error"); }
+        dlg.close();
+        toast("Servicio creado desde la plantilla", "ok");
+        location.hash = `#/s/${j.result.sid}`;
+      };
+      poll();
+    } catch (err) {
+      $("#tpl-error", dlg).textContent = err.message;
+      go.disabled = false;
+    }
+  });
+
+  try {
+    data = await api("GET", "/api/templates");
+    gallery();
+  } catch (err) {
+    body.innerHTML = `<div class="pane-msg bad-text">${esc(err.message)}</div>`;
+  }
 }
 
 async function openGithub() {

@@ -1387,7 +1387,7 @@ def detect_project(path):
         deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
         if "vite" in deps or "vite" in str(scripts.get("dev", "")):
             port = free_port(5173)
-            return {"kind": "Vite", "command": f"npm run dev -- --port {port} --strictPort", "port": port, "tags": ["web"]}
+            return {"kind": "Vite", "command": f"npm run dev -- --host 127.0.0.1 --port {port} --strictPort", "port": port, "tags": ["web"]}
         if "next" in deps:
             port = free_port(3000)
             return {"kind": "Next.js", "command": f"npm run dev -- -p {port}", "port": port, "tags": ["web"]}
@@ -1453,13 +1453,16 @@ class Deployer:
             raise ApiError(409, f"La carpeta {dest} ya existe y no está vacía: elige otra")
         if not os.path.isdir(os.path.dirname(dest)):
             raise ApiError(400, f"No existe la carpeta {os.path.dirname(dest)}")
-        job_id = secrets.token_hex(6)
-        job = {"id": job_id, "status": "running", "log": [], "result": None, "error": None, "started": time.time()}
+        job = self.new_job()
+        threading.Thread(target=self._clone, args=(job, owner, name, dest), daemon=True).start()
+        return job["id"]
+
+    def new_job(self):
+        job = {"id": secrets.token_hex(6), "status": "running", "log": [], "result": None, "error": None, "started": time.time()}
         with self.lock:
             self.jobs = {k: v for k, v in self.jobs.items() if time.time() - v["started"] < 3600}
-            self.jobs[job_id] = job
-        threading.Thread(target=self._clone, args=(job, owner, name, dest), daemon=True).start()
-        return job_id
+            self.jobs[job["id"]] = job
+        return job
 
     def _run(self, job, cmd, cwd, timeout):
         job["log"].append(f"$ {' '.join(cmd)}")
@@ -1554,6 +1557,350 @@ class Deployer:
 
 
 DEPLOYER = Deployer()
+
+
+# ───────────────────────────── plantillas de servicio ─────────────────────────────
+
+def _has_venv():
+    try:
+        return subprocess.run(["python3", "-c", "import ensurepip"], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+REQUIREMENTS = {
+    "node": ("Node.js y npm", lambda: bool(shutil.which("node") and shutil.which("npm")), "sudo apt install nodejs npm"),
+    "venv": ("Entornos de Python (venv)", _has_venv, "sudo apt install python3-venv"),
+    "java": ("Java 21", lambda: bool(shutil.which("java")), "sudo apt install openjdk-21-jre-headless"),
+}
+
+STATIC_HTML = """<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{name}}</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <h1>{{name}}</h1>
+    <p>Tu web ya está en marcha. Edita <code>index.html</code> y <code>style.css</code> en <code>{{dir}}</code>.</p>
+  </main>
+</body>
+</html>
+"""
+STATIC_CSS = """body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: system-ui, sans-serif; background: #f4f2f8; color: #1c1924; }
+main { max-width: 36rem; padding: 2rem; }
+h1 { font-size: 2.5rem; margin: 0 0 .5rem; color: #6c3ff5; }
+code { background: #e7e2f3; padding: .1em .35em; border-radius: 4px; }
+"""
+
+VITE_PACKAGE = """{
+  "name": "{{slug}}",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": { "dev": "vite", "build": "vite build", "preview": "vite preview" },
+  "dependencies": { "react": "^19.2.8", "react-dom": "^19.2.8" },
+  "devDependencies": { "@vitejs/plugin-react": "^6.1.1", "vite": "^8.3.0" }
+}
+"""
+VITE_CONFIG = """import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+})
+"""
+VITE_INDEX = """<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{name}}</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+"""
+VITE_MAIN = """import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import App from './App.jsx'
+import './App.css'
+
+createRoot(document.getElementById('root')).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+"""
+VITE_APP = """import { useState } from 'react'
+
+export default function App() {
+  const [clicks, setClicks] = useState(0)
+  return (
+    <main>
+      <h1>{{name}}</h1>
+      <p>Edita <code>src/App.jsx</code>: los cambios se ven al momento.</p>
+      <button onClick={() => setClicks(clicks + 1)}>Has pulsado {clicks} veces</button>
+    </main>
+  )
+}
+"""
+VITE_CSS = """body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: system-ui, sans-serif; background: #f4f2f8; color: #1c1924; }
+main { text-align: center; padding: 2rem; }
+h1 { font-size: 2.5rem; color: #6c3ff5; margin: 0 0 .5rem; }
+button { font: inherit; padding: .6em 1.2em; border: 0; border-radius: 10px; background: #6c3ff5; color: #fff; cursor: pointer; }
+code { background: #e7e2f3; padding: .1em .35em; border-radius: 4px; }
+"""
+
+EXPRESS_PACKAGE = """{
+  "name": "{{slug}}",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node index.js" },
+  "dependencies": { "express": "^5.2.1" }
+}
+"""
+EXPRESS_INDEX = """import express from 'express'
+
+const app = express()
+app.use(express.json())
+
+app.get('/', (req, res) => {
+  res.json({ servicio: '{{name}}', estado: 'en marcha' })
+})
+
+app.get('/api/hora', (req, res) => {
+  res.json({ hora: new Date().toISOString() })
+})
+
+const port = process.env.PORT || {{port}}
+app.listen(port, '127.0.0.1', () => {
+  console.log(`{{name}} escuchando en http://127.0.0.1:${port}`)
+})
+"""
+
+DISCORD_PACKAGE = """{
+  "name": "{{slug}}",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node bot.js" },
+  "dependencies": { "discord.js": "^14.27.0" }
+}
+"""
+DISCORD_BOT = """import { Client, Events, GatewayIntentBits } from 'discord.js'
+
+// El token llega como variable de entorno (DISCORD_TOKEN): se cambia en «Editar» del servicio.
+const client = new Client({ intents: [GatewayIntentBits.Guilds] })
+
+client.once(Events.ClientReady, async (c) => {
+  console.log(`Conectado como ${c.user.tag}`)
+  // Registra /ping (los comandos globales pueden tardar unos minutos en aparecer)
+  await c.application.commands.set([{ name: 'ping', description: 'Comprueba que el bot responde' }])
+})
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isChatInputCommand() && interaction.commandName === 'ping') {
+    await interaction.reply(`¡Pong! (${client.ws.ping} ms)`)
+  }
+})
+
+client.login(process.env.DISCORD_TOKEN)
+"""
+
+FLASK_APP = """import os
+
+from flask import Flask
+
+app = Flask(__name__)
+
+
+@app.get("/")
+def index():
+    return "<h1>{{name}}</h1><p>Edita <code>app.py</code> en {{dir}}.</p>"
+
+
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", {{port}})))
+"""
+
+MC_PROPERTIES = """server-port={{port}}
+motd={{name}}
+max-players=10
+online-mode=true
+"""
+
+
+def download_paper(job, path):
+    """Última versión estable del servidor Paper, comprobando su suma SHA-256."""
+    import urllib.request
+    api = "https://fill.papermc.io/v3/projects/paper"
+    with urllib.request.urlopen(api, timeout=20) as r:
+        groups = json.load(r)["versions"]
+    candidates = [v for vs in groups.values() for v in vs if re.fullmatch(r"[\d.]+", v)]
+    for version in candidates[:6]:
+        with urllib.request.urlopen(f"{api}/versions/{version}/builds/latest", timeout=20) as r:
+            build = json.load(r)
+        if build.get("channel") != "STABLE":
+            continue
+        dl = build["downloads"]["server:default"]
+        job["log"].append(f"descargando Paper {version} (build {build['id']}, {dl['size'] // 2**20} MB)…")
+        digest = hashlib.sha256()
+        with urllib.request.urlopen(dl["url"], timeout=60) as r, open(os.path.join(path, "server.jar"), "wb") as f:
+            while chunk := r.read(1 << 16):
+                digest.update(chunk)
+                f.write(chunk)
+        if digest.hexdigest() != dl["checksums"]["sha256"]:
+            raise RuntimeError("la descarga de Paper está corrupta (la suma SHA-256 no coincide)")
+        job["log"].append("descarga verificada")
+        return
+    raise RuntimeError("no se encontró ninguna versión estable de Paper")
+
+
+# Cada plantilla: archivos que crea ({{name}}, {{slug}}, {{port}}, {{dir}} se sustituyen), pasos de instalación
+# (órdenes o funciones), el servicio resultante y los campos extra que pide.
+TEMPLATES = [
+    {"id": "static", "name": "Web estática", "desc": "Una página HTML y su CSS, servidas con Python. Para webs sencillas o un portfolio.",
+     "tags": ["web"], "port": 8080, "requires": [], "publishable": True,
+     "files": {"index.html": STATIC_HTML, "style.css": STATIC_CSS},
+     "install": [], "command": "python3 -m http.server {{port}} --bind 127.0.0.1"},
+    {"id": "vite-react", "name": "Web React + Vite", "desc": "Proyecto React con recarga al instante, como LlunaTasks.",
+     "tags": ["web", "react"], "port": 5173, "requires": ["node"], "publishable": True,
+     "files": {"package.json": VITE_PACKAGE, "vite.config.js": VITE_CONFIG, "index.html": VITE_INDEX,
+               "src/main.jsx": VITE_MAIN, "src/App.jsx": VITE_APP, "src/App.css": VITE_CSS,
+               ".gitignore": "node_modules\ndist\n"},
+     "install": [["npm", "install", *NPM_FLAGS]], "command": "npm run dev -- --host 127.0.0.1 --port {{port}} --strictPort"},
+    {"id": "express", "name": "API con Node (Express)", "desc": "Una API mínima con dos rutas de ejemplo que responden JSON.",
+     "tags": ["api", "node"], "port": 3000, "requires": ["node"], "publishable": True,
+     "files": {"package.json": EXPRESS_PACKAGE, "index.js": EXPRESS_INDEX, ".gitignore": "node_modules\n"},
+     "install": [["npm", "install", *NPM_FLAGS]], "command": "npm start", "env": {"PORT": "{{port}}"}},
+    {"id": "discord", "name": "Bot de Discord", "desc": "Bot con discord.js que responde al comando /ping. Crea el bot en discord.com/developers.",
+     "tags": ["bot", "discord"], "port": None, "requires": ["node"], "publishable": False,
+     "fields": [{"key": "DISCORD_TOKEN", "label": "Token del bot", "secret": True, "required": True,
+                 "help": "Discord Developer Portal → tu aplicación → Bot → Reset Token. Se guarda como variable de entorno."}],
+     "files": {"package.json": DISCORD_PACKAGE, "bot.js": DISCORD_BOT, ".gitignore": "node_modules\n.env\n"},
+     "install": [["npm", "install", *NPM_FLAGS]], "command": "npm start"},
+    {"id": "flask", "name": "App Python (Flask)", "desc": "Web mínima en Python con su propio entorno virtual.",
+     "tags": ["web", "python"], "port": 5000, "requires": ["venv"], "publishable": True,
+     "files": {"app.py": FLASK_APP, "requirements.txt": "flask\n", ".gitignore": ".venv\n__pycache__\n"},
+     "install": [["python3", "-m", "venv", ".venv"], [".venv/bin/pip", "install", "-r", "requirements.txt"]],
+     "command": ".venv/bin/python app.py", "env": {"PORT": "{{port}}"}},
+    {"id": "minecraft", "name": "Servidor de Minecraft (Paper)", "desc": "Servidor Java con la última versión estable de Paper. Al crearlo aceptas la EULA de Minecraft.",
+     "tags": ["juego", "minecraft"], "port": 25565, "requires": ["java"], "publishable": False,
+     "note": "El túnel de Cloudflare solo lleva tráfico web: para jugar desde fuera de casa abre el puerto en el router o usa Tailscale.",
+     "fields": [{"key": "memory", "label": "Memoria (GB)", "default": "2", "required": True, "help": "RAM máxima para el servidor."}],
+     "files": {"eula.txt": "eula=true\n", "server.properties": MC_PROPERTIES},
+     "install": [download_paper], "command": "java -Xms1G -Xmx{{memory}}G -jar server.jar nogui",
+     "stop_command": "stop", "stop_timeout": 60},
+]
+
+
+def fill(text, values):
+    for k, v in values.items():
+        text = text.replace("{{" + k + "}}", str(v))
+    return text
+
+
+def templates_public():
+    out = []
+    for t in TEMPLATES:
+        missing = [{"what": REQUIREMENTS[r][0], "install": REQUIREMENTS[r][2]} for r in t["requires"] if not REQUIREMENTS[r][1]()]
+        out.append({k: t.get(k) for k in ("id", "name", "desc", "tags", "publishable", "note")} | {
+            "port": free_port(t["port"]) if t["port"] else None, "missing": missing,
+            "fields": [{k: f.get(k) for k in ("key", "label", "secret", "required", "help", "default")} for f in t.get("fields", [])],
+        })
+    return {"templates": out, "projects_dir": PROJECTS_DIR}
+
+
+def template_create(data):
+    t = next((x for x in TEMPLATES if x["id"] == data.get("template")), None)
+    if not t:
+        raise ApiError(404, "Esa plantilla no existe")
+    missing = [REQUIREMENTS[r] for r in t["requires"] if not REQUIREMENTS[r][1]()]
+    if missing:
+        raise ApiError(400, f"Falta instalar {missing[0][0]} en el servidor: {missing[0][2]}")
+    name = str(data.get("name") or "").strip()[:60]
+    if not name:
+        raise ApiError(400, "Ponle un nombre al servicio")
+    slug = slugify(name)
+    dest = os.path.abspath(os.path.expanduser(str(data.get("dest") or "").strip() or os.path.join(PROJECTS_DIR, slug)))
+    if os.path.exists(dest) and (not os.path.isdir(dest) or os.listdir(dest)):
+        raise ApiError(409, f"La carpeta {dest} ya existe y no está vacía: elige otra")
+    if not os.path.isdir(os.path.dirname(dest)):
+        raise ApiError(400, f"No existe la carpeta {os.path.dirname(dest)}")
+    port = None
+    if t["port"]:
+        try:
+            port = int(data.get("port") or free_port(t["port"]))
+        except (TypeError, ValueError):
+            raise ApiError(400, "El puerto debe ser un número")
+        if port in listening_ports():
+            raise ApiError(409, f"El puerto {port} ya está en uso")
+    fields = data.get("fields") or {}
+    values = {"name": name, "slug": slug, "port": port or "", "dir": dest}
+    env = {}
+    for f in t.get("fields", []):
+        val = str(fields.get(f["key"]) or f.get("default") or "").strip()
+        if f.get("required") and not val:
+            raise ApiError(400, f"Falta «{f['label']}»")
+        if f["key"].isupper():
+            env[f["key"]] = val   # secretos y ajustes que el programa lee del entorno
+        else:
+            values[f["key"]] = val
+    if "memory" in values and not values["memory"].isdigit():
+        raise ApiError(400, "La memoria debe ser un número entero de GB")
+    env.update({k: fill(v, values) for k, v in (t.get("env") or {}).items()})
+    service = {
+        "name": name, "description": t["desc"].split(".")[0] + ".", "tags": t["tags"], "cwd": dest,
+        "command": fill(t["command"], values), "port": port, "env": env, "url": "",
+        "autostart": True, "restart_on_crash": True,
+        "stop_command": t.get("stop_command", ""), "stop_timeout": t.get("stop_timeout", 15),
+        "subdomain": str(data.get("subdomain") or "").strip() if t["publishable"] else "",
+    }
+    normalize_service({**service, "cwd": ""})  # valida antes de crear nada en disco (la carpeta aún no existe)
+    job = DEPLOYER.new_job()
+    threading.Thread(target=_template_job, args=(job, t, dest, values, service, bool(data.get("start", True))), daemon=True).start()
+    return job["id"]
+
+
+def _template_job(job, t, dest, values, service, start):
+    created = False
+    try:
+        os.makedirs(dest, exist_ok=True)
+        created = True
+        for rel, content in t["files"].items():
+            full = os.path.join(dest, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(fill(content, values))
+        job["log"].append(f"▌archivos creados en {dest}: {', '.join(t['files'])}")
+        for step in t["install"]:
+            if callable(step):
+                step(job, dest)
+            else:
+                DEPLOYER._run(job, step, dest, 900)
+        extra, notice = PUBLISHER.apply(None, None, normalize_service(service), service)
+        sid = MANAGER.create(service, extra)
+        job["log"].append(f"▌servicio «{service['name']}» creado")
+        if notice:
+            job["log"].append(f"▌{notice}")
+        if start:
+            MANAGER.start(sid)
+            job["log"].append("▌arrancado")
+        job["result"] = {"sid": sid}
+        job["status"] = "done"
+    except Exception as e:  # noqa: BLE001
+        msg = e.msg if isinstance(e, ApiError) else str(e)
+        job["error"] = msg
+        job["log"].append(f"▌error: {msg}")
+        if created:
+            job["log"].append(f"▌los archivos quedan en {dest}: bórralos o reutilízalos")
+        job["status"] = "error"
 JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
@@ -1701,6 +2048,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True})
         if path == "/api/system":
             return self.send_json(system_info())
+        if path == "/api/templates" and method == "GET":
+            return self.send_json(templates_public())
+        if path == "/api/templates/create" and method == "POST":
+            return self.send_json({"job": template_create(self.read_body())}, 202)
         if path == "/api/github/repos" and method == "GET":
             return self.send_json(gh_repos())
         if path == "/api/deploy/clone" and method == "POST":
