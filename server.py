@@ -1771,20 +1771,29 @@ class Notifier:
         events = cfg.get("events") or {}
         return {"configured": self.configured(cfg), "user": cfg.get("user", ""), "to": cfg.get("to", ""),
                 "events": [{"key": k, "label": v, "on": events.get(k, True)} for k, v in NOTIFY_EVENTS.items()],
-                "last_error": self.last_error, "last_sent": self.last_sent}
+                "last_error": self.last_error, "last_sent": self.last_sent,
+                "heartbeat_url": cfg.get("heartbeat_url", ""),
+                "heartbeat_last": SUPERVISOR.last_ping, "heartbeat_error": SUPERVISOR.ping_error}
 
     def save(self, data):
         cfg = self.config()
-        user = str(data.get("user") or "").strip()
+        # solo cambia lo que llega en la petición: un guardado parcial no borra el resto
+        user = str(data["user"] if "user" in data else cfg.get("user", "")).strip()
         if user and not EMAIL_RE.fullmatch(user):
             raise ApiError(400, "Escribe una dirección de Gmail válida")
         password = re.sub(r"\s+", "", str(data.get("app_password") or ""))  # Google la muestra con espacios
         if password and not re.fullmatch(r"[a-zA-Z]{16}", password):
             raise ApiError(400, "La contraseña de aplicación son 16 letras (Google la muestra en grupos de 4)")
-        to = ", ".join(t.strip() for t in str(data.get("to") or "").split(",") if t.strip())
+        to = ", ".join(t.strip() for t in str(data["to"] if "to" in data else cfg.get("to", "")).split(",") if t.strip())
         for addr in filter(None, (t.strip() for t in to.split(","))):
             if not EMAIL_RE.fullmatch(addr):
                 raise ApiError(400, f"Dirección de destino inválida: {addr}")
+        if "heartbeat_url" in data:
+            url = str(data.get("heartbeat_url") or "").strip()
+            if url and (not re.fullmatch(r"https://[^\s]{8,300}", url)):
+                raise ApiError(400, "La dirección del vigilante externo debe empezar por https:// (p. ej. https://hc-ping.com/…)")
+            cfg["heartbeat_url"] = url
+            SUPERVISOR.last_ping = SUPERVISOR.ping_error = None
         # sin «events» en la petición se conservan los guardados (no se reactivan todos)
         events = data["events"] if isinstance(data.get("events"), dict) else (cfg.get("events") or {})
         cfg.update(user=user, to=to, events={k: bool(events.get(k, True)) for k in NOTIFY_EVENTS})
@@ -1889,6 +1898,7 @@ NOTIFIER = Notifier()
 # ───────────────────────────── vigilancia de NovaHub ─────────────────────────────
 
 WATCHDOG_EVERY = 10                                     # segundos entre revisiones internas
+HEARTBEAT_EVERY = 60                                    # segundos entre señales de vida al vigilante externo
 LIFECYCLE_FILE = os.path.join(RUN_DIR, "novahub.lifecycle")  # «running» mientras funciona, «stopped» al cerrar bien
 
 
@@ -1934,6 +1944,9 @@ class Supervisor:
         self.threads = {}   # nombre -> (función, hilo)
         self.beats = {}     # nombre -> monotonic del último latido
         self.url = None
+        self.last_ping = None   # vigilante externo (healthchecks.io): última señal de vida enviada
+        self.ping_error = None
+        self.next_ping = 0
 
     def spawn(self, name, target):
         thread = threading.Thread(target=target, name=name, daemon=True)
@@ -1950,6 +1963,21 @@ class Supervisor:
                 self.check()
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
+
+    def ping(self):
+        """Señal de vida al vigilante externo: si deja de llegar (servidor caído, sin internet,
+        NovaHub colgado), healthchecks.io avisa. Se manda en un hilo aparte: nunca frena la revisión."""
+        url = NOTIFIER.config().get("heartbeat_url")
+        if not url:
+            return
+        import urllib.request
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "NovaHub"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                r.read(64)
+            self.last_ping, self.ping_error = time.time(), None
+        except Exception as e:  # noqa: BLE001
+            self.ping_error = f"{datetime.now():%H:%M} · {e}"
 
     def http_ok(self):
         try:
@@ -1979,6 +2007,9 @@ class Supervisor:
             hung.append("la web del panel no responde")
         if not hung:
             sd_notify("WATCHDOG=1")  # todo responde; si dejamos de decirlo, systemd reinicia NovaHub
+            if time.monotonic() >= self.next_ping:
+                self.next_ping = time.monotonic() + HEARTBEAT_EVERY
+                threading.Thread(target=self.ping, name="señal-de-vida", daemon=True).start()
         problems = restarted + hung
         for p in problems:
             print(f"[vigilancia interna] {p}", flush=True)

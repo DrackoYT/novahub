@@ -917,7 +917,7 @@ async function openGithub() {
 async function openSettings() {
   const dlg = modal(`
     <form id="nt-form" novalidate>
-      <header><h2>Avisos por correo</h2><button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
+      <header><h2>Avisos y vigilancia</h2><button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
       <div class="body" id="nt-body"><div class="pane-msg">Cargando…</div></div>
       <footer>
         <button type="button" class="btn ghost" data-close>Cancelar</button>
@@ -944,12 +944,21 @@ async function openSettings() {
       <p class="label">Avisarme cuando…</p>
       <div class="checks">${n.events.map((e) => `
         <label><input type="checkbox" data-event="${e.key}" ${e.on ? "checked" : ""}><span><strong>${esc(e.label)}</strong></span></label>`).join("")}
-      </div>`;
+      </div>
+      <p class="label">Vigilante externo</p>
+      <label class="field"><span>Dirección de ping (healthchecks.io)</span>
+        <input id="nt-hb" class="mono" spellcheck="false" autocomplete="off" placeholder="https://hc-ping.com/…" value="${esc(n.heartbeat_url)}">
+        <small>NovaHub manda una señal de vida cada minuto mientras todo funciona. Si deja de llegar (corte de luz,
+          sin internet, servidor colgado), <a href="https://healthchecks.io" target="_blank" rel="noopener">healthchecks.io</a> te avisa.
+          Configura allí el check con periodo de 1 minuto y 3 de gracia.</small></label>
+      ${n.heartbeat_error ? `<p class="git-note bad">Señal de vida: ${esc(n.heartbeat_error)}</p>`
+        : n.heartbeat_last ? `<p class="nt-ok">Última señal de vida ${fmtAgo(n.heartbeat_last)}.</p>` : ""}`;
   };
   const values = () => {
     const events = {};
     body.querySelectorAll("[data-event]").forEach((c) => { events[c.dataset.event] = c.checked; });
-    return { user: $("#nt-user", dlg).value.trim(), app_password: $("#nt-pass", dlg).value, to: $("#nt-to", dlg).value.trim(), events };
+    return { user: $("#nt-user", dlg).value.trim(), app_password: $("#nt-pass", dlg).value, to: $("#nt-to", dlg).value.trim(), events,
+      heartbeat_url: $("#nt-hb", dlg).value.trim() };
   };
   const busy = (on) => dlg.querySelectorAll("footer .btn").forEach((b) => { b.disabled = on; });
   const save = async () => {
