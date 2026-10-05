@@ -48,6 +48,15 @@ function keyHTML(s) {
     title="${isOn(s) ? "Apagar" : "Encender"}" aria-label="${isOn(s) ? "Apagar" : "Encender"} ${esc(s.name)}">${ICON.power}</button>`;
 }
 const pct = (a, b) => (b ? (a / b) * 100 : 0);
+// Estado de la comprobación de salud en palabras; null si no aplica.
+function healthText(s) {
+  if (s.health_mode === "off") return { text: "Desactivada", cls: "dim-text" };
+  const h = s.health;
+  if (s.status !== "running" || !h) return null;
+  if (h.state === "starting") return { text: "Esperando a que arranque", cls: "dim-text" };
+  if (h.state === "ok") return { text: `Responde · ${h.ms} ms · ${fmtAgo(h.at)}`, cls: "ok-text" };
+  return { text: `No responde (${h.fails}/3) · ${h.detail}`, cls: "bad-text" };
+}
 // medidor de uso; ámbar desde el 75 %, rojo desde el 90 %
 const meterHTML = (p) => `<div class="meter${p >= 90 ? " crit" : p >= 75 ? " hot" : ""}"><i style="width:${Math.min(100, Math.max(0, p)).toFixed(1)}%"></i></div>`;
 
@@ -563,6 +572,7 @@ function cardHTML(s) {
       `<span class="v ${s.listening ? "ok-text" : "dim-text"}">${s.port}</span></span>`);
   }
   if (!foot.length) foot.push(`<span class="dim-text">Detenido</span>`);
+  if (s.status === "running" && s.health?.state === "failing") foot.unshift(`<span class="bad-text"><b>No responde</b></span>`);
   const url = s.status === "running" ? openUrl(s) : null;
   const link = url
     ? `<a class="card-link" href="${esc(url)}" target="_blank" rel="noopener">${s.subdomain ? ICON.globe : ""}<span>${esc(url.replace(/^https?:\/\//, ""))}</span> ↗</a>`
@@ -1259,6 +1269,7 @@ function drawDetail(s) {
         ${cell("Última salida", s.last_exit_at ? `${s.last_exit ?? "?"} <span class="dim-text">· ${fmtTime(s.last_exit_at)}</span>` : dash)}
         ${cell("Reinicios auto · 1 h", s.auto_restarts)}
         ${s.mem_restarts ? cell("Reinicios por memoria · 1 h", `<span class="bad-text">${s.mem_restarts}</span>`) : ""}
+        ${(() => { const h = healthText(s); return h ? cell("Salud", `<span class="${h.cls}">${esc(h.text)}</span>`) : ""; })()}
         ${s.last_update ? cell("Última actualización", `<span class="${s.last_update.ok ? "" : "bad-text"}">${esc(s.last_update.msg)}</span> <span class="dim-text">· ${fmtAgo(s.last_update.at)}</span>`) : ""}
       </dl>
     </div>
@@ -1272,6 +1283,7 @@ function drawDetail(s) {
         ${cell("Si falla", s.restart_on_crash ? "Reinicia" : "Se para")}
         ${cell("Parada", s.stop_command ? `<code>${esc(s.stop_command)}</code>` : "SIGTERM")}
         ${cell("Límite de memoria", s.memory_limit ? `${fmtBytes(s.memory_limit * 2 ** 20)} · reinicia si lo pasa` : "Sin límite")}
+        ${cell("Comprobación de salud", { http: `Web · GET ${esc(s.health_path || "/")}`, tcp: "Puerto abierto", off: "Desactivada" }[s.health_mode])}
       </dl>
     </div>`;
   const infoEl = $("#d-info");
@@ -1518,6 +1530,17 @@ function openForm(svc, prefill = null) {
           <summary>Opciones avanzadas</summary>
           <div class="inner">
             <label class="field"><span>Variables de entorno</span><textarea name="env" rows="3" class="mono" spellcheck="false" placeholder="NODE_ENV=production&#10;TOKEN=..."></textarea><small>Una por línea: CLAVE=valor</small></label>
+            <div class="row2">
+              <label class="field"><span>Comprobación de salud</span>
+                <select name="health_check">
+                  <option value="auto">Automática (web si tiene puerto)</option>
+                  <option value="http">Web (HTTP)</option>
+                  <option value="tcp">Solo que el puerto acepte conexiones</option>
+                  <option value="off">Desactivada</option>
+                </select>
+                <small>Cada 30 s; si falla 3 veces seguidas, se reinicia (máximo 3 veces por hora).</small></label>
+              <label class="field"><span>Ruta</span><input name="health_path" class="mono" placeholder="/" spellcheck="false"></label>
+            </div>
             <label class="field"><span>Límite de memoria (MB)</span><input name="memory_limit" inputmode="numeric" placeholder="sin límite">
               <small>Si el servicio usa más durante 30 s seguidos, se reinicia solo (máximo 3 veces por hora). Ejemplo: 1024 = 1 GB.</small></label>
             <div class="row2">
@@ -1551,7 +1574,9 @@ function openForm(svc, prefill = null) {
     f.stop_command.value = src.stop_command || "";
     f.stop_timeout.value = src.stop_timeout ?? "";
     f.memory_limit.value = src.memory_limit ?? "";
-    if (f.env.value || f.stop_command.value || f.memory_limit.value) dlg.querySelector("details").open = true;
+    f.health_check.value = src.health_check || "auto";
+    f.health_path.value = src.health_path && src.health_path !== "/" ? src.health_path : "";
+    if (f.env.value || f.stop_command.value || f.memory_limit.value || f.health_check.value !== "auto") dlg.querySelector("details").open = true;
   }
   f.name.focus();
 
@@ -1563,6 +1588,7 @@ function openForm(svc, prefill = null) {
       autostart: f.autostart.checked, restart_on_crash: f.restart_on_crash.checked,
       env: f.env.value, stop_command: f.stop_command.value, stop_timeout: f.stop_timeout.value.trim(),
       memory_limit: f.memory_limit.value.trim(),
+      health_check: f.health_check.value, health_path: f.health_path.value.trim(),
     };
     if (f.subdomain) body.subdomain = f.subdomain.value.trim();
     const btn = form.querySelector("[type=submit]");

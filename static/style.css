@@ -505,11 +505,12 @@ dialog::backdrop { background: rgba(20, 14, 36, .45); backdrop-filter: blur(3px)
 .field > span { font: 500 11px/1.4 var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--soft); }
 .field small { color: var(--faint); font-size: 13px; }
 .field small code { color: var(--soft); }
-.field input, .field textarea {
+.field input, .field textarea, .field select {
   width: 100%; padding: 10px 12px; border-radius: var(--r-sm); resize: vertical; outline: none;
   background: var(--sunk); border: 1px solid var(--line-hi); box-shadow: inset 0 1px 2px rgba(0, 0, 0, .06);
 }
 .field input:focus, .field textarea:focus { border-color: var(--nova); box-shadow: 0 0 0 3px var(--nova-soft); }
+.field select { font: inherit; color: inherit; cursor: pointer; }
 .field input::placeholder, .field textarea::placeholder { color: var(--faint); }
 .field textarea.mono, .field input.mono { font-family: var(--f-mono); font-size: 13px; }
 .affix { display: flex; align-items: stretch; }

@@ -14,6 +14,7 @@ import asyncio
 import codecs
 import getpass
 import hashlib
+import http.client
 import hmac
 import json
 import mimetypes
@@ -53,6 +54,11 @@ MEM_CHECK_EVERY = 10               # segundos entre lecturas de memoria
 MEM_CHECKS = 3                     # lecturas seguidas por encima del límite antes de reiniciar (≈30 s)
 MEM_RESTARTS_PER_HOUR = 3          # más que esto y se deja de reiniciar: el programa necesita más memoria
 GATEWAY_OFFSET = 10000             # la pasarela de un servicio publicado escucha en su puerto + 10000
+HEALTH_EVERY = 30                  # segundos entre comprobaciones de salud de cada servicio
+HEALTH_FAILS = 3                   # fallos seguidos antes de reiniciar (≈90 s sin responder)
+HEALTH_GRACE = 60                  # tras arrancar no se comprueba: margen para que el programa se inicie
+HEALTH_RESTARTS_PER_HOUR = 3
+HEALTH_MODES = ("auto", "http", "tcp", "off")
 SHELL = shutil.which("bash") or "/bin/sh"
 CLK_TCK = os.sysconf("SC_CLK_TCK")
 PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
@@ -243,6 +249,13 @@ def normalize_service(data: dict) -> dict:
     except (TypeError, ValueError):
         raise ApiError(400, "El tiempo de parada debe ser un número")
 
+    health_check = str(data.get("health_check") or "auto")
+    if health_check not in HEALTH_MODES:
+        raise ApiError(400, "Modo de comprobación de salud desconocido")
+    health_path = text("health_path", 200) or "/"
+    if not health_path.startswith("/"):
+        raise ApiError(400, "La ruta de la comprobación de salud debe empezar por /")
+
     memory_limit = data.get("memory_limit")
     if memory_limit in ("", None, 0, "0"):
         memory_limit = None
@@ -268,6 +281,8 @@ def normalize_service(data: dict) -> dict:
         "autostart": bool(data.get("autostart")),
         "restart_on_crash": bool(data.get("restart_on_crash")),
         "memory_limit": memory_limit,
+        "health_check": health_check,
+        "health_path": health_path,
     }
 
 
@@ -654,6 +669,7 @@ class Manager:
             auto_restarts=len([t for t in st.get("restarts", []) if time.time() - t < 3600]),
             updating=bool(st.get("updating")), last_update=st.get("last_update"),
             mem_restarts=len([t for t in st.get("mem_restarts", []) if time.time() - t < 3600]),
+            health_mode=health_mode(svc), health=st.get("health"),
             listening=(svc["port"] in ports) if svc.get("port") else None,
             cpu=None, memory=None, processes=None,
         )
@@ -1315,6 +1331,107 @@ class Tasks:
 
 
 TASKS = Tasks()
+
+
+# ───────────────────────────── comprobación de salud ─────────────────────────────
+
+def health_mode(svc):
+    mode = svc.get("health_check") or "auto"
+    if mode == "auto":
+        mode = "http" if svc.get("port") else "off"
+    return "off" if not svc.get("port") else mode
+
+
+def probe(mode, port, path):
+    """(ok, milisegundos, detalle). HTTP sano = cualquier respuesta que no sea un error 5xx."""
+    t0 = time.monotonic()
+    try:
+        if mode == "tcp":
+            socket.create_connection(("localhost", port), timeout=5).close()
+            return True, round((time.monotonic() - t0) * 1000), "acepta conexiones"
+        conn = http.client.HTTPConnection("localhost", port, timeout=8)
+        try:
+            conn.request("GET", path, headers={"User-Agent": "NovaHub-health", "Connection": "close"})
+            status = conn.getresponse().status
+        finally:
+            conn.close()
+        ms = round((time.monotonic() - t0) * 1000)
+        return status < 500, ms, f"HTTP {status}"
+    except (OSError, http.client.HTTPException) as e:
+        return False, round((time.monotonic() - t0) * 1000), (str(e) or type(e).__name__)[:120]
+
+
+class Health:
+    """Comprueba cada servicio encendido cada HEALTH_EVERY s y lo reinicia tras HEALTH_FAILS fallos seguidos.
+    Corre en su propio hilo: una petición lenta no bloquea al gestor."""
+
+    def __init__(self):
+        self.next = {}  # sid -> monotonic de la próxima comprobación
+
+    def loop(self):
+        while True:
+            time.sleep(2)
+            try:
+                self.tick()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+
+    def tick(self):
+        now, mono = time.time(), time.monotonic()
+        with MANAGER.lock:
+            due = []
+            for sid, svc in MANAGER.services.items():
+                st = MANAGER.state.get(sid) or {}
+                mode = health_mode(svc)
+                running = MANAGER.running(sid) and sid not in MANAGER.transition and not st.get("updating")
+                if mode == "off" or not running:
+                    if st.get("health") and (mode == "off" or not MANAGER.running(sid)):
+                        st.pop("health", None)
+                    self.next.pop(sid, None)
+                    continue
+                if now - (st.get("started_at") or 0) < HEALTH_GRACE:
+                    st["health"] = {"state": "starting", "at": now}
+                    continue
+                if mono >= self.next.get(sid, 0):
+                    self.next[sid] = mono + HEALTH_EVERY
+                    due.append((sid, mode, svc["port"], svc.get("health_path") or "/", st.get("pid")))
+        for sid, mode, port, path, pid in due:
+            ok, ms, detail = probe(mode, port, path)
+            with MANAGER.lock:
+                st = MANAGER.state.get(sid)
+                if not st or st.get("pid") != pid or sid in MANAGER.transition:
+                    continue  # se reinició o paró mientras tanto
+                prev = st.get("health") or {}
+                fails = 0 if ok else prev.get("fails", 0) + 1
+                st["health"] = {"state": "ok" if ok else "failing", "at": time.time(), "ms": ms, "detail": detail, "fails": fails}
+                if ok and (prev.get("fails") or st.get("health_gave_up")):
+                    st["health_gave_up"] = False  # vuelve a vigilarse con normalidad
+                    MANAGER.log(sid, f"\x1b[32mvuelve a responder ({detail}, {ms} ms)\x1b[0m")
+                elif not ok and not st.get("health_gave_up"):  # rendido: no se llena la consola de avisos
+                    MANAGER.log(sid, f"\x1b[33mcomprobación de salud fallida ({fails}/{HEALTH_FAILS}): {detail}\x1b[0m")
+                if fails >= HEALTH_FAILS:
+                    self.restart(sid, st, detail)
+
+    def restart(self, sid, st, detail):
+        now = time.time()
+        recent = [t for t in st.get("health_restarts", []) if now - t < 3600]
+        st["health"]["fails"] = 0
+        if len(recent) >= HEALTH_RESTARTS_PER_HOUR:
+            if not st.get("health_gave_up"):
+                st["health_gave_up"] = True
+                MANAGER.log(sid, f"\x1b[31mno responde ({detail}) y ya se ha reiniciado {len(recent)} veces en la última "
+                                 "hora: no se vuelve a reiniciar. Revisa la consola o la ruta de la comprobación.\x1b[0m")
+                MANAGER.save_state()
+            return
+        st["health_gave_up"] = False
+        recent.append(now)
+        st["health_restarts"] = recent
+        MANAGER.log(sid, f"\x1b[33mno responde desde hace {HEALTH_FAILS * HEALTH_EVERY} s: reiniciando\x1b[0m")
+        MANAGER.save_state()
+        MANAGER.stop(sid, then_start=True)
+
+
+HEALTH = Health()
 
 
 # ───────────────────────────── pasarela de los servicios publicados ─────────────────────────────
@@ -2498,6 +2615,7 @@ def main():
     MANAGER = Manager()
     MANAGER.boot()
     GATEWAY = Gateway()
+    threading.Thread(target=HEALTH.loop, daemon=True).start()
     GATEWAY.sync()
     PUBLISHER.reconcile()
     threading.Thread(target=MANAGER.monitor, daemon=True).start()
