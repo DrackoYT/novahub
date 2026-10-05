@@ -20,6 +20,11 @@ const ICON = {
   download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>',
   expand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>',
   close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  activity: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h3.6a2 2 0 0 1 1.5.7L12 6.3h6.5A2.5 2.5 0 0 1 21 8.8v8.7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg>',
+  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
+  git: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 8.5v7M18 10.5c0 4-6 3-11 6"/></svg>',
+  upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9M7 14l5-5 5 5M5 3h14"/></svg>',
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>',
 };
@@ -94,6 +99,15 @@ function fmtBytes(b) {
   let i = 0;
   while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
   return `${b.toFixed(b < 10 && i ? 1 : 0)} ${u[i]}`;
+}
+function fmtAgo(epoch) {
+  if (!epoch) return "—";
+  const s = Math.max(0, Date.now() / 1000 - epoch);
+  if (s < 60) return "hace un momento";
+  if (s < 3600) return `hace ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `hace ${Math.floor(s / 3600)} h`;
+  if (s < 86400 * 30) return `hace ${Math.floor(s / 86400)} días`;
+  return new Date(epoch * 1000).toLocaleDateString("es-ES");
 }
 function fmtTime(epoch) {
   if (!epoch) return "—";
@@ -180,6 +194,7 @@ function showLogin() {
 const NAV = [
   ["overview", "#/", "Resumen", "1", ICON.home],
   ["services", "#/servicios", "Servicios", "2", ICON.grid],
+  ["tasks", "#/procesos", "Procesos", "3", ICON.activity],
 ];
 
 function shell() {
@@ -287,6 +302,115 @@ function drawOverview() {
     </a>`;
   }).join("") : `<div class="row-empty">Añade tu primer servicio con «Nuevo servicio».</div>`;
   if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+
+// ───────────────────────── vista: procesos ─────────────────────────
+
+function viewTasks() {
+  ui.tasks = ui.tasks || { sort: "rss", q: "" };
+  $("#main").innerHTML = `
+    <section class="page-head">
+      <div>
+        <h1 class="page-title">Procesos</h1>
+        <p class="page-sub">Qué está usando la memoria y la CPU del servidor</p>
+      </div>
+    </section>
+    <section class="module mem" id="mem"></section>
+    <div class="section-title"><h2>Por aplicación</h2></div>
+    <section class="module rows" id="groups"></section>
+    <div class="section-title"><h2>Todos los procesos</h2></div>
+    <section class="toolbar">
+      <label class="search">${ICON.search}<input id="pq" type="search" placeholder="Buscar proceso…" aria-label="Buscar proceso"></label>
+      <div class="filters" id="psort">
+        <button class="chip" data-sort="rss">Más memoria</button>
+        <button class="chip" data-sort="cpu">Más CPU</button>
+      </div>
+    </section>
+    <section class="module ptable" id="procs"></section>`;
+  const q = $("#pq");
+  q.value = ui.tasks.q;
+  q.addEventListener("input", () => { ui.tasks.q = q.value; drawTasks(); });
+  $("#psort").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-sort]");
+    if (b) { ui.tasks.sort = b.dataset.sort; drawTasks(); }
+  });
+  $("#procs").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-kill]");
+    if (b) killProcess(+b.dataset.kill);
+  });
+  refreshTasks();
+  every(3000, refreshTasks);
+}
+
+async function refreshTasks() {
+  try {
+    ui.tasks.data = await api("GET", "/api/processes");
+    drawTasks();
+  } catch { /* el 401 ya redirige */ }
+}
+
+function drawTasks() {
+  const d = ui.tasks?.data, memEl = $("#mem");
+  if (!d || !memEl) return;
+  const m = d.mem;
+  const w = (x) => `${Math.max(0, (x / m.total) * 100).toFixed(2)}%`;
+  memEl.innerHTML = `
+    <div class="mem-head">
+      <div><span class="label">Memoria</span><div class="kpi-value">${fmtBytes(m.used)} <small>en uso de ${fmtBytes(m.total)}</small></div></div>
+      <span class="lcd">CPU ${pct(d.load[0], d.cpus).toFixed(0)}% · carga ${d.load[0].toFixed(2)}</span>
+    </div>
+    <div class="membar" role="img" aria-label="Memoria: ${fmtBytes(m.used)} en uso, ${fmtBytes(m.cache)} en caché, ${fmtBytes(m.free)} libre">
+      <i class="used" style="width:${w(m.used)}"></i><i class="cache" style="width:${w(m.cache)}"></i>
+    </div>
+    <div class="legend">
+      <span><i class="used"></i>En uso <b>${fmtBytes(m.used)}</b></span>
+      <span><i class="cache"></i>Caché <b>${fmtBytes(m.cache)}</b></span>
+      <span><i class="free"></i>Libre <b>${fmtBytes(m.free)}</b></span>
+      ${m.swap_total ? `<span>Swap <b>${fmtBytes(m.swap_used)}</b> de ${fmtBytes(m.swap_total)}</span>` : ""}
+    </div>
+    <p class="mem-note">La caché es memoria que Linux usa para acelerar el disco y libera en cuanto un programa la necesita: no cuenta como «en uso».</p>`;
+
+  const top = d.groups[0]?.rss || 1;
+  $("#groups").innerHTML = d.groups.slice(0, 12).map((g) => `
+    <div class="row grow-row">
+      <span class="row-name">${esc(g.name)}</span>
+      ${g.kind === "service" ? '<span class="status svc">Servicio</span>' : ""}
+      <span class="dim-text gcount">${g.count} proceso${g.count > 1 ? "s" : ""}</span>
+      <span class="gbar"><i style="width:${((g.rss / top) * 100).toFixed(1)}%"></i></span>
+      <span class="row-meta"><span>CPU ${g.cpu.toFixed(1)}%</span><b class="num">${fmtBytes(g.rss)}</b></span>
+    </div>`).join("");
+
+  document.querySelectorAll("#psort [data-sort]").forEach((b) => b.classList.toggle("active", b.dataset.sort === ui.tasks.sort));
+  const q = ui.tasks.q.trim().toLowerCase();
+  let list = d.processes.filter((p) => !q || `${p.pid} ${p.app} ${p.name} ${p.user} ${p.cmd}`.toLowerCase().includes(q));
+  list = [...list].sort((a, b) => (ui.tasks.sort === "cpu" ? (b.cpu || 0) - (a.cpu || 0) : b.rss - a.rss));
+  const shown = list.slice(0, q ? 300 : 60);
+  $("#procs").innerHTML = `
+    <div class="prow phead"><span>PID</span><span>Proceso</span><span>Usuario</span><span class="r">CPU</span><span class="r">Memoria</span><span></span></div>
+    ${shown.map((p) => `
+      <div class="prow">
+        <span class="num dim-text">${p.pid}</span>
+        <span class="pname"><b>${esc(p.app)}</b><small class="mono" title="${esc(p.cmd)}">${esc(p.cmd)}</small></span>
+        <span class="dim-text">${esc(p.user)}</span>
+        <span class="r num">${p.cpu == null ? "…" : `${p.cpu.toFixed(1)}%`}</span>
+        <span class="r num"><b>${fmtBytes(p.rss)}</b></span>
+        <span class="r">${p.own && p.kind !== "service" ? `<button class="btn sm" data-kill="${p.pid}" title="Cerrar este proceso">Cerrar</button>` : ""}</span>
+      </div>`).join("")}
+    ${list.length > shown.length ? `<div class="row-empty">Se muestran ${shown.length} de ${list.length}. Usa el buscador para encontrar el resto.</div>` : ""}
+    ${!list.length ? '<div class="row-empty">Ningún proceso coincide con la búsqueda.</div>' : ""}`;
+}
+
+async function killProcess(pid) {
+  const p = ui.tasks?.data?.processes.find((x) => x.pid === pid);
+  if (!p) return;
+  const ok = await confirmDialog("Cerrar proceso",
+    `Se pedirá a «${p.app}» (PID ${pid}) que se cierre. Si es parte de otro programa, como VS Code, ese programa puede dejar de funcionar.`, "Cerrar proceso");
+  if (!ok) return;
+  try {
+    await api("POST", `/api/processes/${pid}/kill`, {});
+    toast(`Señal de cierre enviada a ${p.app} (PID ${pid})`, "ok");
+    setTimeout(refreshTasks, 800);
+  } catch (e) { toast(e.message, "error"); }
 }
 
 // ───────────────────────── vista: lista ─────────────────────────
@@ -520,15 +644,19 @@ function viewDetail(id) {
     <div class="d-body">
       <section class="term module" id="term">
         <div class="term-bar">
-          <span class="term-title" id="live">Consola <span class="live">en directo</span></span>
-          <div class="term-tools">
+          <div class="tabs" role="tablist" aria-label="Vistas del servicio">
+            <button type="button" role="tab" class="tab term-title" id="live" data-tab="console" aria-selected="true">Consola <span class="live">en directo</span></button>
+            <button type="button" role="tab" class="tab" data-tab="files" aria-selected="false">${ICON.folder}Archivos</button>
+            <button type="button" role="tab" class="tab" data-tab="git" aria-selected="false">${ICON.git}Git<span class="count" id="git-count" hidden></span></button>
+          </div>
+          <div class="term-tools" data-for="console">
             <label class="chk" title="Auto-scroll"><input type="checkbox" id="autoscroll" checked><span>Auto-scroll</span></label>
             <a class="btn sm icon" href="/api/services/${esc(id)}/logs/download" download title="Descargar log" aria-label="Descargar log">${ICON.download}</a>
             <button class="btn sm icon" data-act="clear-log" title="Limpiar consola" aria-label="Limpiar consola">${ICON.trash}</button>
             <button class="btn sm icon" data-term="max" title="Pantalla completa (Esc para salir)" aria-label="Pantalla completa">${ICON.expand}</button>
           </div>
         </div>
-        <div class="screen">
+        <div class="screen" data-pane="console">
           <pre class="term-out" id="out"></pre>
           <form class="term-in" id="cin">
             <span class="prompt" id="prompt"></span>
@@ -536,6 +664,8 @@ function viewDetail(id) {
             <button class="btn sm" type="submit">↵</button>
           </form>
         </div>
+        <div class="pane" data-pane="files" id="files" hidden></div>
+        <div class="pane" data-pane="git" id="git" hidden></div>
       </section>
       <aside class="side" id="d-info"></aside>
     </div>`;
@@ -551,6 +681,205 @@ function viewDetail(id) {
   every(2000, () => refreshDetail(id));
   openConsole(id);
   setupInput(id);
+  setupTabs(id);
+}
+
+// ───────────────────────── ficha: pestañas ─────────────────────────
+
+function setupTabs(id) {
+  const term = $("#term");
+  const loaded = new Set();
+  term.querySelector(".tabs").addEventListener("click", (e) => {
+    const tab = e.target.closest("[data-tab]")?.dataset.tab;
+    if (!tab) return;
+    term.querySelectorAll("[data-tab]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
+    term.querySelectorAll("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== tab; });
+    term.querySelector("[data-for=console]").hidden = tab !== "console";
+    if (tab === "console") $("#out").scrollTop = $("#out").scrollHeight;
+    if (!loaded.has(tab)) {
+      loaded.add(tab);
+      if (tab === "files") loadFiles(id, "");
+      if (tab === "git") loadGit(id);
+    }
+  });
+  $("#files").addEventListener("click", (e) => {
+    const el = e.target.closest("[data-path]");
+    if (!el) return;
+    e.preventDefault();
+    if (el.dataset.kind === "file") openFile(id, el.dataset.path);
+    else loadFiles(id, el.dataset.path);
+  });
+  $("#git").addEventListener("click", (e) => {
+    const act = e.target.closest("[data-git]")?.dataset.git;
+    if (act) gitAction(id, act);
+  });
+  // el número de cambios pendientes se ve en la pestaña aunque no esté abierta
+  api("GET", `/api/services/${id}/git`).then(drawGitCount).catch(() => {});
+}
+
+// ───────────────────────── ficha: archivos ─────────────────────────
+
+const fileUrl = (id, path, action = "file") => `/api/services/${encodeURIComponent(id)}/${action}?path=${encodeURIComponent(path)}`;
+
+function crumbsHTML(root, path) {
+  const parts = path ? path.split("/") : [];
+  const rootName = root.split("/").pop() || "/";
+  let acc = "";
+  const items = [`<button type="button" data-path="" data-kind="dir">${esc(rootName)}</button>`];
+  parts.forEach((part, i) => {
+    acc = acc ? `${acc}/${part}` : part;
+    const last = i === parts.length - 1;
+    items.push(last
+      ? `<span class="here">${esc(part)}</span>`
+      : `<button type="button" data-path="${esc(acc)}" data-kind="dir">${esc(part)}</button>`);
+  });
+  return `<nav class="crumbs" aria-label="Ruta">${ICON.folder}${items.join('<span class="sep">/</span>')}</nav>`;
+}
+
+async function loadFiles(id, path) {
+  const pane = $("#files");
+  pane.innerHTML = `<div class="pane-msg">Cargando…</div>`;
+  try {
+    const d = await api("GET", fileUrl(id, path, "files"));
+    const parent = d.path.includes("/") ? d.path.slice(0, d.path.lastIndexOf("/")) : "";
+    const rows = d.entries.map((e) => {
+      const p = d.path ? `${d.path}/${e.name}` : e.name;
+      return `<button type="button" class="frow${e.name.startsWith(".") ? " hidden-file" : ""}" data-path="${esc(p)}" data-kind="${e.dir ? "dir" : "file"}">
+        <span class="ficon ${e.dir ? "dir" : ""}">${e.dir ? ICON.folder : ICON.file}</span>
+        <span class="fname">${esc(e.name)}${e.link ? ' <span class="dim-text">↪</span>' : ""}</span>
+        <span class="fsize num">${e.dir ? "" : fmtBytes(e.size)}</span>
+        <span class="fdate">${fmtAgo(e.mtime)}</span>
+      </button>`;
+    }).join("");
+    pane.innerHTML = `
+      <div class="pane-bar">${crumbsHTML(d.root, d.path)}<span class="lcd">${d.total} elemento${d.total === 1 ? "" : "s"}</span></div>
+      <div class="flist">
+        ${d.path ? `<button type="button" class="frow up" data-path="${esc(parent)}" data-kind="dir"><span class="ficon">${ICON.back}</span><span class="fname">Subir un nivel</span></button>` : ""}
+        ${rows || '<div class="pane-msg">Carpeta vacía.</div>'}
+        ${d.total > d.entries.length ? `<div class="pane-msg">Se muestran ${d.entries.length} de ${d.total} elementos.</div>` : ""}
+      </div>`;
+  } catch (e) {
+    pane.innerHTML = `<div class="pane-msg bad-text">${esc(e.message)}</div>`;
+  }
+}
+
+async function openFile(id, path) {
+  const pane = $("#files");
+  pane.innerHTML = `<div class="pane-msg">Abriendo…</div>`;
+  try {
+    const f = await api("GET", fileUrl(id, path));
+    const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    let body;
+    if (f.binary) {
+      body = `<div class="pane-msg">Es un archivo binario (${fmtBytes(f.size)}): no se puede mostrar como texto. Puedes descargarlo.</div>`;
+    } else {
+      const lines = f.text.split("\n");
+      if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+      body = `<div class="code">${lines.map((l) => `<span class="ln">${esc(l) || " "}</span>`).join("")}</div>
+        ${f.truncated ? `<div class="pane-msg">Se muestran los primeros ${fmtBytes(f.text.length)} de ${fmtBytes(f.size)}. Descárgalo para verlo entero.</div>` : ""}`;
+    }
+    pane.innerHTML = `
+      <div class="pane-bar">
+        <button type="button" class="btn sm" data-path="${esc(dir)}" data-kind="dir">${ICON.back}Volver</button>
+        <span class="fpath mono">${esc(f.path)}</span>
+        <span class="lcd">${fmtBytes(f.size)} · ${fmtAgo(f.mtime)}</span>
+        <a class="btn sm icon" href="${fileUrl(id, path, "file/download")}" download title="Descargar" aria-label="Descargar">${ICON.download}</a>
+      </div>
+      ${body}`;
+  } catch (e) {
+    pane.innerHTML = `<div class="pane-msg bad-text">${esc(e.message)}</div>`;
+  }
+}
+
+// ───────────────────────── ficha: git ─────────────────────────
+
+const GIT_CODES = { M: "Modificado", A: "Nuevo", D: "Borrado", R: "Renombrado", C: "Copiado", U: "En conflicto", "?": "Sin seguimiento" };
+
+function drawGitCount(g) {
+  const c = $("#git-count");
+  if (!c) return;
+  const n = g?.repo ? g.total_changes : 0;
+  c.hidden = !n;
+  c.textContent = n;
+}
+
+function githubUrl(remote) {
+  if (!remote) return null;
+  const m = remote.match(/github\.com[:/](.+?)(\.git)?$/);
+  return m ? `https://github.com/${m[1]}` : null;
+}
+
+async function loadGit(id) {
+  const pane = $("#git");
+  pane.innerHTML = `<div class="pane-msg">Leyendo el repositorio…</div>`;
+  try {
+    drawGit(id, await api("GET", `/api/services/${id}/git`));
+  } catch (e) {
+    pane.innerHTML = `<div class="pane-msg bad-text">${esc(e.message)}</div>`;
+  }
+}
+
+function drawGit(id, g, output = "") {
+  drawGitCount(g);
+  const pane = $("#git");
+  if (!g.repo) {
+    pane.innerHTML = `<div class="pane-msg"><strong>Esta carpeta no es un repositorio de git.</strong><br>
+      Para usarlo aquí, clona el proyecto desde GitHub en <code>${esc(g.root)}</code> o ejecuta <code>git init</code> en esa carpeta.</div>`;
+    return;
+  }
+  const web = githubUrl(g.remote);
+  const n = g.total_changes;
+  const sync = !g.upstream ? "Rama sin conectar con GitHub"
+    : g.ahead && g.behind ? `${g.ahead} commit${g.ahead > 1 ? "s" : ""} por subir · ${g.behind} por traer`
+    : g.ahead ? `${g.ahead} commit${g.ahead > 1 ? "s" : ""} sin subir a GitHub`
+    : g.behind ? `${g.behind} commit${g.behind > 1 ? "s" : ""} nuevo${g.behind > 1 ? "s" : ""} en GitHub`
+    : "Al día con GitHub";
+  const msg = $("#git-msg")?.value || "";
+  pane.innerHTML = `
+    <div class="pane-bar">
+      <span class="lcd">${esc(g.branch)}${g.upstream ? ` → ${esc(g.upstream)}` : ""}</span>
+      <span class="git-sync ${g.ahead || g.behind ? "warn" : ""}">${sync}</span>
+      <span class="grow"></span>
+      ${web ? `<a class="btn sm" href="${esc(web)}" target="_blank" rel="noopener">Ver en GitHub ↗</a>` : ""}
+      <button type="button" class="btn sm" data-git="pull">Traer cambios</button>
+      <button type="button" class="btn sm ${g.ahead || !g.upstream ? "primary" : ""}" data-git="push" ${g.ahead || !g.upstream ? "" : "disabled"}>${ICON.upload}Subir a GitHub</button>
+    </div>
+    <div class="git-body">
+      ${g.top !== g.root ? `<p class="git-note">Esta carpeta está dentro del repositorio <code>${esc(g.top)}</code>: el commit incluirá todos los cambios de ese repositorio.</p>` : ""}
+      <div class="git-commit">
+        <label class="field"><span>Mensaje del commit</span>
+          <textarea id="git-msg" rows="2" placeholder="Qué has cambiado, p. ej. «Editar tareas: guardar cambios»">${esc(msg)}</textarea></label>
+        <button type="button" class="btn primary" data-git="commit" ${n ? "" : "disabled"}>Hacer commit${n ? ` (${n} archivo${n > 1 ? "s" : ""})` : ""}</button>
+      </div>
+      <p class="label">Cambios sin guardar · ${n}</p>
+      ${n ? `<ul class="changes">${g.changes.map((c) => {
+        const code = (c.code.trim()[0] || "?");
+        return `<li><span class="gcode g${code === "?" ? "N" : code}" title="${GIT_CODES[code] || c.code}">${code === "?" ? "+" : code}</span><span class="mono">${esc(c.path)}</span></li>`;
+      }).join("")}${g.total_changes > g.changes.length ? `<li class="dim-text">… y ${g.total_changes - g.changes.length} más</li>` : ""}</ul>`
+        : '<p class="dim-text">No hay cambios: todo está guardado en el último commit.</p>'}
+      ${g.last ? `<p class="label">Último commit</p>
+        <p class="git-last"><span class="lcd">${esc(g.last.hash)}</span> ${esc(g.last.subject)} <span class="dim-text">· ${esc(g.last.author)} · ${fmtAgo(+g.last.time)}</span></p>` : ""}
+      ${output ? `<p class="label">Salida de git</p><pre class="git-out">${esc(output)}</pre>` : ""}
+    </div>`;
+}
+
+async function gitAction(id, act) {
+  const body = {};
+  if (act === "commit") {
+    body.message = $("#git-msg")?.value || "";
+    if (!body.message.trim()) { toast("Escribe un mensaje que explique los cambios", "error"); $("#git-msg")?.focus(); return; }
+  }
+  $("#git").querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  try {
+    const res = await api("POST", `/api/services/${id}/git/${act}`, body);
+    if (act === "commit") { const m = $("#git-msg"); if (m) m.value = ""; }
+    drawGit(id, res.git, res.output);
+    toast(act === "commit" ? "Commit guardado. Pulsa «Subir a GitHub» para publicarlo."
+      : act === "push" ? "Cambios subidos a GitHub" : "Cambios traídos de GitHub", "ok");
+  } catch (e) {
+    toast(e.message, "error");
+    loadGit(id);
+  }
 }
 
 async function refreshDetail(id) {
@@ -940,6 +1269,7 @@ function route() {
   let section = "overview";
   if (m) { viewDetail(m[1]); section = "services"; }
   else if (hash === "#/servicios") { viewList(); section = "services"; }
+  else if (hash === "#/procesos") { viewTasks(); section = "tasks"; }
   else viewOverview();
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
   window.scrollTo(0, 0);

@@ -31,7 +31,7 @@ import traceback
 from datetime import datetime
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.abspath(os.environ.get("NOVAHUB_DATA", os.path.join(BASE_DIR, "data")))
@@ -943,7 +943,294 @@ MANAGER: Manager
 AUTH: Auth
 PUBLISHER: Publisher
 POWER = Power()
-SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download))?")
+
+
+# ───────────────────────────── archivos de un servicio ─────────────────────────────
+
+FILE_VIEW_MAX = 512 * 1024  # lo que se muestra de un archivo de texto
+DIR_LIST_MAX = 2000
+
+
+def service_root(svc):
+    root = os.path.realpath(os.path.expanduser(svc.get("cwd") or "~"))
+    if not os.path.isdir(root):
+        raise ApiError(404, f"La carpeta del servicio no existe: {root}")
+    return root
+
+
+def safe_path(root, rel):
+    """Ruta absoluta dentro de root: rechaza ../ y enlaces que lleven fuera de la carpeta."""
+    full = os.path.realpath(os.path.join(root, str(rel or "").lstrip("/")))
+    if full != root and not full.startswith(root + os.sep):
+        raise ApiError(403, "Esa ruta está fuera de la carpeta del servicio")
+    return full
+
+
+def list_dir(svc, rel):
+    root = service_root(svc)
+    full = safe_path(root, rel)
+    if not os.path.isdir(full):
+        raise ApiError(404, "La carpeta no existe")
+    entries = []
+    with os.scandir(full) as it:
+        for e in it:
+            try:
+                st, is_dir = e.stat(), e.is_dir()
+            except OSError:  # enlace roto
+                st, is_dir = None, False
+            entries.append({"name": e.name, "dir": is_dir, "link": e.is_symlink(),
+                            "size": st.st_size if st and not is_dir else None,
+                            "mtime": st.st_mtime if st else None})
+    entries.sort(key=lambda x: (not x["dir"], x["name"].lower()))
+    return {"root": root, "path": "" if full == root else os.path.relpath(full, root),
+            "entries": entries[:DIR_LIST_MAX], "total": len(entries)}
+
+
+def read_file(svc, rel):
+    root = service_root(svc)
+    full = safe_path(root, rel)
+    if not os.path.isfile(full):
+        raise ApiError(404, "El archivo no existe")
+    size = os.path.getsize(full)
+    with open(full, "rb") as f:
+        data = f.read(FILE_VIEW_MAX + 1)
+    truncated = len(data) > FILE_VIEW_MAX
+    data = data[:FILE_VIEW_MAX]
+    binary, text = b"\0" in data[:8192], None
+    if not binary:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as e:
+            if truncated and e.start >= len(data) - 3:  # cortado a mitad de un carácter
+                text = data[:e.start].decode("utf-8")
+            else:
+                binary = True
+    return {"path": os.path.relpath(full, root), "size": size, "mtime": os.path.getmtime(full),
+            "binary": binary, "truncated": truncated, "text": text}
+
+
+# ───────────────────────────── git de un servicio ─────────────────────────────
+
+GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}  # sin preguntas: falla en vez de colgarse
+
+
+def git(cwd, *args, timeout=20):
+    try:
+        return subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=timeout, env=GIT_ENV)
+    except FileNotFoundError:
+        raise ApiError(500, "git no está instalado en el servidor")
+    except subprocess.TimeoutExpired:
+        raise ApiError(504, "git no responde (¿hay conexión con GitHub?)")
+
+
+def git_output(res):
+    return (res.stdout + res.stderr).strip()
+
+
+def git_status(svc):
+    root = service_root(svc)
+    top = git(root, "rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        return {"repo": False, "root": root}
+    lines = git(root, "status", "--porcelain=v1", "-b", "--untracked-files=all").stdout.splitlines()
+    head = lines[0][3:] if lines and lines[0].startswith("## ") else ""
+    head = head.removeprefix("No commits yet on ")
+    track = re.search(r" \[(.*)\]$", head)
+    head = head[:track.start()] if track else head
+    branch, _, upstream = head.partition("...")
+    ahead = re.search(r"ahead (\d+)", track.group(1)) if track else None
+    behind = re.search(r"behind (\d+)", track.group(1)) if track else None
+    last = git(root, "log", "-1", "--format=%h%x00%s%x00%an%x00%ct").stdout.strip()
+    remote = git(root, "remote", "get-url", "origin").stdout.strip()
+    return {
+        "repo": True, "root": root, "top": top.stdout.strip(),
+        "branch": branch or "HEAD", "upstream": upstream or None,
+        "ahead": int(ahead.group(1)) if ahead else 0, "behind": int(behind.group(1)) if behind else 0,
+        "changes": [{"code": l[:2], "path": l[3:]} for l in lines[1:501]],
+        "total_changes": max(0, len(lines) - 1),
+        "last": dict(zip(("hash", "subject", "author", "time"), last.split("\0"))) if last.count("\0") == 3 else None,
+        "remote": re.sub(r"//[^@/]+@", "//", remote) or None,  # sin credenciales si las hubiera en la URL
+    }
+
+
+def git_repo(svc):
+    root = service_root(svc)
+    if git(root, "rev-parse", "--show-toplevel").returncode != 0:
+        raise ApiError(400, "La carpeta de este servicio no es un repositorio de git")
+    return root
+
+
+def git_commit(svc, message):
+    message = str(message or "").strip()
+    if not message:
+        raise ApiError(400, "Escribe un mensaje que explique los cambios")
+    if len(message) > 5000:
+        raise ApiError(400, "El mensaje es demasiado largo")
+    root = git_repo(svc)
+    res = git(root, "add", "-A")
+    if res.returncode != 0:
+        raise ApiError(500, f"No se pudieron preparar los cambios: {git_output(res)}")
+    # Sin identidad configurada, se firma como el autor del último commit del repositorio.
+    ident = []
+    if not git(root, "config", "user.name").stdout.strip() or not git(root, "config", "user.email").stdout.strip():
+        last = git(root, "log", "-1", "--format=%an%x00%ae").stdout.strip()
+        if "\0" not in last:
+            raise ApiError(400, "git no sabe quién eres: ejecuta git config --global user.name/user.email en el servidor")
+        name, email = last.split("\0")
+        ident = ["-c", f"user.name={name}", "-c", f"user.email={email}"]
+    res = git(root, *ident, "commit", "-m", message)
+    if res.returncode != 0:
+        if "nothing to commit" in res.stdout:
+            raise ApiError(400, "No hay cambios que guardar")
+        raise ApiError(500, f"El commit ha fallado: {git_output(res)}")
+    return git_output(res)
+
+
+def git_push(svc):
+    root = git_repo(svc)
+    has_upstream = git(root, "rev-parse", "--abbrev-ref", "@{u}").returncode == 0
+    res = git(root, "push", *([] if has_upstream else ["-u", "origin", "HEAD"]), timeout=90)
+    if res.returncode != 0:
+        raise ApiError(502, f"No se pudo subir a GitHub: {git_output(res)}")
+    return git_output(res)
+
+
+def git_pull(svc):
+    root = git_repo(svc)
+    res = git(root, "pull", "--ff-only", timeout=90)
+    if res.returncode != 0:
+        raise ApiError(502, f"No se pudieron traer los cambios: {git_output(res)}")
+    return git_output(res)
+
+
+# ───────────────────────────── gestor de tareas ─────────────────────────────
+
+# Nombres reconocibles para programas cuyo proceso se llama de forma poco clara (p. ej. «MainThread»).
+KNOWN_APPS = [
+    (re.compile(r"(^|/)claude(\s|$)"), "Claude Code"),  # antes que VS Code: puede ir dentro de sus extensiones
+    (re.compile(r"\.vscode-server/"), "VS Code (remoto)"),
+    (re.compile(r"(^|/)tailscaled\b"), "Tailscale"),
+    (re.compile(r"(^|/)cloudflared\b"), "Túnel Cloudflare"),
+    (re.compile(r"(^|/)sshd\b"), "SSH"),
+    (re.compile(r"(^|/)(systemd[\w-]*|dbus[\w-]*|polkitd|cron|dhcpcd|agetty|login|rsyslogd|udevd|wpa_supplicant|NetworkManager)\b"), "Sistema"),
+]
+
+
+def meminfo():
+    mem = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            key, val = line.split(":", 1)
+            mem[key] = int(val.split()[0]) * 1024
+    total, free, avail = mem.get("MemTotal", 0), mem.get("MemFree", 0), mem.get("MemAvailable", 0)
+    used = total - avail
+    return {"total": total, "used": used, "free": free, "cache": max(0, total - used - free),
+            "swap_total": mem.get("SwapTotal", 0), "swap_used": mem.get("SwapTotal", 0) - mem.get("SwapFree", 0)}
+
+
+def read_proc_text(pid, name):
+    try:
+        with open(f"/proc/{pid}/{name}", "rb") as f:
+            return f.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+
+
+class Tasks:
+    """Instantánea de procesos agrupados por aplicación; la CPU sale de comparar con la lectura anterior."""
+
+    def __init__(self):
+        self.prev = {}  # pid -> (starttime, ticks, monotonic)
+        self.users = {}
+        self.lock = threading.Lock()
+
+    def user(self, uid):
+        if uid not in self.users:
+            try:
+                import pwd
+                self.users[uid] = pwd.getpwuid(uid).pw_name
+            except (KeyError, ImportError):
+                self.users[uid] = str(uid)
+        return self.users[uid]
+
+    def services_by_group(self):
+        with MANAGER.lock:
+            return {st["pid"]: MANAGER.services[sid]["name"]
+                    for sid, st in MANAGER.state.items() if sid in MANAGER.services and MANAGER.running(sid)}
+
+    def snapshot(self):
+        services, me, cpus = self.services_by_group(), os.getpid(), os.cpu_count() or 1
+        now, seen, procs = time.monotonic(), {}, []
+        with self.lock:
+            for name in os.listdir("/proc"):
+                if not name.isdigit():
+                    continue
+                st = proc_stat(name)
+                if not st or st[0] in ("Z", "X"):
+                    continue
+                rss = int(st[21]) * PAGE_SIZE
+                if rss == 0:  # hilos del kernel
+                    continue
+                pid, pgid, start = int(name), int(st[2]), int(st[19])
+                ticks = int(st[11]) + int(st[12])
+                prev = self.prev.get(pid)
+                cpu = None
+                if prev and prev[0] == start and now - prev[2] > 0.2:
+                    cpu = round((ticks - prev[1]) / CLK_TCK / (now - prev[2]) * 100 / cpus, 1)
+                seen[pid] = (start, ticks, now)
+                try:
+                    uid = os.stat(f"/proc/{pid}").st_uid
+                except OSError:
+                    continue
+                comm = read_proc_text(pid, "comm")
+                cmd = read_proc_text(pid, "cmdline") or f"[{comm}]"
+                if pgid in services:
+                    kind, app = "service", services[pgid]
+                elif pid == me:
+                    kind, app = "service", "NovaHub (este panel)"
+                else:
+                    kind, app = "app", None
+                    for rx, label in KNOWN_APPS:
+                        if rx.search(cmd) or rx.search(comm):
+                            app = label
+                            break
+                    app = app or os.path.basename(cmd.split(" ", 1)[0]) or comm
+                procs.append({"pid": pid, "name": comm, "app": app, "kind": kind, "user": self.user(uid),
+                              "own": uid == os.getuid(), "rss": rss, "cpu": cpu, "cmd": cmd[:400]})
+            self.prev = seen
+        groups = {}
+        for p in procs:
+            g = groups.setdefault(p["app"], {"name": p["app"], "kind": p["kind"], "rss": 0, "cpu": 0.0, "count": 0})
+            g["rss"] += p["rss"]
+            g["cpu"] = round(g["cpu"] + (p["cpu"] or 0), 1)
+            g["count"] += 1
+        return {"mem": meminfo(), "cpus": cpus, "load": os.getloadavg(),
+                "groups": sorted(groups.values(), key=lambda g: -g["rss"]),
+                "processes": sorted(procs, key=lambda p: -p["rss"])}
+
+    def kill(self, pid, force):
+        try:
+            uid = os.stat(f"/proc/{pid}").st_uid
+        except OSError:
+            raise ApiError(404, "Ese proceso ya no existe")
+        if uid != os.getuid():
+            raise ApiError(403, f"Ese proceso es del usuario «{self.user(uid)}»: NovaHub no puede cerrarlo")
+        if pid == os.getpid():
+            raise ApiError(400, "Ese proceso es el propio NovaHub")
+        st = proc_stat(pid)
+        name = self.services_by_group().get(int(st[2])) if st else None
+        if name:
+            raise ApiError(409, f"Ese proceso es del servicio «{name}»: apágalo desde su ficha")
+        try:
+            os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+        except ProcessLookupError:
+            raise ApiError(404, "Ese proceso ya no existe")
+
+
+TASKS = Tasks()
+SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
+                           r"|files|file|file/download|git|git/commit|git/push|git/pull))?")
+KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1086,6 +1373,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True})
         if path == "/api/system":
             return self.send_json(system_info())
+        if path == "/api/processes" and method == "GET":
+            return self.send_json(TASKS.snapshot())
+        m = KILL_ROUTE.fullmatch(path)
+        if m and method == "POST":
+            TASKS.kill(int(m.group(1)), bool(self.read_body().get("force")))
+            return self.send_json({"ok": True})
         if path == "/api/power" and method == "GET":
             return self.send_json(POWER.status())
         if path == "/api/power/off" and method == "POST":
@@ -1126,6 +1419,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.stream_logs(sid)
         if action == "logs/download" and method == "GET":
             return self.download_log(sid)
+        svc = MANAGER.services[sid]
+        if method == "GET" and action == "files":
+            return self.send_json(list_dir(svc, self.query("path")))
+        if method == "GET" and action == "file":
+            return self.send_json(read_file(svc, self.query("path")))
+        if method == "GET" and action == "file/download":
+            return self.download_file(svc, self.query("path"))
+        if method == "GET" and action == "git":
+            return self.send_json(git_status(svc))
+        if method == "POST" and action in ("git/commit", "git/push", "git/pull"):
+            if action == "git/commit":
+                out = git_commit(svc, self.read_body().get("message"))
+            else:
+                out = git_push(svc) if action == "git/push" else git_pull(svc)
+            return self.send_json({"output": out, "git": git_status(svc)})
         if method != "POST":
             raise ApiError(405, "Método no permitido")
         if action == "start":
@@ -1142,6 +1450,24 @@ class Handler(BaseHTTPRequestHandler):
         elif action == "logs/clear":
             MANAGER.clear_log(sid)
         return self.send_json(MANAGER.get_public(sid))
+
+    def query(self, name):
+        return (parse_qs(urlparse(self.path).query).get(name) or [""])[0]
+
+    def download_file(self, svc, rel):
+        root = service_root(svc)
+        full = safe_path(root, rel)
+        if not os.path.isfile(full):
+            raise ApiError(404, "El archivo no existe")
+        fname = re.sub(r'["\\\r\n]', "_", os.path.basename(full))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+        self.send_header("Content-Length", str(os.path.getsize(full)))
+        self.common_headers()
+        self.end_headers()
+        with open(full, "rb") as f:
+            shutil.copyfileobj(f, self.wfile, 64 * 1024)
 
     def download_log(self, sid):
         try:
