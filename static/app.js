@@ -1243,7 +1243,9 @@ function drawDetail(s) {
   const kpis =
     kpiHTML("Activo", on ? fmtDuration(s.uptime) : "—", on ? `desde ${fmtTime(s.started_at)}` : STATUS_LABEL[s.status].toLowerCase()) +
     kpiHTML("CPU", s.cpu != null ? `${s.cpu.toFixed(1)}<small>%</small>` : "—", s.processes ? `${s.processes} proceso${s.processes > 1 ? "s" : ""}` : "sin procesos") +
-    kpiHTML("Memoria", s.memory != null ? fmtBytes(s.memory) : "—", s.pid ? `PID ${s.pid}` : "sin proceso") +
+    kpiHTML("Memoria", s.memory != null ? fmtBytes(s.memory) : "—",
+      s.memory_limit ? `límite ${fmtBytes(s.memory_limit * 2 ** 20)}` : (s.pid ? `PID ${s.pid}` : "sin proceso"),
+      s.memory_limit && s.memory != null ? pct(s.memory, s.memory_limit * 2 ** 20) : null) +
     kpiHTML("Puerto", s.port ?? "—", s.port ? (s.listening ? "escuchando" : "no escucha") : "sin puerto");
   const kpiEl = $("#d-kpis");
   if (kpiEl && kpiEl._html !== kpis) { kpiEl.innerHTML = kpis; kpiEl._html = kpis; }
@@ -1256,6 +1258,7 @@ function drawDetail(s) {
         ${s.url ? cell("URL", `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url.replace(/^https?:\/\//, ""))}</a>`) : ""}
         ${cell("Última salida", s.last_exit_at ? `${s.last_exit ?? "?"} <span class="dim-text">· ${fmtTime(s.last_exit_at)}</span>` : dash)}
         ${cell("Reinicios auto · 1 h", s.auto_restarts)}
+        ${s.mem_restarts ? cell("Reinicios por memoria · 1 h", `<span class="bad-text">${s.mem_restarts}</span>`) : ""}
         ${s.last_update ? cell("Última actualización", `<span class="${s.last_update.ok ? "" : "bad-text"}">${esc(s.last_update.msg)}</span> <span class="dim-text">· ${fmtAgo(s.last_update.at)}</span>`) : ""}
       </dl>
     </div>
@@ -1268,6 +1271,7 @@ function drawDetail(s) {
         ${cell("Autoarranque", s.autostart ? "Sí" : "No")}
         ${cell("Si falla", s.restart_on_crash ? "Reinicia" : "Se para")}
         ${cell("Parada", s.stop_command ? `<code>${esc(s.stop_command)}</code>` : "SIGTERM")}
+        ${cell("Límite de memoria", s.memory_limit ? `${fmtBytes(s.memory_limit * 2 ** 20)} · reinicia si lo pasa` : "Sin límite")}
       </dl>
     </div>`;
   const infoEl = $("#d-info");
@@ -1514,6 +1518,8 @@ function openForm(svc, prefill = null) {
           <summary>Opciones avanzadas</summary>
           <div class="inner">
             <label class="field"><span>Variables de entorno</span><textarea name="env" rows="3" class="mono" spellcheck="false" placeholder="NODE_ENV=production&#10;TOKEN=..."></textarea><small>Una por línea: CLAVE=valor</small></label>
+            <label class="field"><span>Límite de memoria (MB)</span><input name="memory_limit" inputmode="numeric" placeholder="sin límite">
+              <small>Si el servicio usa más durante 30 s seguidos, se reinicia solo (máximo 3 veces por hora). Ejemplo: 1024 = 1 GB.</small></label>
             <div class="row2">
               <label class="field"><span>Comando de parada</span><input name="stop_command" class="mono" placeholder="stop"><small>Se escribe en la consola del proceso antes de cerrarlo (p. ej. <code>stop</code> en Minecraft).</small></label>
               <label class="field"><span>Espera (s)</span><input name="stop_timeout" inputmode="numeric" placeholder="15"></label>
@@ -1544,7 +1550,8 @@ function openForm(svc, prefill = null) {
     f.env.value = Object.entries(src.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
     f.stop_command.value = src.stop_command || "";
     f.stop_timeout.value = src.stop_timeout ?? "";
-    if (f.env.value || f.stop_command.value) dlg.querySelector("details").open = true;
+    f.memory_limit.value = src.memory_limit ?? "";
+    if (f.env.value || f.stop_command.value || f.memory_limit.value) dlg.querySelector("details").open = true;
   }
   f.name.focus();
 
@@ -1555,6 +1562,7 @@ function openForm(svc, prefill = null) {
       command: f.command.value, cwd: f.cwd.value, port: f.port.value.trim(), url: f.url.value.trim(),
       autostart: f.autostart.checked, restart_on_crash: f.restart_on_crash.checked,
       env: f.env.value, stop_command: f.stop_command.value, stop_timeout: f.stop_timeout.value.trim(),
+      memory_limit: f.memory_limit.value.trim(),
     };
     if (f.subdomain) body.subdomain = f.subdomain.value.trim();
     const btn = form.querySelector("[type=submit]");

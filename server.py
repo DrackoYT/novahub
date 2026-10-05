@@ -10,6 +10,7 @@ Sin dependencias externas: solo la librería estándar de Python 3.9+.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import codecs
 import getpass
 import hashlib
@@ -28,6 +29,7 @@ import sys
 import threading
 import time
 import traceback
+from functools import partial
 from datetime import datetime
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,6 +49,10 @@ LOG_MAX_BYTES = 5 * 1024 * 1024    # al superarlo, el log se rota a <id>.log.1
 LOG_TAIL_BYTES = 64 * 1024         # lo que se envía al abrir la consola
 SESSION_TTL = 30 * 24 * 3600
 MAX_AUTO_RESTARTS = 5              # reinicios automáticos permitidos por minuto
+MEM_CHECK_EVERY = 10               # segundos entre lecturas de memoria
+MEM_CHECKS = 3                     # lecturas seguidas por encima del límite antes de reiniciar (≈30 s)
+MEM_RESTARTS_PER_HOUR = 3          # más que esto y se deja de reiniciar: el programa necesita más memoria
+GATEWAY_OFFSET = 10000             # la pasarela de un servicio publicado escucha en su puerto + 10000
 SHELL = shutil.which("bash") or "/bin/sh"
 CLK_TCK = os.sysconf("SC_CLK_TCK")
 PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
@@ -237,6 +243,17 @@ def normalize_service(data: dict) -> dict:
     except (TypeError, ValueError):
         raise ApiError(400, "El tiempo de parada debe ser un número")
 
+    memory_limit = data.get("memory_limit")
+    if memory_limit in ("", None, 0, "0"):
+        memory_limit = None
+    else:
+        try:
+            memory_limit = int(memory_limit)
+        except (TypeError, ValueError):
+            raise ApiError(400, "El límite de memoria debe ser un número de MB")
+        if not 64 <= memory_limit <= 1024 * 1024:
+            raise ApiError(400, "El límite de memoria debe estar entre 64 MB y 1 TB")
+
     return {
         "name": text("name", 60, required=True),
         "description": text("description", 500),
@@ -250,6 +267,7 @@ def normalize_service(data: dict) -> dict:
         "stop_timeout": max(1, min(stop_timeout, 120)),
         "autostart": bool(data.get("autostart")),
         "restart_on_crash": bool(data.get("restart_on_crash")),
+        "memory_limit": memory_limit,
     }
 
 
@@ -483,8 +501,50 @@ class Manager:
             try:
                 with self.lock:
                     self._check_all(rotate=tick % 30 == 0)
+                if tick % MEM_CHECK_EVERY == 0:
+                    usage = group_usage()  # fuera del lock: recorre todo /proc
+                    with self.lock:
+                        self._check_memory(usage)
+                if tick % 5 == 0:
+                    GATEWAY.sync()
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
+
+    def _check_memory(self, usage):
+        """Reinicia los servicios que pasan de su límite de memoria durante ~30 s seguidos."""
+        now = time.time()
+        for sid, svc in self.services.items():
+            st = self.state.get(sid)
+            limit = svc.get("memory_limit")
+            if not st:
+                continue
+            if not limit or sid in self.transition or not self.running(sid):
+                st.pop("mem_over", None)
+                continue
+            rss = usage.get(st["pid"], (0, 0, 0))[1]
+            if rss <= limit * 2**20:
+                st.pop("mem_over", None)
+                continue
+            st["mem_over"] = st.get("mem_over", 0) + 1
+            if st["mem_over"] < MEM_CHECKS:
+                continue
+            st["mem_over"] = 0
+            recent = [t for t in st.get("mem_restarts", []) if now - t < 3600]
+            used = f"{rss / 2**20:.0f} MB"
+            if len(recent) >= MEM_RESTARTS_PER_HOUR:
+                if not st.get("mem_gave_up"):
+                    st["mem_gave_up"] = True
+                    self.log(sid, f"\x1b[31musa {used} (límite {limit} MB), pero ya se ha reiniciado {len(recent)} veces "
+                                  "en la última hora: no se vuelve a reiniciar. Sube el límite o revisa el programa.\x1b[0m")
+                    self.save_state()
+                continue
+            st["mem_gave_up"] = False
+            recent.append(now)
+            st["mem_restarts"] = recent
+            self.log(sid, f"\x1b[33musa {used} de memoria (límite {limit} MB) desde hace "
+                          f"{MEM_CHECKS * MEM_CHECK_EVERY} s: reiniciando\x1b[0m")
+            self.save_state()
+            self.stop(sid, then_start=True)
 
     def _check_all(self, rotate):
         now = time.time()
@@ -593,6 +653,7 @@ class Manager:
             last_exit_at=st.get("last_exit_at"),
             auto_restarts=len([t for t in st.get("restarts", []) if time.time() - t < 3600]),
             updating=bool(st.get("updating")), last_update=st.get("last_update"),
+            mem_restarts=len([t for t in st.get("mem_restarts", []) if time.time() - t < 3600]),
             listening=(svc["port"] in ports) if svc.get("port") else None,
             cpu=None, memory=None, processes=None,
         )
@@ -834,7 +895,7 @@ class Publisher:
         elif not new_host and old_url and new.get("url") == old_url:
             extra["url"] = ""
 
-        target = f"http://localhost:{new['port']}" if new_host else None
+        target = f"http://localhost:{gateway_port(new['port'])}" if new_host else None
         if new_host == old_host and (not new_host or new.get("port") == old.get("port")):
             return extra, None
         with self.lock:
@@ -851,6 +912,26 @@ class Publisher:
             self.write(lines)
         notice = self.restart_tunnel()
         return extra, f"Publicado en {new_host}. {notice}" if new_host else f"{old_host} despublicado. {notice}"
+
+    def reconcile(self):
+        """Al arrancar: que cada servicio publicado apunte a su pasarela (migra las reglas antiguas)."""
+        if not self.enabled:
+            return
+        with self.lock:
+            lines, changed = self.read(), []
+            for svc in MANAGER.services.values():
+                host, port = self.host(svc.get("subdomain")), svc.get("port")
+                if not host or not port:
+                    continue
+                target = f"http://localhost:{gateway_port(port)}"
+                entry = self.find(lines, host)
+                if entry and entry[3] != target:
+                    lines = self.upsert(lines, host, target)
+                    changed.append(host)
+            if changed:
+                self.write(lines)
+        if changed:
+            print(f"[túnel] {', '.join(changed)} → pasarela de NovaHub. {self.restart_tunnel()}", flush=True)
 
     def unpublish(self, svc):
         host = self.host(svc.get("subdomain"))
@@ -947,6 +1028,7 @@ class Power:
 MANAGER: Manager
 AUTH: Auth
 PUBLISHER: Publisher
+GATEWAY: "Gateway"
 POWER = Power()
 
 
@@ -1233,6 +1315,125 @@ class Tasks:
 
 
 TASKS = Tasks()
+
+
+# ───────────────────────────── pasarela de los servicios publicados ─────────────────────────────
+
+def gateway_port(port):
+    gp = port + GATEWAY_OFFSET if port else None
+    return gp if gp and gp <= 65535 else port
+
+
+UNAVAILABLE_PAGE = """<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+{refresh}<title>{title} · {name}</title>
+<style>
+  :root {{ color-scheme: light dark; --bg: #e9e6ee; --card: #f7f5fa; --ink: #1c1924; --soft: #6a6478; --edge: #d3cddc; --nova: #6c3ff5; }}
+  @media (prefers-color-scheme: dark) {{ :root {{ --bg: #121017; --card: #1d1a24; --ink: #ece8f4; --soft: #a49db3; --edge: #09080c; --nova: #9a7bff; }} }}
+  body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; box-sizing: border-box;
+         background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }}
+  main {{ max-width: 420px; padding: 32px 28px; border-radius: 18px; background: var(--card); box-shadow: 0 2px 0 var(--edge); text-align: center; }}
+  .orb {{ width: 44px; height: 44px; margin: 0 auto 18px; border-radius: 50%;
+          background: radial-gradient(circle at 35% 30%, #fff, #b89cff 30%, #6a35f0 70%); box-shadow: 0 0 24px rgba(123, 77, 255, .7);
+          {anim} }}
+  @keyframes pulse {{ 50% {{ transform: scale(.85); opacity: .6; }} }}
+  @media (prefers-reduced-motion: reduce) {{ .orb {{ animation: none; }} }}
+  h1 {{ margin: 0 0 8px; font-size: 22px; }}
+  p {{ margin: 0; color: var(--soft); }}
+  small {{ display: block; margin-top: 18px; color: var(--soft); font-size: 13px; }}
+</style>
+</head>
+<body><main><div class="orb"></div><h1>{title}</h1><p>{message}</p><small>{hint}</small></main></body>
+</html>
+"""
+
+
+class Gateway:
+    """Un puerto por servicio publicado que reenvía las conexiones tal cual (también websockets) al servicio.
+    Si el servicio no responde, contesta 503 con una página que explica que se está reiniciando o está apagado,
+    en vez del error genérico de Cloudflare."""
+
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        self.servers = {}   # sid -> (puerto pasarela, puerto servicio, servidor)
+        self.failed = {}    # sid -> (puertos) que no se pudieron abrir: no se reintenta hasta que cambien
+        threading.Thread(target=self.loop.run_forever, daemon=True).start()
+
+    def sync(self):
+        want = {sid: (gateway_port(s["port"]), s["port"]) for sid, s in list(MANAGER.services.items())
+                if s.get("subdomain") and s.get("port") and gateway_port(s["port"]) != s["port"]}
+        for sid in list(self.servers):
+            if self.servers[sid][:2] != want.get(sid):
+                srv = self.servers.pop(sid)[2]
+                self.loop.call_soon_threadsafe(srv.close)
+        for sid, ports in want.items():
+            if sid in self.servers or self.failed.get(sid) == ports:
+                continue
+            fut = asyncio.run_coroutine_threadsafe(
+                asyncio.start_server(partial(self.handle, sid), "127.0.0.1", ports[0], reuse_address=True), self.loop)
+            try:
+                self.servers[sid] = (*ports, fut.result(5))
+                self.failed.pop(sid, None)
+            except Exception as e:  # noqa: BLE001
+                self.failed[sid] = ports
+                print(f"[pasarela] no se pudo abrir el puerto {ports[0]} para «{sid}»: {e}", flush=True)
+
+    async def handle(self, sid, reader, writer):
+        svc = MANAGER.services.get(sid)
+        try:
+            if not svc:
+                raise OSError("servicio eliminado")
+            up_reader, up_writer = await asyncio.wait_for(asyncio.open_connection("localhost", svc["port"]), 3)
+        except (OSError, asyncio.TimeoutError):
+            await self.unavailable(sid, svc, reader, writer)
+            return
+        await asyncio.gather(self.pipe(reader, up_writer), self.pipe(up_reader, writer))
+
+    @staticmethod
+    async def pipe(reader, writer):
+        try:
+            while data := await reader.read(65536):
+                writer.write(data)
+                await writer.drain()
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            try:
+                writer.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def unavailable(self, sid, svc, reader, writer):
+        try:
+            await asyncio.wait_for(reader.read(65536), 1)  # la petición, para no cortar al cliente a media escritura
+        except (asyncio.TimeoutError, OSError):
+            pass
+        name = svc["name"] if svc else "Este servicio"
+        status = MANAGER.status(sid) if svc else "stopped"
+        st = MANAGER.state.get(sid) or {}
+        if status in ("starting", "stopping", "running") or st.get("updating"):
+            title, message, hint = "Reiniciando…", f"{name} se está reiniciando. Volverá en unos segundos.", "Esta página se recarga sola."
+            refresh, anim = '<meta http-equiv="refresh" content="5">\n', "animation: pulse 1.4s ease-in-out infinite;"
+        elif status == "crashed":
+            title, message, hint = "Problema temporal", f"{name} ha tenido un error y está parado.", "Vuelve a intentarlo dentro de un rato."
+            refresh, anim = '<meta http-equiv="refresh" content="30">\n', ""
+        else:
+            title, message, hint = "Fuera de servicio", f"{name} está apagado en este momento.", "Vuelve a intentarlo más tarde."
+            refresh, anim = '<meta http-equiv="refresh" content="30">\n', ""
+        esc_ = lambda t: t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")  # noqa: E731
+        body = UNAVAILABLE_PAGE.format(refresh=refresh, anim=anim, title=title, name=esc_(name),
+                                       message=esc_(message), hint=hint).encode()
+        head = ("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/html; charset=utf-8\r\n"
+                f"Content-Length: {len(body)}\r\nRetry-After: 5\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")
+        try:
+            writer.write(head.encode() + body)
+            await writer.drain()
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            writer.close()
 
 
 # ───────────────────────────── lista de mejoras ─────────────────────────────
@@ -2271,7 +2472,7 @@ def seed_example():
 
 
 def main():
-    global MANAGER, AUTH, PUBLISHER
+    global MANAGER, AUTH, PUBLISHER, GATEWAY
     parser = argparse.ArgumentParser(description="NovaHub — gestor de servicios")
     parser.add_argument("command", nargs="?", default="serve", choices=["serve", "set-password"])
     parser.add_argument("--host", default=os.environ.get("NOVAHUB_HOST", "127.0.0.1"))
@@ -2296,6 +2497,9 @@ def main():
     PUBLISHER = Publisher()
     MANAGER = Manager()
     MANAGER.boot()
+    GATEWAY = Gateway()
+    GATEWAY.sync()
+    PUBLISHER.reconcile()
     threading.Thread(target=MANAGER.monitor, daemon=True).start()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
