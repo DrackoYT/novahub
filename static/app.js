@@ -173,6 +173,7 @@ async function refreshSystem() {
   try {
     const s = await api("GET", "/api/system");
     ui.lanIp = s.lan_ip;
+    ui.publishDomain = s.publish_domain;
     ui.user = s.user;
     ui.host = s.hostname;
     const cpuPct = (s.load[0] / s.cpus) * 100;
@@ -352,8 +353,8 @@ async function removeService(s) {
     `Se eliminará «${s.name}» y su historial de consola. Esta acción no se puede deshacer.`, "Eliminar");
   if (!ok) return;
   try {
-    await api("DELETE", `/api/services/${s.id}`);
-    toast("Servicio eliminado", "ok");
+    const res = await api("DELETE", `/api/services/${s.id}`);
+    toast(res.notice ? `Servicio eliminado. ${res.notice}` : "Servicio eliminado", "ok");
     location.hash = "#/";
   } catch (e) { toast(e.message, "error"); }
 }
@@ -732,7 +733,10 @@ function openForm(svc) {
           <label class="field"><span>Directorio de trabajo</span><input name="cwd" class="mono" spellcheck="false" placeholder="~/mi-proyecto"></label>
           <label class="field"><span>Puerto</span><input name="port" inputmode="numeric" placeholder="3000"></label>
         </div>
-        <label class="field"><span>URL</span><input name="url" placeholder="https://mi-app.ejemplo.com"><small>Enlace de acceso rápido desde la ficha del servicio.</small></label>
+        ${ui.publishDomain ? `<label class="field"><span>Publicar en internet</span>
+          <div class="affix"><input name="subdomain" class="mono" spellcheck="false" autocapitalize="off" placeholder="mi-app"><span>.${esc(ui.publishDomain)}</span></div>
+          <small>Crea el DNS en Cloudflare y la ruta del túnel hacia el puerto. Vacío = solo en la red local.</small></label>` : ""}
+        <label class="field"><span>URL</span><input name="url" placeholder="https://mi-app.ejemplo.com"><small>Enlace de acceso rápido desde la ficha del servicio.${ui.publishDomain ? " Si publicas el servicio, se rellena sola." : ""}</small></label>
         <div class="checks">
           <label><input type="checkbox" name="autostart"><span><strong>Arrancar automáticamente</strong><small>Se inicia cuando arranca NovaHub (p. ej. tras reiniciar el servidor).</small></span></label>
           <label><input type="checkbox" name="restart_on_crash"><span><strong>Reiniciar si se cae</strong><small>Hasta 5 intentos por minuto si el proceso termina con error.</small></span></label>
@@ -764,6 +768,7 @@ function openForm(svc) {
     f.cwd.value = svc.cwd || "";
     f.port.value = svc.port ?? "";
     f.url.value = svc.url || "";
+    if (f.subdomain) f.subdomain.value = svc.subdomain || "";
     f.autostart.checked = !!svc.autostart;
     f.restart_on_crash.checked = !!svc.restart_on_crash;
     f.env.value = Object.entries(svc.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
@@ -781,6 +786,7 @@ function openForm(svc) {
       autostart: f.autostart.checked, restart_on_crash: f.restart_on_crash.checked,
       env: f.env.value, stop_command: f.stop_command.value, stop_timeout: f.stop_timeout.value.trim(),
     };
+    if (f.subdomain) body.subdomain = f.subdomain.value.trim();
     const btn = form.querySelector("[type=submit]");
     btn.disabled = true;
     try {
@@ -790,9 +796,10 @@ function openForm(svc) {
       dlg.close();
       if (svc) {
         toast(isOn(saved) ? "Guardado. Reinicia el servicio para aplicar los cambios." : "Cambios guardados", "ok");
+        if (saved.notice) toast(saved.notice, "ok");
         refreshCurrent();
       } else {
-        toast("Servicio creado", "ok");
+        toast(saved.notice ? `Servicio creado. ${saved.notice}` : "Servicio creado", "ok");
         location.hash = `#/s/${saved.id}`;
       }
     } catch (err) {

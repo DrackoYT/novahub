@@ -161,6 +161,7 @@ def system_info():
         "uptime": uptime,
         "lan_ip": lan_ip(),
         "user": getpass.getuser(),
+        "publish_domain": PUBLISHER.domain if PUBLISHER.enabled else None,
     }
 
 
@@ -535,8 +536,8 @@ class Manager:
             pass
 
     # ── CRUD ──
-    def create(self, data):
-        svc = normalize_service(data)
+    def create(self, data, extra=None):
+        svc = {**normalize_service(data), **(extra or {})}
         with self.lock:
             base = slugify(svc["name"])
             sid = base
@@ -547,8 +548,8 @@ class Manager:
             self.save_services()
             return sid
 
-    def update(self, sid, data):
-        svc = normalize_service(data)
+    def update(self, sid, data, extra=None):
+        svc = {**normalize_service(data), **(extra or {})}
         with self.lock:
             self.services[sid] = {**self.services[sid], **svc}
             self.save_services()
@@ -665,10 +666,204 @@ class Auth:
         self.fails.setdefault(ip, []).append(time.time())
 
 
+# ───────────────────────────── túnel de Cloudflare ─────────────────────────────
+
+SUBDOMAIN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+TUNNEL_CMD = re.compile(r"\bcloudflared\b.*\btunnel\b.*\brun\b")
+
+
+class Publisher:
+    """Publica servicios en <subdominio>.<NOVAHUB_DOMAIN> a través del túnel de cloudflared.
+
+    Crea el CNAME con `cloudflared tunnel route dns` (usa ~/.cloudflared/cert.pem) y
+    mantiene una regla de ingress por servicio en el config.yml del túnel. Los registros
+    DNS no se borran al despublicar: cloudflared no sabe hacerlo.
+    """
+
+    def __init__(self):
+        self.domain = os.environ.get("NOVAHUB_DOMAIN", "").strip().strip(".").lower()
+        self.config = os.path.expanduser(os.environ.get("NOVAHUB_CLOUDFLARED_CONFIG", "~/.cloudflared/config.yml"))
+        self.bin = shutil.which("cloudflared")
+        self.lock = threading.Lock()
+
+    @property
+    def enabled(self):
+        return bool(self.domain and self.bin and os.path.isfile(self.config))
+
+    def host(self, sub):
+        return f"{sub}.{self.domain}" if sub else None
+
+    def tunnel(self):
+        name = os.environ.get("NOVAHUB_TUNNEL", "").strip()
+        if not name:
+            m = re.search(r"^tunnel:\s*['\"]?([^'\"\s#]+)", "".join(self.read()), re.M)
+            name = m.group(1) if m else ""
+        if not name:
+            raise ApiError(500, f"No se sabe qué túnel usar: define NOVAHUB_TUNNEL o «tunnel:» en {self.config}")
+        return name
+
+    # ── config.yml ──
+    def read(self):
+        with open(self.config, encoding="utf-8") as f:
+            return f.readlines()
+
+    def entries(self, lines):
+        """[(inicio, fin, hostname, service)] de cada regla de la lista `ingress:`."""
+        start = next((i for i, l in enumerate(lines) if re.match(r"ingress:\s*(#.*)?$", l)), None)
+        if start is None:
+            raise ApiError(500, f"No hay sección «ingress:» en {self.config}")
+        out, dash, i = [], None, start + 1
+        while i < len(lines):
+            line = lines[i]
+            indent = len(line) - len(line.lstrip(" "))
+            is_item = line.lstrip(" ").startswith("- ")
+            if line.strip() and not line.lstrip().startswith("#"):
+                if dash is None and is_item:
+                    dash = indent
+                if is_item and indent == dash:
+                    j = i + 1
+                    while j < len(lines) and (not lines[j].strip()
+                                              or len(lines[j]) - len(lines[j].lstrip(" ")) > dash):
+                        j += 1
+                    block = "".join(lines[i:j])
+                    h = re.search(r"hostname:\s*['\"]?([^'\"\s#]+)", block)
+                    s = re.search(r"service:\s*['\"]?([^'\"\s#]+)", block)
+                    out.append((i, j, h.group(1).lower() if h else None, s.group(1) if s else None))
+                    i = j
+                    continue
+                if dash is None or indent <= dash:
+                    break
+            i += 1
+        return out, (dash if dash is not None else 2), i
+
+    def find(self, lines, host):
+        return next((e for e in self.entries(lines)[0] if e[2] == host), None)
+
+    def upsert(self, lines, host, target):
+        entries, dash, end = self.entries(lines)
+        pad = " " * dash
+        block = [f"{pad}- hostname: {host}\n", f"{pad}  service: {target}\n"]
+        old = next((e for e in entries if e[2] == host), None)
+        if old:
+            return lines[:old[0]] + block + lines[old[1]:]
+        # delante de la regla final sin hostname (el 404 de recogida)
+        at = next((e[0] for e in entries if e[2] is None), end)
+        return lines[:at] + block + lines[at:]
+
+    def remove(self, lines, host):
+        old = self.find(lines, host)
+        return lines[:old[0]] + lines[old[1]:] if old else lines
+
+    def dump(self, lines):
+        tmp = self.config + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        os.replace(tmp, self.config)
+
+    def write(self, lines):
+        backup = self.read()
+        self.dump(lines)
+        res = self.run("tunnel", "--config", self.config, "ingress", "validate")
+        if res.returncode != 0:
+            self.dump(backup)  # config inválida: se deja la anterior
+            raise ApiError(500, f"La configuración del túnel no es válida: {self.error_text(res)}")
+
+    # ── cloudflared ──
+    def run(self, *args, timeout=60):
+        try:
+            return subprocess.run([self.bin, *args], capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise ApiError(504, "cloudflared no responde (¿hay conexión con Cloudflare?)")
+
+    @staticmethod
+    def error_text(res):
+        lines = [re.sub(r"^\S+Z\s+\w{3}\s+", "", l).strip() for l in (res.stderr + res.stdout).splitlines() if l.strip()]
+        return next((l for l in reversed(lines) if "error" in l.lower() or "fail" in l.lower()),
+                    lines[-1] if lines else "error desconocido")
+
+    def route_dns(self, host):
+        res = self.run("tunnel", "route", "dns", self.tunnel(), host)
+        if res.returncode != 0:
+            raise ApiError(502, f"No se pudo crear el DNS de {host}: {self.error_text(res)}")
+
+    def restart_tunnel(self):
+        for sid, svc in MANAGER.services.items():
+            if TUNNEL_CMD.search(svc.get("command", "")):
+                if not MANAGER.running(sid):
+                    return "El túnel está parado: arráncalo para aplicar el cambio"
+
+                def go():
+                    try:
+                        MANAGER.log(sid, "reinicio para aplicar cambios en las rutas del túnel")
+                        MANAGER.restart(sid)
+                    except ApiError as e:
+                        MANAGER.log(sid, f"\x1b[31m{e.msg}\x1b[0m")
+                # Con margen: esta misma petición puede estar llegando por el túnel.
+                threading.Timer(1.0, go).start()
+                return "El túnel se reinicia para aplicar el cambio"
+        return "Reinicia cloudflared para aplicar el cambio"
+
+    # ── servicios ──
+    def apply(self, sid, old, new, raw):
+        """Valida el subdominio pedido y ajusta DNS + ingress. Devuelve (campos extra, aviso)."""
+        if not self.enabled or "subdomain" not in raw:
+            return {}, None
+        sub = str(raw.get("subdomain") or "").strip().lower()
+        if sub.endswith("." + self.domain):
+            sub = sub[: -len(self.domain) - 1]
+        if sub and not SUBDOMAIN.fullmatch(sub):
+            raise ApiError(400, "Subdominio inválido: usa letras, números y guiones (p. ej. mi-app)")
+        if sub and not new.get("port"):
+            raise ApiError(400, "Para publicarlo en internet, indica el puerto del servicio")
+        for osid, s in MANAGER.services.items():
+            if sub and osid != sid and s.get("subdomain") == sub:
+                raise ApiError(409, f"{self.host(sub)} ya lo usa «{s['name']}»")
+
+        old = old or {}
+        old_host, new_host = self.host(old.get("subdomain")), self.host(sub)
+        extra = {"subdomain": sub}
+        old_url = f"https://{old_host}" if old_host else None
+        if new_host and (not new.get("url") or new.get("url") == old_url):
+            extra["url"] = f"https://{new_host}"
+        elif not new_host and old_url and new.get("url") == old_url:
+            extra["url"] = ""
+
+        target = f"http://localhost:{new['port']}" if new_host else None
+        if new_host == old_host and (not new_host or new.get("port") == old.get("port")):
+            return extra, None
+        with self.lock:
+            lines = self.read()
+            if new_host:
+                taken = self.find(lines, new_host)
+                if taken and new_host != old_host and taken[3] != target:
+                    raise ApiError(409, f"{new_host} ya está en el túnel apuntando a {taken[3]}")
+                if new_host != old_host:
+                    self.route_dns(new_host)
+                lines = self.upsert(lines, new_host, target)
+            if old_host and old_host != new_host:
+                lines = self.remove(lines, old_host)
+            self.write(lines)
+        notice = self.restart_tunnel()
+        return extra, f"Publicado en {new_host}. {notice}" if new_host else f"{old_host} despublicado. {notice}"
+
+    def unpublish(self, svc):
+        host = self.host(svc.get("subdomain"))
+        if not self.enabled or not host:
+            return None
+        with self.lock:
+            lines = self.read()
+            if not self.find(lines, host):
+                return None
+            self.write(self.remove(lines, host))
+        return f"Ruta de {host} quitada del túnel (el registro DNS sigue en Cloudflare). {self.restart_tunnel()}"
+
+
 # ───────────────────────────── HTTP ─────────────────────────────
 
 MANAGER: Manager
 AUTH: Auth
+PUBLISHER: Publisher
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download))?")
 
 
@@ -816,8 +1011,10 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET":
                 return self.send_json({"services": MANAGER.list_public()})
             if method == "POST":
-                sid = MANAGER.create(self.read_body())
-                return self.send_json(MANAGER.get_public(sid), 201)
+                body = self.read_body()
+                extra, notice = PUBLISHER.apply(None, None, normalize_service(body), body)
+                sid = MANAGER.create(body, extra)
+                return self.send_json({**MANAGER.get_public(sid), "notice": notice}, 201)
             raise ApiError(405, "Método no permitido")
 
         m = SERVICE_ROUTE.fullmatch(path)
@@ -831,11 +1028,14 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET":
                 return self.send_json(MANAGER.get_public(sid))
             if method == "PUT":
-                MANAGER.update(sid, self.read_body())
-                return self.send_json(MANAGER.get_public(sid))
+                body = self.read_body()
+                extra, notice = PUBLISHER.apply(sid, MANAGER.services[sid], normalize_service(body), body)
+                MANAGER.update(sid, body, extra)
+                return self.send_json({**MANAGER.get_public(sid), "notice": notice})
             if method == "DELETE":
+                svc = dict(MANAGER.services[sid])
                 MANAGER.delete(sid)
-                return self.send_json({"ok": True})
+                return self.send_json({"ok": True, "notice": PUBLISHER.unpublish(svc)})
             raise ApiError(405, "Método no permitido")
 
         if action == "logs/stream" and method == "GET":
@@ -959,7 +1159,7 @@ def seed_example():
 
 
 def main():
-    global MANAGER, AUTH
+    global MANAGER, AUTH, PUBLISHER
     parser = argparse.ArgumentParser(description="NovaHub — gestor de servicios")
     parser.add_argument("command", nargs="?", default="serve", choices=["serve", "set-password"])
     parser.add_argument("--host", default=os.environ.get("NOVAHUB_HOST", "127.0.0.1"))
@@ -981,6 +1181,7 @@ def main():
         AUTH.set_password(ask_password())
 
     seed_example()
+    PUBLISHER = Publisher()
     MANAGER = Manager()
     MANAGER.boot()
     threading.Thread(target=MANAGER.monitor, daemon=True).start()

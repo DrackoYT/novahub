@@ -350,6 +350,13 @@ dialog::backdrop { background: rgba(8, 8, 7, .78); }
 }
 .field input:focus, .field textarea:focus { border-color: var(--signal); }
 .field textarea.mono, .field input.mono { font-family: var(--mono); font-size: 13px; }
+.affix { display: flex; align-items: stretch; }
+.affix input { flex: 1; min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.affix > span {
+  display: flex; align-items: center; padding: 0 11px; font-family: var(--mono); font-size: 13px; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--line-hi); border-left: 0; border-radius: 0 var(--r) var(--r) 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%;
+}
 .row2 { display: grid; grid-template-columns: 1fr 150px; gap: 12px; }
 .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); }
 .checks label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; padding: 12px 14px; background: var(--sunk); }
