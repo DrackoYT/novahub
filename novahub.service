@@ -1,0 +1,20 @@
+# Servicio de usuario de systemd para NovaHub.
+#   mkdir -p ~/.config/systemd/user && cp novahub.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now novahub
+#   sudo loginctl enable-linger $USER   # para que arranque con el servidor sin iniciar sesión
+[Unit]
+Description=NovaHub - panel de servicios
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/novahub
+ExecStart=/usr/bin/python3 %h/novahub/server.py
+Environment=NOVAHUB_HOST=127.0.0.1
+Environment=NOVAHUB_PORT=8686
+Restart=on-failure
+RestartSec=3
+# Solo se mata al panel al pararlo/reiniciarlo: los servicios que gestiona siguen vivos.
+KillMode=process
+
+[Install]
+WantedBy=default.target
