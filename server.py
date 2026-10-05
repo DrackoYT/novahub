@@ -41,6 +41,7 @@ RUN_DIR = os.path.join(DATA_DIR, "run")
 SERVICES_FILE = os.path.join(DATA_DIR, "services.json")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 AUTH_FILE = os.path.join(DATA_DIR, "auth.json")
+ROADMAP_FILE = os.path.join(DATA_DIR, "roadmap.json")
 
 LOG_MAX_BYTES = 5 * 1024 * 1024    # al superarlo, el log se rota a <id>.log.1
 LOG_TAIL_BYTES = 64 * 1024         # lo que se envía al abrir la consola
@@ -1228,6 +1229,114 @@ class Tasks:
 
 
 TASKS = Tasks()
+
+
+# ───────────────────────────── lista de mejoras ─────────────────────────────
+
+# Orden de prioridad inicial (de más a menos importante). Solo se usa la primera vez:
+# después manda data/roadmap.json, donde se marcan las hechas y se añaden ideas nuevas.
+ROADMAP_DEFAULT = [
+    ("Seguridad", "Proteger el panel con Cloudflare Access",
+     "Exigir tu cuenta de Google antes de llegar al login: quien entra al panel puede ejecutar comandos en el servidor."),
+    ("Desplegar", "Desplegar desde GitHub",
+     "Crear un servicio clonando un repositorio y un botón «Actualizar» que haga pull, npm install y reinicio."),
+    ("Desplegar", "Plantillas de servicio",
+     "Web Vite, Bot de Node, App Python, Minecraft… con comando, puerto y subdominio ya rellenos."),
+    ("Fiabilidad", "Comprobación de salud",
+     "Visitar la web de cada servicio cada minuto y reiniciarla o avisar si no responde aunque el proceso siga vivo."),
+    ("Avisos", "Avisos por Gmail",
+     "Correo cuando un servicio se cae, se agotan los reintentos o el servidor se apaga o se enciende."),
+    ("Configuración", "Terminar el apagado con el enchufe Tapo",
+     "Regla de sudoers, data/tapo.json con la IP y la cuenta, prueba con tapo.py test y «Restore on AC Power Loss» en la BIOS."),
+    ("Desplegar", "Modo producción para webs",
+     "Compilar con npm run build y servir dist/: menos memoria y más estable que el modo desarrollo (LlunaTasks)."),
+    ("Comodidad", "Editar archivos desde la web",
+     "Guardar cambios desde el explorador, con resaltado de código y confirmación antes de sobrescribir."),
+    ("Fiabilidad", "Copias de seguridad",
+     "Copia diaria de la carpeta de un servicio (mundos de juegos, bases de datos) y restauración con un clic."),
+    ("Panel", "Gráficas de uso",
+     "Historial de CPU y RAM del servidor y de cada servicio, en 1 h y 24 h."),
+    ("Panel", "Vista de red y Tapo",
+     "Estado del túnel (conexiones), dominios publicados y estado del enchufe en una sola vista."),
+    ("Panel", "App para el móvil (PWA)",
+     "Instalable en la pantalla de inicio, sin barra del navegador y con aviso si no hay conexión."),
+    ("Fiabilidad", "Tareas programadas",
+     "Reiniciar un servicio a una hora fija, encenderlo solo en ciertos horarios o lanzar copias de seguridad."),
+    ("Comodidad", "Buscar en los logs",
+     "Filtrar la consola por texto o mostrar solo errores, con resaltado de coincidencias."),
+    ("Comodidad", "Editor de variables (.env)",
+     "Editar el archivo .env de cada proyecto desde el panel, con los valores ocultos por defecto."),
+    ("Mantenimiento", "Corregir la ruta de novahub.service en el repo",
+     "La unidad del repo apunta a ~/novahub; la instalada se corrigió a mano a ~/projectes/novahub."),
+    ("Mantenimiento", "Configurar git user.name y user.email en el servidor",
+     "Para que los commits no dependan de copiar el autor del último commit."),
+    ("Escalar", "Servicios con Docker",
+     "Un tipo de servicio que arranca y vigila contenedores para apps ya empaquetadas."),
+    ("Escalar", "Usuarios y permisos",
+     "Dar acceso a otra persona solo a ciertos servicios, o solo para ver."),
+    ("Escalar", "Varios servidores en un panel",
+     "Un agente en cada máquina (otro PC, una Raspberry) y NovaHub como centro de control."),
+    ("Escalar", "Publicar NovaHub como open source",
+     "Instalador de una línea, documentación, capturas y versión en inglés."),
+]
+
+
+class Roadmap:
+    def __init__(self):
+        self.lock = threading.Lock()
+
+    def load(self):
+        items = read_json(ROADMAP_FILE, None)
+        if items is None:
+            items = [{"id": slugify(title), "tag": tag, "title": title, "desc": desc,
+                      "done": False, "done_at": None, "custom": False}
+                     for tag, title, desc in ROADMAP_DEFAULT]
+            write_json(ROADMAP_FILE, items)
+        return items
+
+    def list(self):
+        with self.lock:
+            return self.load()
+
+    def add(self, data):
+        title = str(data.get("title") or "").strip()[:120]
+        if not title:
+            raise ApiError(400, "Escribe la mejora que quieres apuntar")
+        with self.lock:
+            items = self.load()
+            base = slugify(title)
+            iid = base
+            while any(i["id"] == iid for i in items):
+                iid = f"{base}-{secrets.token_hex(2)}"
+            items.append({"id": iid, "tag": str(data.get("tag") or "Idea").strip()[:30] or "Idea", "title": title,
+                          "desc": str(data.get("desc") or "").strip()[:500], "done": False, "done_at": None, "custom": True})
+            write_json(ROADMAP_FILE, items)
+            return items
+
+    def update(self, iid, data):
+        with self.lock:
+            items = self.load()
+            item = next((i for i in items if i["id"] == iid), None)
+            if not item:
+                raise ApiError(404, "Esa mejora no existe")
+            if "done" in data:
+                item["done"] = bool(data["done"])
+                item["done_at"] = time.time() if item["done"] else None
+            write_json(ROADMAP_FILE, items)
+            return items
+
+    def delete(self, iid):
+        with self.lock:
+            items = self.load()
+            rest = [i for i in items if i["id"] != iid]
+            if len(rest) == len(items):
+                raise ApiError(404, "Esa mejora no existe")
+            write_json(ROADMAP_FILE, rest)
+            return rest
+
+
+ROADMAP = Roadmap()
+ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
                            r"|files|file|file/download|git|git/commit|git/push|git/pull))?")
 KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
@@ -1373,6 +1482,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True})
         if path == "/api/system":
             return self.send_json(system_info())
+        if path == "/api/roadmap":
+            if method == "GET":
+                return self.send_json({"items": ROADMAP.list()})
+            if method == "POST":
+                return self.send_json({"items": ROADMAP.add(self.read_body())}, 201)
+            raise ApiError(405, "Método no permitido")
+        m = ROADMAP_ROUTE.fullmatch(path)
+        if m:
+            if method == "PUT":
+                return self.send_json({"items": ROADMAP.update(m.group(1), self.read_body())})
+            if method == "DELETE":
+                return self.send_json({"items": ROADMAP.delete(m.group(1))})
+            raise ApiError(405, "Método no permitido")
         if path == "/api/processes" and method == "GET":
             return self.send_json(TASKS.snapshot())
         m = KILL_ROUTE.fullmatch(path)

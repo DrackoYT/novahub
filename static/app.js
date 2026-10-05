@@ -213,6 +213,7 @@ function shell() {
       </div>
     </header>
     <main id="main"></main>`;
+  $(".topbar .brand").addEventListener("dblclick", (e) => { e.preventDefault(); location.hash = "#/mejoras"; });
 }
 
 async function refreshSystem() {
@@ -302,6 +303,78 @@ function drawOverview() {
     </a>`;
   }).join("") : `<div class="row-empty">Añade tu primer servicio con «Nuevo servicio».</div>`;
   if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+
+// ───────────────────────── vista: mejoras (oculta) ─────────────────────────
+// No está en las pestañas: se abre con doble clic en el logo, la tecla «m» o #/mejoras.
+
+function viewRoadmap() {
+  $("#main").innerHTML = `
+    <section class="page-head">
+      <div>
+        <h1 class="page-title">Mejoras</h1>
+        <p class="page-sub">Lista de lo que queda por hacer en NovaHub, de más a menos importante. Marca cada una al terminarla.</p>
+      </div>
+      <div id="rm-progress"></div>
+    </section>
+    <section class="module rm-list" id="rm-todo"></section>
+    <form class="module rm-add" id="rm-add">
+      <label class="field"><span>Apuntar una idea nueva</span>
+        <input id="rm-title" maxlength="120" placeholder="p. ej. «Modo oscuro automático por horario»" autocomplete="off"></label>
+      <button class="btn primary" type="submit">${ICON.plus}Añadir</button>
+    </form>
+    <div class="section-title" id="rm-done-title"></div>
+    <section class="module rm-list done" id="rm-done"></section>`;
+  const handler = async (e) => {
+    const box = e.target.closest("[data-done]");
+    const del = e.target.closest("[data-del]");
+    try {
+      if (box) ui.roadmap = (await api("PUT", `/api/roadmap/${box.dataset.done}`, { done: box.checked })).items;
+      else if (del && await confirmDialog("Borrar mejora", "Se quitará de la lista.", "Borrar")) {
+        ui.roadmap = (await api("DELETE", `/api/roadmap/${del.dataset.del}`)).items;
+      } else return;
+      drawRoadmap();
+    } catch (err) { toast(err.message, "error"); }
+  };
+  $("#rm-todo").addEventListener("change", handler);
+  $("#rm-done").addEventListener("change", handler);
+  $("#rm-todo").addEventListener("click", (e) => { if (e.target.closest("[data-del]")) handler(e); });
+  $("#rm-done").addEventListener("click", (e) => { if (e.target.closest("[data-del]")) handler(e); });
+  $("#rm-add").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = $("#rm-title");
+    try {
+      ui.roadmap = (await api("POST", "/api/roadmap", { title: input.value })).items;
+      input.value = "";
+      drawRoadmap();
+      toast("Mejora apuntada al final de la lista", "ok");
+    } catch (err) { toast(err.message, "error"); }
+  });
+  api("GET", "/api/roadmap").then((d) => { ui.roadmap = d.items; drawRoadmap(); }).catch((e) => toast(e.message, "error"));
+}
+
+function drawRoadmap() {
+  const items = ui.roadmap || [];
+  const todo = items.filter((i) => !i.done);
+  const done = items.filter((i) => i.done).sort((a, b) => (b.done_at || 0) - (a.done_at || 0));
+  const row = (i, n) => `
+    <label class="rm-item" data-tag="${esc(i.tag)}">
+      <input type="checkbox" data-done="${esc(i.id)}" ${i.done ? "checked" : ""} aria-label="Marcar «${esc(i.title)}» como hecha">
+      <span class="rm-check" aria-hidden="true"></span>
+      ${n != null ? `<span class="rm-rank num">${String(n).padStart(2, "0")}</span>` : ""}
+      <span class="rm-text">
+        <span class="rm-title">${esc(i.title)}</span>
+        ${i.desc ? `<span class="rm-desc">${esc(i.desc)}</span>` : ""}
+        ${i.done && i.done_at ? `<span class="rm-desc">Hecha ${fmtAgo(i.done_at)}</span>` : ""}
+      </span>
+      <span class="tag ${tapeClass(i.tag)}">${esc(i.tag)}</span>
+      ${i.custom ? `<button type="button" class="btn sm icon ghost" data-del="${esc(i.id)}" title="Borrar" aria-label="Borrar «${esc(i.title)}»">${ICON.trash}</button>` : ""}
+    </label>`;
+  $("#rm-progress").innerHTML = `<span class="lcd">${done.length}/${items.length} hechas</span>`;
+  $("#rm-todo").innerHTML = todo.length ? todo.map((i, k) => row(i, k + 1)).join("") : '<div class="row-empty">No queda nada pendiente.</div>';
+  $("#rm-done-title").innerHTML = done.length ? `<h2>Hechas · ${done.length}</h2>` : "";
+  $("#rm-done").hidden = !done.length;
+  $("#rm-done").innerHTML = done.map((i) => row(i, null)).join("");
 }
 
 // ───────────────────────── vista: procesos ─────────────────────────
@@ -1270,6 +1343,7 @@ function route() {
   if (m) { viewDetail(m[1]); section = "services"; }
   else if (hash === "#/servicios") { viewList(); section = "services"; }
   else if (hash === "#/procesos") { viewTasks(); section = "tasks"; }
+  else if (hash === "#/mejoras") { viewRoadmap(); section = "roadmap"; }
   else viewOverview();
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
   window.scrollTo(0, 0);
@@ -1291,6 +1365,7 @@ document.addEventListener("keydown", (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, textarea, select, dialog") || !$("#main")) return;
   const nav = NAV.find(([, , , k]) => k === e.key);
   if (nav) location.hash = nav[1];
+  else if (e.key === "m") location.hash = "#/mejoras";
 });
 window.addEventListener("hashchange", () => { if ($("#main")) route(); });
 start();
