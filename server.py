@@ -859,11 +859,90 @@ class Publisher:
         return f"Ruta de {host} quitada del túnel (el registro DNS sigue en Cloudflare). {self.restart_tunnel()}"
 
 
+# ───────────────────────────── apagado del servidor ─────────────────────────────
+
+POWEROFF_CMD = ["sudo", "-n", "/usr/bin/systemctl", "poweroff"]
+TAPO_PY = os.path.join(BASE_DIR, "tapo.py")
+TAPO_VENV = os.path.join(BASE_DIR, ".venv", "bin", "python")
+TAPO_FILE = os.path.join(DATA_DIR, "tapo.json")
+TAPO_DELAY = 90  # segundos entre programar el corte en el enchufe y que llegue: de sobra para el poweroff
+
+
+class Power:
+    """Apaga el servidor con orden: para los servicios (con su comando de parada), programa
+    en el enchufe Tapo el corte de corriente con cuenta atrás y lanza `systemctl poweroff`.
+    El túnel no se para: así el panel puede seguir mostrando el progreso hasta el final."""
+
+    def __init__(self):
+        self.phase = None  # None | "stopping" | "poweroff"
+
+    @staticmethod
+    def sudo_ok():
+        res = subprocess.run(["sudo", "-n", "-l", *POWEROFF_CMD[2:]], capture_output=True, timeout=10)
+        return res.returncode == 0
+
+    @staticmethod
+    def tapo_configured():
+        return os.path.isfile(TAPO_FILE) and os.path.isfile(TAPO_VENV)
+
+    @staticmethod
+    def tapo(*args):
+        try:
+            res = subprocess.run([TAPO_VENV, TAPO_PY, *args], capture_output=True, text=True, timeout=40)
+        except subprocess.TimeoutExpired:
+            return False, "el enchufe no responde"
+        return res.returncode == 0, (res.stdout if res.returncode == 0 else res.stderr).strip()
+
+    def status(self):
+        return {"sudo": self.sudo_ok(), "tapo": self.tapo_configured(), "phase": self.phase}
+
+    def shutdown(self):
+        if self.phase:
+            raise ApiError(409, "El servidor ya se está apagando")
+        if not self.sudo_ok():
+            raise ApiError(400, "NovaHub no tiene permiso para apagar el servidor (falta la regla de sudoers, ver README)")
+        tapo = self.tapo_configured()
+        if tapo:  # mejor fallar ahora que con los servicios ya parados
+            ok, msg = self.tapo("status")
+            if not ok:
+                raise ApiError(502, msg)
+        self.phase = "stopping"
+        threading.Thread(target=self._run, args=(tapo,), daemon=True).start()
+
+    def _run(self, tapo):
+        def say(msg):
+            print(f"[apagado] {msg}", flush=True)
+
+        try:
+            sids = [sid for sid, s in MANAGER.services.items()
+                    if not TUNNEL_CMD.search(s.get("command", "")) and (MANAGER.running(sid) or sid in MANAGER.transition)]
+            say(f"parando {len(sids)} servicio(s)")
+            for sid in sids:
+                MANAGER.stop(sid)
+            limit = time.time() + max([MANAGER.services[s].get("stop_timeout", 15) for s in sids] + [0]) + 30
+            while time.time() < limit and any(MANAGER.running(s) or s in MANAGER.transition for s in sids):
+                time.sleep(0.5)
+            if tapo:
+                ok, msg = self.tapo("off-in", str(TAPO_DELAY))
+                say(f"enchufe Tapo: corte en {TAPO_DELAY} s" if ok else f"enchufe Tapo: no se pudo programar el corte ({msg})")
+            self.phase = "poweroff"
+            say("systemctl poweroff")
+            res = subprocess.run(POWEROFF_CMD, capture_output=True, text=True, timeout=30)
+            if res.returncode != 0:
+                raise RuntimeError(res.stderr.strip() or f"código {res.returncode}")
+        except Exception as e:  # noqa: BLE001
+            say(f"ERROR, el servidor sigue encendido: {e}")
+            if tapo:
+                self.tapo("cancel")
+            self.phase = None
+
+
 # ───────────────────────────── HTTP ─────────────────────────────
 
 MANAGER: Manager
 AUTH: Auth
 PUBLISHER: Publisher
+POWER = Power()
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download))?")
 
 
@@ -1007,6 +1086,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True})
         if path == "/api/system":
             return self.send_json(system_info())
+        if path == "/api/power" and method == "GET":
+            return self.send_json(POWER.status())
+        if path == "/api/power/off" and method == "POST":
+            POWER.shutdown()
+            return self.send_json({"ok": True}, 202)
         if path == "/api/services":
             if method == "GET":
                 return self.send_json({"services": MANAGER.list_public()})

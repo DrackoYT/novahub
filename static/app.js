@@ -8,6 +8,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const ICON = {
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>',
+  power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.4 6.4a8 8 0 1 0 11.2 0"/></svg>',
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
   power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v8M6.3 7.2a8 8 0 1 0 11.4 0"/></svg>',
@@ -161,6 +162,7 @@ function shell() {
       <div class="sys" id="sys"></div>
       <div class="top-actions">
         <button class="btn primary" data-act="new">${ICON.plus}<span>Nuevo servicio</span></button>
+        <button class="btn ghost icon" data-act="poweroff" title="Apagar servidor" aria-label="Apagar servidor">${ICON.power}</button>
         <button class="btn ghost icon" data-act="logout" title="Cerrar sesión" aria-label="Cerrar sesión">${ICON.logout}</button>
       </div>
     </header>
@@ -331,6 +333,11 @@ async function toggle(id) {
   const s = ui.current?.id === id && ui.current.status ? ui.current : ui.services.find((x) => x.id === id);
   if (!s) return;
   const turnOn = !isOn(s);
+  if (!turnOn) {
+    const ok = await confirmDialog("Apagar servicio",
+      `¿Seguro que quieres apagar «${s.name}»? Dejará de funcionar hasta que lo vuelvas a encender.`, "Apagar");
+    if (!ok) return;
+  }
   try {
     await api("POST", `/api/services/${id}/${turnOn ? "start" : "stop"}`);
     toast(turnOn ? `«${s.name}» iniciado` : `Deteniendo «${s.name}»…`, "ok");
@@ -359,6 +366,23 @@ async function removeService(s) {
   } catch (e) { toast(e.message, "error"); }
 }
 
+async function powerOff() {
+  try {
+    const p = await api("GET", "/api/power");
+    if (p.phase) return toast("El servidor ya se está apagando", "ok");
+    if (!p.sudo) return toast("NovaHub aún no tiene permiso para apagar el servidor (regla de sudoers, ver README).", "error");
+    const plug = p.tapo
+      ? "Después, el enchufe Tapo cortará la corriente."
+      : "El enchufe Tapo no está configurado: se quedará encendido.";
+    const ok = await confirmDialog("Apagar servidor",
+      `Se pararán todos los servicios y se apagará el servidor. ${plug} Para volver a encenderlo tendrás que usar el enchufe (app Tapo, Alexa o el botón).`,
+      "Apagar");
+    if (!ok) return;
+    await api("POST", "/api/power/off");
+    toast("Apagando: parando servicios…", "ok");
+  } catch (e) { toast(e.message, "error"); }
+}
+
 function refreshCurrent() {
   if (ui.current) refreshDetail(ui.current.id);
   else refreshList();
@@ -371,6 +395,7 @@ document.addEventListener("click", async (e) => {
   const s = ui.current;
   if (act === "toggle") { e.stopPropagation(); toggle(el.dataset.id || s?.id); }
   else if (act === "new") openForm(null);
+  else if (act === "poweroff") powerOff();
   else if (act === "logout") {
     await api("POST", "/api/logout").catch(() => {});
     showLogin();
