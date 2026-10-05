@@ -352,8 +352,13 @@ class Manager:
                 if st.get("pid") and not self.running(sid):
                     st["pid"] = None
                     st["desired"] = "stopped"
+            with open("/proc/uptime") as f:
+                server_booted = float(f.read().split()[0]) < 300
             for sid, svc in self.services.items():
-                if svc.get("autostart") and not self.running(sid):
+                # Autoarranque = al encender el servidor. Si solo se reinicia NovaHub, se respeta
+                # lo que se apagó a propósito (desired «stopped»).
+                desired = (self.state.get(sid) or {}).get("desired")
+                if svc.get("autostart") and not self.running(sid) and (server_booted or desired != "stopped"):
                     try:
                         self.log(sid, "autoarranque al iniciar NovaHub")
                         self.spawn(sid)
@@ -520,6 +525,7 @@ class Manager:
         while True:
             time.sleep(1)
             tick += 1
+            SUPERVISOR.beat("vigilancia")
             try:
                 with self.lock:
                     self._check_all(rotate=tick % 30 == 0)
@@ -1414,6 +1420,7 @@ class Health:
                 traceback.print_exc()
 
     def tick(self):
+        SUPERVISOR.beat("salud")
         now, mono = time.time(), time.monotonic()
         with MANAGER.lock:
             due = []
@@ -1521,7 +1528,6 @@ class Gateway:
         self.loop = asyncio.new_event_loop()
         self.servers = {}   # sid -> (puerto pasarela, puerto servicio, servidor)
         self.failed = {}    # sid -> (puertos, momento) que no se pudieron abrir: se reintenta cada minuto
-        threading.Thread(target=self.loop.run_forever, daemon=True).start()
 
     def sync(self):
         want = {sid: (gateway_port(s["port"]), s["port"]) for sid, s in list(MANAGER.services.items())
@@ -1715,6 +1721,7 @@ NOTIFY_EVENTS = {
     "memory": "Un servicio usa más memoria de su límite",
     "power": "El servidor se enciende o se apaga",
     "update": "Falla una actualización desde GitHub",
+    "novahub": "NovaHub se reinicia tras un fallo o tiene un problema interno",
 }
 NOTIFY_COOLDOWN = 600   # como mucho un correo por servicio y tipo de aviso cada 10 min
 NOTIFY_MAX_HOUR = 30    # y nunca más de 30 por hora en total
@@ -1877,6 +1884,143 @@ class Notifier:
 
 
 NOTIFIER = Notifier()
+
+
+# ───────────────────────────── vigilancia de NovaHub ─────────────────────────────
+
+WATCHDOG_EVERY = 10                                     # segundos entre revisiones internas
+LIFECYCLE_FILE = os.path.join(RUN_DIR, "novahub.lifecycle")  # «running» mientras funciona, «stopped» al cerrar bien
+
+
+def sd_notify(msg):
+    """Mensaje a systemd (READY=1, WATCHDOG=1…). Sin systemd (arrancado a mano) no hace nada."""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return False
+    if addr.startswith("@"):
+        addr = "\0" + addr[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(addr)
+            sock.sendall(msg.encode())
+        return True
+    except OSError:
+        return False
+
+
+def previous_run():
+    """Cómo terminó la ejecución anterior: «running» = no se cerró bien; None = primera vez."""
+    try:
+        with open(LIFECYCLE_FILE) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def mark_run(state):
+    try:
+        with open(LIFECYCLE_FILE, "w") as f:
+            f.write(state)
+    except OSError:
+        pass
+
+
+class Supervisor:
+    """Lanza los hilos de NovaHub, los relanza si mueren y avisa a systemd de que todo responde.
+    Si algo se queda colgado (un bucle sin latir, la web o la pasarela sin responder) deja de avisar
+    y systemd reinicia NovaHub (WatchdogSec en novahub.service). Los servicios siguen vivos."""
+
+    def __init__(self):
+        self.threads = {}   # nombre -> (función, hilo)
+        self.beats = {}     # nombre -> monotonic del último latido
+        self.url = None
+
+    def spawn(self, name, target):
+        thread = threading.Thread(target=target, name=name, daemon=True)
+        thread.start()
+        self.threads[name] = (target, thread)
+
+    def beat(self, name):
+        self.beats[name] = time.monotonic()
+
+    def loop(self):
+        while True:
+            time.sleep(WATCHDOG_EVERY)
+            try:
+                self.check()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+
+    def http_ok(self):
+        try:
+            conn = http.client.HTTPConnection(*self.url, timeout=5)
+            conn.request("GET", "/api/me")
+            conn.getresponse().read()
+            conn.close()
+            return True
+        except (OSError, http.client.HTTPException):
+            return False
+
+    def check(self):
+        restarted, hung = [], []
+        for name, (target, thread) in list(self.threads.items()):
+            if not thread.is_alive():
+                restarted.append(f"el hilo «{name}» se había detenido y se ha relanzado")
+                self.spawn(name, target)
+        now = time.monotonic()
+        for name, limit in (("vigilancia", 30), ("salud", 60)):
+            if name in self.beats and now - self.beats[name] > limit:
+                hung.append(f"«{name}» lleva {int(now - self.beats[name])} s sin dar señales")
+        try:
+            asyncio.run_coroutine_threadsafe(asyncio.sleep(0), GATEWAY.loop).result(5)
+        except Exception:  # noqa: BLE001
+            hung.append("la pasarela de las webs publicadas no responde")
+        if self.url and not self.http_ok():
+            hung.append("la web del panel no responde")
+        if not hung:
+            sd_notify("WATCHDOG=1")  # todo responde; si dejamos de decirlo, systemd reinicia NovaHub
+        problems = restarted + hung
+        for p in problems:
+            print(f"[vigilancia interna] {p}", flush=True)
+        if problems:
+            NOTIFIER.notify("novahub", None, "Problema interno en NovaHub",
+                            "NovaHub ha detectado un problema interno:\n- " + "\n- ".join(problems)
+                            + ("\n\nComo algo está colgado, systemd reiniciará NovaHub en unos segundos "
+                               "(tus servicios siguen funcionando)." if hung else ""), key="interno")
+
+
+SUPERVISOR = Supervisor()
+
+
+def journal_tail(lines=40):
+    try:
+        res = subprocess.run(["journalctl", "--user", "-u", "novahub", "--no-pager", "-o", "short-iso", "-n", str(lines)],
+                             capture_output=True, text=True, timeout=10)
+        return res.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def startup_notice(prev, failed):
+    """Al arrancar: avisa del encendido del servidor y de si NovaHub (o el servidor) se cerró de golpe."""
+    with open("/proc/uptime") as f:
+        uptime = float(f.read().split()[0])
+    autostart = (f"\nNo han podido arrancar: {', '.join(failed)}." if failed
+                 else "\nTodos los servicios con autoarranque están en marcha.")
+    if uptime < 300:  # el servidor acaba de arrancar
+        if prev == "running":
+            NOTIFIER.notify("power", None, "El servidor se ha encendido tras un apagado inesperado",
+                            f"El servidor lleva {int(uptime)} s encendido, pero la última vez NovaHub no se cerró de forma "
+                            "ordenada: probablemente hubo un corte de luz o un reinicio forzado." + autostart)
+        else:
+            NOTIFIER.notify("power", None, "El servidor se ha encendido",
+                            f"El servidor lleva {int(uptime)} s encendido y NovaHub está en marcha." + autostart)
+    elif prev == "running":
+        tail = journal_tail()
+        NOTIFIER.notify("novahub", None, "NovaHub se ha reiniciado tras un fallo",
+                        "NovaHub se cerró de forma inesperada (un error, falta de memoria o el watchdog de systemd) "
+                        "y systemd lo ha vuelto a arrancar. Tus servicios no se han visto afectados."
+                        + autostart + (f"\n\nÚltimas líneas del registro de NovaHub:\n{tail}" if tail else ""))
 
 
 # ───────────────────────────── desplegar desde GitHub ─────────────────────────────
@@ -2877,34 +3021,36 @@ def main():
         AUTH.set_password(ask_password())
 
     seed_example()
+    prev = previous_run()
+    mark_run("running")
     PUBLISHER = Publisher()
     MANAGER = Manager()
     MANAGER.boot()
     GATEWAY = Gateway()
-    threading.Thread(target=HEALTH.loop, daemon=True).start()
+    SUPERVISOR.spawn("pasarela", GATEWAY.loop.run_forever)
+    SUPERVISOR.spawn("salud", HEALTH.loop)
     GATEWAY.sync()
     PUBLISHER.reconcile()
-    threading.Thread(target=NOTIFIER.loop, daemon=True).start()
+    SUPERVISOR.spawn("correo", NOTIFIER.loop)
     global PANEL_URL
     PANEL_URL = os.environ.get("NOVAHUB_PUBLIC_URL", "").rstrip("/") or panel_url(args.port)
-    with open("/proc/uptime") as f:
-        uptime = float(f.read().split()[0])
-    if uptime < 300:  # el servidor acaba de arrancar (no un simple reinicio del panel)
-        failed = [s["name"] for sid, s in MANAGER.services.items() if s.get("autostart") and not MANAGER.running(sid)]
-        NOTIFIER.notify("power", None, "El servidor se ha encendido",
-                        f"El servidor lleva {int(uptime)} s encendido y NovaHub está en marcha."
-                        + (f"\nNo han podido arrancar: {', '.join(failed)}." if failed else
-                           "\nTodos los servicios con autoarranque están en marcha."))
-    threading.Thread(target=MANAGER.monitor, daemon=True).start()
+    failed = [s["name"] for sid, s in MANAGER.services.items() if s.get("autostart") and not MANAGER.running(sid)]
+    startup_notice(prev, failed)
+    SUPERVISOR.spawn("vigilancia", MANAGER.monitor)
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown).start())
+    SUPERVISOR.url = ("127.0.0.1" if args.host in ("0.0.0.0", "::", "") else args.host, args.port)
+    threading.Thread(target=SUPERVISOR.loop, name="supervisor", daemon=True).start()
+    sd_notify("READY=1")
+    sd_notify("WATCHDOG=1")
     print(f"NovaHub escuchando en http://{args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    mark_run("stopped")
     print("NovaHub detenido (los servicios siguen en marcha).")
 
 

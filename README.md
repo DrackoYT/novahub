@@ -84,6 +84,18 @@ Opcionales: `NOVAHUB_TUNNEL` (si no, se usa el `tunnel:` del config) y `NOVAHUB_
 del túnel, pero **el registro DNS se queda** en Cloudflare (cloudflared no puede borrarlo): bórralo
 a mano en *DNS → Records* si ya no lo quieres.
 
+## Fiabilidad de NovaHub
+
+- **Watchdog de systemd** (`Type=notify`, `WatchdogSec=30` en `novahub.service`): NovaHub avisa a systemd
+  cada 10 s mientras su web, su pasarela y sus bucles internos responden; si algo se queda colgado,
+  systemd lo reinicia. Tus servicios no se tocan (`KillMode=process`).
+- **Hilos vigilados**: si muere el de correo, salud, pasarela o vigilancia, se relanza y se avisa.
+- **Reinicios tras un fallo**: NovaHub sabe si la vez anterior se cerró bien; si no, te escribe
+  («se ha reiniciado tras un fallo», o «el servidor se ha encendido tras un apagado inesperado»).
+- **Autoarranque** = al encender el servidor. Si solo se reinicia NovaHub, lo que apagaste sigue apagado.
+- **Túnel**: arranca con `--metrics 127.0.0.1:20241` y su comprobación de salud usa `/ready`, que solo
+  responde 200 si hay conexión con Cloudflare.
+
 ## Avisos por correo (Gmail)
 
 En **⚙ Ajustes** de la cabecera: tu Gmail, una *contraseña de aplicación* (créala en

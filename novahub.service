@@ -7,6 +7,11 @@ Description=NovaHub - panel de servicios
 After=network-online.target
 
 [Service]
+# NovaHub avisa a systemd cuando está listo y cada 10 s mientras todo responde;
+# si se queda colgado más de 30 s, systemd lo reinicia (los servicios no se tocan).
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
 # Ajusta la ruta si clonaste NovaHub en otra carpeta.
 WorkingDirectory=%h/projectes/novahub
 ExecStart=/usr/bin/python3 %h/projectes/novahub/server.py
