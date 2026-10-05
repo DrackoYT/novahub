@@ -343,6 +343,9 @@ class Manager:
         env = os.environ.copy()
         env.update(svc.get("env") or {})
         env.setdefault("PYTHONUNBUFFERED", "1")
+        if svc.get("subdomain") and PUBLISHER.domain:
+            # Vite rechaza dominios que no conoce: así acepta el suyo sin tocar vite.config.js.
+            env.setdefault("__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS", PUBLISHER.host(svc["subdomain"]))
 
         self.log(sid, f"iniciando \x1b[2m$ {svc['command']}\x1b[0m")
         # O_RDWR: el hijo mantiene un escritor abierto, así nunca recibe EOF
@@ -589,6 +592,7 @@ class Manager:
             last_exit=st.get("last_exit"),
             last_exit_at=st.get("last_exit_at"),
             auto_restarts=len([t for t in st.get("restarts", []) if time.time() - t < 3600]),
+            updating=bool(st.get("updating")), last_update=st.get("last_update"),
             listening=(svc["port"] in ports) if svc.get("port") else None,
             cpu=None, memory=None, processes=None,
         )
@@ -1336,9 +1340,224 @@ class Roadmap:
 
 
 ROADMAP = Roadmap()
+
+
+# ───────────────────────────── desplegar desde GitHub ─────────────────────────────
+
+PROJECTS_DIR = os.path.expanduser(os.environ.get("NOVAHUB_PROJECTS", "~/projectes"))
+REPO_REF = re.compile(r"^(?:https://github\.com/|git@github\.com:)?([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+NPM_FLAGS = ["--no-audit", "--no-fund"]
+
+
+def gh_repos():
+    if not shutil.which("gh"):
+        raise ApiError(501, "La CLI de GitHub (gh) no está instalada en el servidor")
+    try:
+        res = subprocess.run(["gh", "repo", "list", "--limit", "100",
+                              "--json", "nameWithOwner,name,description,isPrivate,updatedAt,url"],
+                             capture_output=True, text=True, timeout=30, env=GIT_ENV)
+    except subprocess.TimeoutExpired:
+        raise ApiError(504, "GitHub no responde")
+    if res.returncode != 0:
+        raise ApiError(502, f"No se pudo leer tu lista de repositorios: {res.stderr.strip()}")
+    repos = json.loads(res.stdout or "[]")
+    for r in repos:
+        r["cloned"] = os.path.isdir(os.path.join(PROJECTS_DIR, r["name"]))
+    return {"repos": sorted(repos, key=lambda r: r.get("updatedAt") or "", reverse=True), "projects_dir": PROJECTS_DIR}
+
+
+def free_port(start):
+    used = listening_ports() | {s.get("port") for s in MANAGER.services.values()}
+    port = start
+    while port in used:
+        port += 1
+    return port
+
+
+def detect_project(path):
+    """Tipo de proyecto y un servicio sugerido (comando, puerto, etiquetas) a partir de sus archivos."""
+    has = lambda name: os.path.exists(os.path.join(path, name))  # noqa: E731
+    if has("package.json"):
+        try:
+            with open(os.path.join(path, "package.json"), encoding="utf-8") as f:
+                pkg = json.load(f)
+        except (OSError, ValueError):
+            pkg = {}
+        scripts = pkg.get("scripts") or {}
+        deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
+        if "vite" in deps or "vite" in str(scripts.get("dev", "")):
+            port = free_port(5173)
+            return {"kind": "Vite", "command": f"npm run dev -- --port {port} --strictPort", "port": port, "tags": ["web"]}
+        if "next" in deps:
+            port = free_port(3000)
+            return {"kind": "Next.js", "command": f"npm run dev -- -p {port}", "port": port, "tags": ["web"]}
+        port = free_port(3000)
+        if "start" in scripts:
+            return {"kind": "Node", "command": "npm start", "port": port, "env": {"PORT": str(port)}, "tags": ["node"]}
+        if "dev" in scripts:
+            return {"kind": "Node", "command": "npm run dev", "port": port, "env": {"PORT": str(port)}, "tags": ["node"]}
+        return {"kind": "Node", "command": f"node {pkg.get('main') or 'index.js'}", "port": None, "tags": ["node"]}
+    if has("requirements.txt") or has("pyproject.toml"):
+        python = ".venv/bin/python" if has(".venv/bin/python") else "python3"
+        if has("manage.py"):
+            port = free_port(8000)
+            return {"kind": "Django", "command": f"{python} manage.py runserver 127.0.0.1:{port}", "port": port, "tags": ["python", "web"]}
+        entry = next((f for f in ("app.py", "main.py", "bot.py", "server.py", "run.py") if has(f)), None)
+        return {"kind": "Python", "command": f"{python} {entry}" if entry else "", "port": None, "tags": ["python"]}
+    if has("index.html"):
+        port = free_port(8080)
+        return {"kind": "Web estática", "command": f"python3 -m http.server {port} --bind 127.0.0.1", "port": port, "tags": ["web"]}
+    return {"kind": "Desconocido", "command": "", "port": None, "tags": []}
+
+
+PROJECT_MARKERS = ("package.json", "requirements.txt", "pyproject.toml", "index.html")
+
+
+def project_dir(path):
+    """La carpeta del proyecto: la raíz del repo o, si está vacía de proyecto, su única subcarpeta con uno."""
+    if any(os.path.exists(os.path.join(path, m)) for m in PROJECT_MARKERS):
+        return path
+    subs = [os.path.join(path, d) for d in sorted(os.listdir(path))
+            if not d.startswith(".") and os.path.isdir(os.path.join(path, d))]
+    found = [d for d in subs if any(os.path.exists(os.path.join(d, m)) for m in PROJECT_MARKERS)]
+    return found[0] if len(found) == 1 else path
+
+
+def install_steps(path, changed=None):
+    """Órdenes para instalar dependencias; con `changed` (archivos tocados por un pull), solo si hacen falta."""
+    has = lambda name: os.path.exists(os.path.join(path, name))  # noqa: E731
+    touched = lambda *names: changed is None or any(c in names for c in changed)  # noqa: E731
+    steps = []
+    if has("package.json") and (touched("package.json", "package-lock.json") or not has("node_modules")):
+        steps.append((["npm", "ci" if has("package-lock.json") else "install", *NPM_FLAGS], "instalando dependencias de Node"))
+    if has("requirements.txt") and has(".venv/bin/pip") and touched("requirements.txt"):
+        steps.append(([".venv/bin/pip", "install", "-r", "requirements.txt"], "instalando dependencias de Python"))
+    return steps
+
+
+class Deployer:
+    """Clonados en segundo plano (Cloudflare corta las peticiones de más de 100 s) y actualizaciones."""
+
+    def __init__(self):
+        self.jobs = {}
+        self.lock = threading.Lock()
+
+    # ── clonar un repositorio ──
+    def clone(self, data):
+        m = REPO_REF.match(str(data.get("repo") or "").strip())
+        if not m:
+            raise ApiError(400, "Indica el repositorio como usuario/nombre o con su dirección de GitHub")
+        owner, name = m.groups()
+        dest = os.path.abspath(os.path.expanduser(str(data.get("dest") or "").strip() or os.path.join(PROJECTS_DIR, name)))
+        if os.path.exists(dest) and (not os.path.isdir(dest) or os.listdir(dest)):
+            raise ApiError(409, f"La carpeta {dest} ya existe y no está vacía: elige otra")
+        if not os.path.isdir(os.path.dirname(dest)):
+            raise ApiError(400, f"No existe la carpeta {os.path.dirname(dest)}")
+        job_id = secrets.token_hex(6)
+        job = {"id": job_id, "status": "running", "log": [], "result": None, "error": None, "started": time.time()}
+        with self.lock:
+            self.jobs = {k: v for k, v in self.jobs.items() if time.time() - v["started"] < 3600}
+            self.jobs[job_id] = job
+        threading.Thread(target=self._clone, args=(job, owner, name, dest), daemon=True).start()
+        return job_id
+
+    def _run(self, job, cmd, cwd, timeout):
+        job["log"].append(f"$ {' '.join(cmd)}")
+        # en modo texto, el \r del progreso de git también corta línea: cada actualización llega por separado
+        proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=GIT_ENV)
+        end = time.time() + timeout
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line and job["log"] and line.split(":")[0] == job["log"][-1].split(":")[0] and "%" in line:
+                job["log"][-1] = line  # el progreso reemplaza su línea en vez de añadir cientos
+            elif line:
+                job["log"].append(line)
+            del job["log"][:-400]
+            if time.time() > end:
+                proc.kill()
+                raise RuntimeError("ha tardado demasiado")
+        if proc.wait() != 0:
+            raise RuntimeError(f"«{cmd[0]} {cmd[1]}» ha fallado (código {proc.returncode})")
+
+    def _clone(self, job, owner, name, dest):
+        try:
+            self._run(job, ["git", "clone", "--progress", f"https://github.com/{owner}/{name}.git", dest], PROJECTS_DIR, 600)
+            path = project_dir(dest)
+            if path != dest:
+                job["log"].append(f"▌el proyecto está en la subcarpeta {os.path.relpath(path, dest)}/")
+            for cmd, what in install_steps(path):
+                job["log"].append(f"▌{what}…")
+                self._run(job, cmd, path, 900)
+            info = detect_project(path)
+            job["result"] = {"path": path, "name": name, "repo": f"{owner}/{name}", **info}
+            job["log"].append(f"▌listo: proyecto {info['kind']} en {path}")
+            job["status"] = "done"
+        except Exception as e:  # noqa: BLE001
+            job["error"] = str(e)
+            job["log"].append(f"▌error: {e}")
+            job["status"] = "error"
+
+    def job(self, job_id):
+        job = self.jobs.get(job_id)
+        if not job:
+            raise ApiError(404, "Esa tarea ya no existe")
+        return job
+
+    # ── actualizar un servicio: pull + dependencias + reinicio ──
+    def update(self, sid):
+        svc = MANAGER.services[sid]
+        root = git_repo(svc)
+        with MANAGER.lock:
+            st = MANAGER.st(sid)
+            if st.get("updating"):
+                raise ApiError(409, "Ya se está actualizando")
+            st["updating"] = True
+        threading.Thread(target=self._update, args=(sid, root), daemon=True).start()
+
+    def _logged(self, sid, cmd, cwd, timeout):
+        with open(log_path(sid), "ab") as logf:
+            res = subprocess.run(cmd, cwd=cwd, stdout=logf, stderr=subprocess.STDOUT, env=GIT_ENV, timeout=timeout)
+        if res.returncode != 0:
+            raise RuntimeError(f"«{' '.join(cmd[:2])}» ha fallado (código {res.returncode})")
+
+    def _update(self, sid, root):
+        ok, msg = False, ""
+        try:
+            MANAGER.log(sid, "\x1b[35mactualizando desde GitHub…\x1b[0m")
+            before = git(root, "rev-parse", "HEAD").stdout.strip()
+            self._logged(sid, ["git", "pull", "--ff-only"], root, 120)
+            after = git(root, "rev-parse", "HEAD").stdout.strip()
+            changed = git(root, "diff", "--name-only", before, after).stdout.split() if before != after else []
+            steps = install_steps(root, changed)
+            if before == after and not steps:
+                ok, msg = True, "Ya estaba al día"
+                MANAGER.log(sid, "ya estaba al día: no hace falta reiniciar")
+                return
+            for cmd, what in steps:
+                MANAGER.log(sid, what + "…")
+                self._logged(sid, cmd, root, 900)
+            if MANAGER.running(sid):
+                MANAGER.log(sid, f"{len(changed)} archivo(s) nuevos: reiniciando")
+                MANAGER.restart(sid)
+            else:
+                MANAGER.log(sid, "actualizado; el servicio está parado, enciéndelo cuando quieras")
+            ok, msg = True, f"Actualizado ({before[:7]} → {after[:7]})"
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            MANAGER.log(sid, f"\x1b[31mno se pudo actualizar: {e}\x1b[0m")
+        finally:
+            with MANAGER.lock:
+                st = MANAGER.st(sid)
+                st["updating"] = False
+                st["last_update"] = {"at": time.time(), "ok": ok, "msg": msg}
+                MANAGER.save_state()
+
+
+DEPLOYER = Deployer()
+JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
-                           r"|files|file|file/download|git|git/commit|git/push|git/pull))?")
+                           r"|files|file|file/download|git|git/commit|git/push|git/pull|update))?")
 KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
 
 
@@ -1482,6 +1701,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True})
         if path == "/api/system":
             return self.send_json(system_info())
+        if path == "/api/github/repos" and method == "GET":
+            return self.send_json(gh_repos())
+        if path == "/api/deploy/clone" and method == "POST":
+            return self.send_json({"job": DEPLOYER.clone(self.read_body())}, 202)
+        m = JOB_ROUTE.fullmatch(path)
+        if m and method == "GET":
+            return self.send_json(DEPLOYER.job(m.group(1)))
         if path == "/api/roadmap":
             if method == "GET":
                 return self.send_json({"items": ROADMAP.list()})
@@ -1550,6 +1776,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.download_file(svc, self.query("path"))
         if method == "GET" and action == "git":
             return self.send_json(git_status(svc))
+        if method == "POST" and action == "update":
+            DEPLOYER.update(sid)
+            return self.send_json(MANAGER.get_public(sid), 202)
         if method == "POST" and action in ("git/commit", "git/push", "git/pull"):
             if action == "git/commit":
                 out = git_commit(svc, self.read_body().get("message"))

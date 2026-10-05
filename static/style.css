@@ -418,6 +418,30 @@ main { max-width: 1260px; margin: 0 auto; padding: 30px 24px 64px; }
 .pname b { font-weight: 700; }
 .pname small { color: var(--faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ───────── nuevo servicio / GitHub ───────── */
+.choices { display: grid; gap: 10px; }
+.choice {
+  display: grid; grid-template-columns: 24px 1fr; gap: 2px 12px; align-items: center; text-align: left; cursor: pointer;
+  padding: 14px 16px; border-radius: 12px; background: var(--module); border: 1px solid var(--line-hi); box-shadow: 0 2px 0 var(--line-hi);
+}
+.choice:hover { border-color: var(--nova); }
+.choice:active { transform: translateY(2px); box-shadow: none; }
+.choice svg { width: 22px; height: 22px; color: var(--nova); grid-row: span 2; }
+.choice strong { font-size: 16px; }
+.choice small { color: var(--soft); font-size: 13.5px; }
+.gh-search { width: 100%; }
+.gh-list { max-height: 280px; overflow: auto; display: flex; flex-direction: column; gap: 4px; padding: 4px; border-radius: 12px; background: var(--sunk); box-shadow: inset 0 1px 3px rgba(0, 0, 0, .08); }
+.gh-repo {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; width: 100%; padding: 9px 12px; border: 1px solid transparent; border-radius: 9px;
+  background: transparent; cursor: pointer; text-align: left;
+}
+.gh-repo:hover { background: var(--module); box-shadow: 0 1px 0 var(--edge); }
+.gh-repo.selected { background: var(--nova-soft); border-color: var(--nova); }
+.gh-name { font-weight: 700; }
+.gh-date { margin-left: auto; font: 400 12px var(--f-mono); color: var(--faint); }
+.gh-desc { flex-basis: 100%; color: var(--soft); font-size: 13px; }
+.gh-log { max-height: 340px; min-height: 160px; }
+
 /* ───────── mejoras ───────── */
 .rm-list { overflow: hidden; }
 .rm-list[hidden] { display: none; }

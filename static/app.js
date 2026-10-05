@@ -675,6 +675,124 @@ async function removeService(s) {
   } catch (e) { toast(e.message, "error"); }
 }
 
+async function updateService(id) {
+  try {
+    await api("POST", `/api/services/${id}/update`);
+    toast("Actualizando desde GitHub: el progreso sale en la consola", "ok");
+    $('[data-tab="console"]')?.click();
+    refreshDetail(id);
+  } catch (e) { toast(e.message, "error"); }
+}
+
+// «Nuevo servicio»: desde un repositorio de GitHub o en blanco.
+function openNew() {
+  const dlg = modal(`
+    <form method="dialog">
+      <header><h2>Nuevo servicio</h2><button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
+      <div class="body">
+        <div class="choices">
+          <button type="button" class="choice" data-choice="github">${ICON.git}<strong>Desde GitHub</strong><small>Clona uno de tus repositorios, instala sus dependencias y te propone el comando y el puerto.</small></button>
+          <button type="button" class="choice" data-choice="blank">${ICON.plus}<strong>En blanco</strong><small>Rellena tú el comando y la carpeta de un programa que ya está en el servidor.</small></button>
+        </div>
+      </div>
+    </form>`, "small");
+  dlg.addEventListener("click", (e) => {
+    const c = e.target.closest("[data-choice]")?.dataset.choice;
+    if (!c) return;
+    dlg.close();
+    if (c === "github") openGithub(); else openForm(null);
+  });
+}
+
+async function openGithub() {
+  const dlg = modal(`
+    <form id="gh-form" novalidate>
+      <header><h2>Desplegar desde GitHub</h2><button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
+      <div class="body" id="gh-body">
+        <div class="form-error" id="gh-error"></div>
+        <label class="search gh-search">${ICON.search}<input id="gh-q" type="search" placeholder="Buscar en tus repositorios…" aria-label="Buscar repositorio"></label>
+        <div class="gh-list" id="gh-list"><div class="pane-msg">Cargando tus repositorios…</div></div>
+        <label class="field"><span>Repositorio</span><input id="gh-repo" class="mono" placeholder="usuario/repositorio o https://github.com/…" autocomplete="off" spellcheck="false"></label>
+        <label class="field"><span>Carpeta de destino</span><input id="gh-dest" class="mono" placeholder="se crea dentro de ~/projectes" autocomplete="off" spellcheck="false">
+          <small>Se clona aquí y se instalan sus dependencias (npm). La carpeta no debe existir.</small></label>
+      </div>
+      <footer>
+        <button type="button" class="btn ghost" data-close>Cancelar</button>
+        <button type="submit" class="btn primary" id="gh-go">${ICON.download}Clonar e instalar</button>
+      </footer>
+    </form>`);
+  let repos = [], projectsDir = "~/projectes", info = {};
+  const list = $("#gh-list", dlg), repoIn = $("#gh-repo", dlg), destIn = $("#gh-dest", dlg);
+  const draw = () => {
+    const q = $("#gh-q", dlg).value.trim().toLowerCase();
+    const shown = repos.filter((r) => !q || `${r.nameWithOwner} ${r.description || ""}`.toLowerCase().includes(q));
+    list.innerHTML = shown.length ? shown.map((r) => `
+      <button type="button" class="gh-repo${repoIn.value === r.nameWithOwner ? " selected" : ""}" data-repo="${esc(r.nameWithOwner)}" ${r.cloned ? 'title="Ya hay una carpeta con este nombre en ~/projectes"' : ""}>
+        <span class="gh-name">${esc(r.name)}</span>
+        <span class="status ${r.isPrivate ? "" : "svc"}">${r.isPrivate ? "Privado" : "Público"}</span>
+        ${r.cloned ? '<span class="dim-text">ya clonado</span>' : ""}
+        <span class="gh-date">${fmtAgo(Date.parse(r.updatedAt) / 1000)}</span>
+        ${r.description ? `<span class="gh-desc">${esc(r.description)}</span>` : ""}
+      </button>`).join("") : '<div class="pane-msg">Ningún repositorio coincide.</div>';
+  };
+  const pick = (name) => {
+    const r = repos.find((x) => x.nameWithOwner === name);
+    repoIn.value = name;
+    info = r || {};
+    destIn.value = `${projectsDir}/${name.split("/").pop()}`;
+    draw();
+  };
+  $("#gh-q", dlg).addEventListener("input", draw);
+  list.addEventListener("click", (e) => { const b = e.target.closest("[data-repo]"); if (b) pick(b.dataset.repo); });
+  repoIn.addEventListener("change", () => {
+    const name = repoIn.value.trim().replace(/\.git$/, "").split(/[/:]/).pop();
+    if (name && !destIn.value) destIn.value = `${projectsDir}/${name}`;
+  });
+  try {
+    const d = await api("GET", "/api/github/repos");
+    repos = d.repos; projectsDir = d.projects_dir;
+    draw();
+  } catch (err) {
+    list.innerHTML = `<div class="pane-msg bad-text">${esc(err.message)}</div>`;
+  }
+
+  $("#gh-form", dlg).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("#gh-go", dlg);
+    btn.disabled = true;
+    try {
+      const { job } = await api("POST", "/api/deploy/clone", { repo: repoIn.value, dest: destIn.value });
+      $("#gh-body", dlg).innerHTML = `<p class="label">Progreso</p><pre class="git-out gh-log" id="gh-log">Empezando…</pre>`;
+      btn.textContent = "Clonando…";
+      const poll = async () => {
+        if (!dlg.open) return;
+        const j = await api("GET", `/api/deploy/jobs/${job}`);
+        const log = $("#gh-log", dlg);
+        log.textContent = j.log.join("\n");
+        log.scrollTop = log.scrollHeight;
+        if (j.status === "running") return setTimeout(poll, 1000);
+        if (j.status === "error") {
+          btn.textContent = "Error";
+          toast(`No se pudo clonar: ${j.error}`, "error");
+          return;
+        }
+        const r = j.result;
+        dlg.close();
+        toast(`Clonado: proyecto ${r.kind}. Revisa los datos y crea el servicio.`, "ok");
+        const pretty = r.name.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+        openForm(null, {
+          name: pretty, description: info.description || "", tags: r.tags, command: r.command,
+          cwd: r.path, port: r.port, env: r.env || {}, autostart: true, restart_on_crash: true,
+        });
+      };
+      poll();
+    } catch (err) {
+      $("#gh-error", dlg).textContent = err.message;
+      btn.disabled = false;
+    }
+  });
+}
+
 async function powerOff() {
   try {
     const p = await api("GET", "/api/power");
@@ -704,7 +822,7 @@ document.addEventListener("click", async (e) => {
   const act = el.dataset.act;
   const s = ui.current;
   if (act === "toggle") { e.stopPropagation(); toggle(el.dataset.id || s?.id); }
-  else if (act === "new") openForm(null);
+  else if (act === "new") openNew();
   else if (act === "poweroff") powerOff();
   else if (act === "theme") toggleTheme();
   else if (act === "logout") {
@@ -713,6 +831,7 @@ document.addEventListener("click", async (e) => {
   }
   else if (!s) return;
   else if (act === "restart") restart(s.id);
+  else if (act === "update") updateService(s.id);
   else if (act === "edit") openForm(s);
   else if (act === "delete") removeService(s);
   else if (act === "clear-log") {
@@ -884,6 +1003,7 @@ async function openFile(id, path) {
 const GIT_CODES = { M: "Modificado", A: "Nuevo", D: "Borrado", R: "Renombrado", C: "Copiado", U: "En conflicto", "?": "Sin seguimiento" };
 
 function drawGitCount(g) {
+  if (g?.repo && ui.current) ui.gitRepo = ui.current.id;
   const c = $("#git-count");
   if (!c) return;
   const n = g?.repo ? g.total_changes : 0;
@@ -929,7 +1049,8 @@ function drawGit(id, g, output = "") {
       <span class="git-sync ${g.ahead || g.behind ? "warn" : ""}">${sync}</span>
       <span class="grow"></span>
       ${web ? `<a class="btn sm" href="${esc(web)}" target="_blank" rel="noopener">Ver en GitHub ↗</a>` : ""}
-      <button type="button" class="btn sm" data-git="pull">Traer cambios</button>
+      <button type="button" class="btn sm" data-git="pull" title="Solo git pull, sin reiniciar">Traer cambios</button>
+      <button type="button" class="btn sm" data-git="update" title="Pull, dependencias y reinicio">${ICON.download}Actualizar y reiniciar</button>
       <button type="button" class="btn sm ${g.ahead || !g.upstream ? "primary" : ""}" data-git="push" ${g.ahead || !g.upstream ? "" : "disabled"}>${ICON.upload}Subir a GitHub</button>
     </div>
     <div class="git-body">
@@ -952,6 +1073,7 @@ function drawGit(id, g, output = "") {
 }
 
 async function gitAction(id, act) {
+  if (act === "update") return updateService(id);
   const body = {};
   if (act === "commit") {
     body.message = $("#git-msg")?.value || "";
@@ -996,6 +1118,7 @@ function drawDetail(s) {
       </div>
       <div class="d-actions">
         ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Abrir ↗</a>` : ""}
+        ${ui.gitRepo === s.id ? `<button class="btn" data-act="update" ${s.updating ? "disabled" : ""} title="Traer cambios de GitHub, instalar dependencias y reiniciar">${ICON.download}${s.updating ? "Actualizando…" : "Actualizar"}</button>` : ""}
         <button class="btn" data-act="restart" ${s.status === "running" ? "" : "disabled"}>${ICON.restart}Reiniciar</button>
         <button class="btn" data-act="edit">${ICON.edit}Editar</button>
         <button class="btn danger" data-act="delete" ${isOn(s) || busy ? "disabled title=\"Detén el servicio para eliminarlo\"" : ""}>${ICON.trash}Eliminar</button>
@@ -1025,6 +1148,7 @@ function drawDetail(s) {
         ${s.url ? cell("URL", `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url.replace(/^https?:\/\//, ""))}</a>`) : ""}
         ${cell("Última salida", s.last_exit_at ? `${s.last_exit ?? "?"} <span class="dim-text">· ${fmtTime(s.last_exit_at)}</span>` : dash)}
         ${cell("Reinicios auto · 1 h", s.auto_restarts)}
+        ${s.last_update ? cell("Última actualización", `<span class="${s.last_update.ok ? "" : "bad-text"}">${esc(s.last_update.msg)}</span> <span class="dim-text">· ${fmtAgo(s.last_update.at)}</span>`) : ""}
       </dl>
     </div>
     <div class="module">
@@ -1252,7 +1376,7 @@ function confirmDialog(title, text, okLabel) {
   });
 }
 
-function openForm(svc) {
+function openForm(svc, prefill = null) {
   const dlg = modal(`
     <form id="svc-form" novalidate>
       <header>
@@ -1297,20 +1421,21 @@ function openForm(svc) {
 
   const form = dlg.querySelector("form");
   const f = form.elements;
-  if (svc) {
-    f.name.value = svc.name;
-    f.description.value = svc.description || "";
-    f.tags.value = (svc.tags || []).join(", ");
-    f.command.value = svc.command;
-    f.cwd.value = svc.cwd || "";
-    f.port.value = svc.port ?? "";
-    f.url.value = svc.url || "";
-    if (f.subdomain) f.subdomain.value = svc.subdomain || "";
-    f.autostart.checked = !!svc.autostart;
-    f.restart_on_crash.checked = !!svc.restart_on_crash;
-    f.env.value = Object.entries(svc.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
-    f.stop_command.value = svc.stop_command || "";
-    f.stop_timeout.value = svc.stop_timeout ?? "";
+  const src = svc || prefill;
+  if (src) {
+    f.name.value = src.name;
+    f.description.value = src.description || "";
+    f.tags.value = (src.tags || []).join(", ");
+    f.command.value = src.command;
+    f.cwd.value = src.cwd || "";
+    f.port.value = src.port ?? "";
+    f.url.value = src.url || "";
+    if (f.subdomain) f.subdomain.value = src.subdomain || "";
+    f.autostart.checked = !!src.autostart;
+    f.restart_on_crash.checked = !!src.restart_on_crash;
+    f.env.value = Object.entries(src.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
+    f.stop_command.value = src.stop_command || "";
+    f.stop_timeout.value = src.stop_timeout ?? "";
     if (f.env.value || f.stop_command.value) dlg.querySelector("details").open = true;
   }
   f.name.focus();
