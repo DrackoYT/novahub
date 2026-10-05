@@ -122,10 +122,25 @@ function toast(msg, kind = "") {
   setTimeout(() => el.remove(), 3800);
 }
 
+// Con Cloudflare Access delante, al caducar la sesión de Google las peticiones se redirigen a su
+// login (otro dominio) y el navegador las bloquea. Si es eso, se recarga para ir a identificarse.
+async function checkAccessSession() {
+  try {
+    const probe = await fetch("/", { redirect: "manual", cache: "no-store" });
+    if (probe.type === "opaqueredirect") location.reload();
+  } catch { /* sin conexión de verdad */ }
+}
+
 async function api(method, url, body) {
   const headers = { "X-NovaHub": "1" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, credentials: "same-origin" });
+  let res;
+  try {
+    res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, credentials: "same-origin" });
+  } catch (err) {
+    await checkAccessSession();
+    throw new Error("Sin conexión con el servidor");
+  }
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && url !== "/api/login") {
     showLogin();
