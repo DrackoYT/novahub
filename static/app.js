@@ -8,7 +8,14 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const ICON = {
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>',
-  power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.4 6.4a8 8 0 1 0 11.2 0"/></svg>',
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>',
+  grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></svg>',
+  globe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/></svg>',
+  cpu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M10 2v4M14 2v4M10 18v4M14 18v4M2 10h4M2 14h4M18 10h4M18 14h4"/></svg>',
+  mem: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 17v3M12 17v3M17 17v3M7 11h2M11 11h2M15 11h2"/></svg>',
+  disk: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  expand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>',
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
   power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v8M6.3 7.2a8 8 0 1 0 11.4 0"/></svg>',
@@ -25,7 +32,7 @@ const LOGO = `<svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
   <path class="top" d="M16 3l11.3 6.5L16 16 4.7 9.5z"/>
   <path class="edge" d="M16 3l11.3 6.5v13L16 29 4.7 22.5v-13zM4.7 9.5 16 16l11.3-6.5M16 16v13"/>
   <circle class="core" cx="16" cy="9.5" r="2.1"/></svg>`;
-const BRAND = `${LOGO}<span class="wordmark"><span class="nova">Nova</span><span class="hub">Hub</span></span>`;
+const BRAND = `${LOGO}<span class="wordmark">Nova<span class="hub">Hub</span></span>`;
 
 const STATUS_LABEL = {
   running: "En marcha",
@@ -35,6 +42,14 @@ const STATUS_LABEL = {
   crashed: "Error",
 };
 const isOn = (s) => s.status === "running" || s.status === "starting";
+const statusHTML = (s) => `<span class="status"><span class="dot"></span>${STATUS_LABEL[s.status]}</span>`;
+function switchHTML(s) {
+  const busy = s.status === "starting" || s.status === "stopping";
+  return `<button class="switch${busy ? " busy" : ""}" role="switch" aria-checked="${isOn(s)}" data-act="toggle" data-id="${esc(s.id)}"
+    title="${isOn(s) ? "Apagar" : "Encender"}" aria-label="${isOn(s) ? "Apagar" : "Encender"} ${esc(s.name)}"></button>`;
+}
+const pct = (a, b) => (b ? (a / b) * 100 : 0);
+const barHTML = (p) => `<div class="bar${p >= 90 ? " crit" : p >= 75 ? " hot" : ""}"><i style="width:${Math.min(100, p).toFixed(1)}%"></i></div>`;
 
 function fmtDuration(sec) {
   if (sec == null) return "—";
@@ -46,14 +61,14 @@ function fmtDuration(sec) {
   return `${m}m`;
 }
 
-// Cada etiqueta tiene siempre el mismo color de cinta (8 colores, elegido por hash del nombre).
+// Cada etiqueta tiene siempre el mismo color (8 colores, elegido por hash del nombre).
 function tapeClass(tag) {
   let h = 0;
   for (const ch of tag.toLowerCase()) h = (h * 31 + ch.codePointAt(0)) >>> 0;
   return `t${h % 8}`;
 }
 const tagsHTML = (tags) => tags.length
-  ? `<div class="tags">${tags.map((t) => `<span class="tape ${tapeClass(t)}">${esc(t)}</span>`).join("")}</div>`
+  ? `<div class="tags">${tags.map((t) => `<span class="tag ${tapeClass(t)}">${esc(t)}</span>`).join("")}</div>`
   : "";
 
 // Enlace para abrir el servicio: su URL, o la IP del servidor + el puerto.
@@ -129,7 +144,7 @@ function showLogin() {
   clearView();
   app.innerHTML = `
     <div class="login-wrap">
-      <div class="login">
+      <div class="login panel">
         <div class="brand">${BRAND}</div>
         <p class="sub">Panel de servicios · acceso restringido</p>
         <form id="login-form">
@@ -155,12 +170,20 @@ function showLogin() {
 
 // ───────────────────────── esqueleto ─────────────────────────
 
+const NAV = [
+  ["overview", "#/", "Resumen", ICON.home],
+  ["services", "#/servicios", "Servicios", ICON.grid],
+];
+
 function shell() {
   app.innerHTML = `
     <header class="topbar">
       <a class="brand" href="#/" aria-label="NovaHub · inicio">${BRAND}</a>
-      <div class="sys" id="sys"></div>
+      <nav class="nav" aria-label="Secciones">
+        ${NAV.map(([key, href, label, icon]) => `<a href="${href}" data-nav="${key}">${icon}<span>${label}</span></a>`).join("")}
+      </nav>
       <div class="top-actions">
+        <span class="host-chip" id="host-chip"></span>
         <button class="btn primary" data-act="new">${ICON.plus}<span>Nuevo servicio</span></button>
         <button class="btn ghost icon" data-act="poweroff" title="Apagar servidor" aria-label="Apagar servidor">${ICON.power}</button>
         <button class="btn ghost icon" data-act="logout" title="Cerrar sesión" aria-label="Cerrar sesión">${ICON.logout}</button>
@@ -170,30 +193,91 @@ function shell() {
 }
 
 async function refreshSystem() {
-  const el = $("#sys");
-  if (!el) return;
   try {
     const s = await api("GET", "/api/system");
+    ui.sys = s;
     ui.lanIp = s.lan_ip;
     ui.publishDomain = s.publish_domain;
     ui.user = s.user;
     ui.host = s.hostname;
-    const cpuPct = (s.load[0] / s.cpus) * 100;
-    const memPct = (s.mem_used / s.mem_total) * 100;
-    const diskPct = (s.disk_used / s.disk_total) * 100;
-    // medidor de 10 segmentos; en ámbar a partir del 80 %
-    const meter = (p) => {
-      const n = Math.round(Math.min(100, p) / 10);
-      return `<span class="meter${p >= 80 ? " hot" : ""}">${Array.from({ length: 10 }, (_, i) => `<i${i < n ? ' class="f"' : ""}></i>`).join("")}</span>`;
-    };
-    el.innerHTML = `
-      <span class="sys-item host">Host <b>${esc(s.hostname)}</b></span>
-      <span class="sys-item">CPU ${meter(cpuPct)} <b>${s.load[0].toFixed(2)}</b></span>
-      <span class="sys-item">RAM ${meter(memPct)} <b>${fmtBytes(s.mem_used)}</b></span>
-      <span class="sys-item opt">Disco ${meter(diskPct)} <b>${diskPct.toFixed(0)}%</b></span>
-      <span class="sys-item opt">Uptime <b>${fmtDuration(s.uptime)}</b></span>`;
-    if (!ui.current && ui.services.length) drawList(); // los enlaces «Abrir» dependen de la IP del servidor
+    const chip = $("#host-chip");
+    if (chip) chip.innerHTML = `<span>${esc(s.user)}@<b>${esc(s.hostname)}</b></span>`;
+    drawKpis();
+    if (!ui.current && ui.services.length) { drawList(); drawOverview(); } // los enlaces «Abrir» dependen de la IP del servidor
   } catch { /* silencioso */ }
+}
+
+// ───────────────────────── vista: resumen ─────────────────────────
+
+function viewOverview() {
+  $("#main").innerHTML = `
+    <section class="page-head">
+      <div>
+        <h1 class="page-title">Resumen</h1>
+        <p class="page-sub" id="ov-sub">Estado del servidor y de tus servicios</p>
+      </div>
+    </section>
+    <section class="kpis" id="kpis"></section>
+    <div class="section-title"><h2>Servicios</h2><a href="#/servicios">Ver todos →</a></div>
+    <section class="panel rows" id="ov-rows"></section>`;
+  drawKpis();
+  refreshOverview();
+  every(3000, refreshOverview);
+}
+
+async function refreshOverview() {
+  try {
+    ui.services = (await api("GET", "/api/services")).services;
+    drawOverview();
+  } catch { /* el 401 ya redirige */ }
+}
+
+function kpiHTML(icon, label, value, sub, p) {
+  return `<div class="panel kpi">
+    <span class="kpi-label">${icon}${label}</span>
+    <span class="kpi-value">${value}</span>
+    ${p != null ? barHTML(p) : ""}
+    <span class="kpi-sub">${sub}</span>
+  </div>`;
+}
+
+function drawKpis() {
+  const el = $("#kpis"), s = ui.sys;
+  if (!el || !s) return;
+  const cpu = pct(s.load[0], s.cpus), mem = pct(s.mem_used, s.mem_total), disk = pct(s.disk_used, s.disk_total);
+  const html =
+    kpiHTML(ICON.cpu, "CPU", `${cpu.toFixed(0)}<small>%</small>`, `carga ${s.load[0].toFixed(2)} · ${s.cpus} núcleos`, cpu) +
+    kpiHTML(ICON.mem, "Memoria", `${fmtBytes(s.mem_used)}`, `de ${fmtBytes(s.mem_total)}`, mem) +
+    kpiHTML(ICON.disk, "Disco", `${disk.toFixed(0)}<small>%</small>`, `${fmtBytes(s.disk_used)} de ${fmtBytes(s.disk_total)}`, disk) +
+    kpiHTML(ICON.clock, "Encendido", fmtDuration(s.uptime), esc(s.hostname), null);
+  if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+
+function drawOverview() {
+  const el = $("#ov-rows");
+  if (!el) return;
+  const all = ui.services;
+  const running = all.filter((s) => s.status === "running").length;
+  const crashed = all.filter((s) => s.status === "crashed").length;
+  const sub = $("#ov-sub");
+  if (sub) sub.innerHTML = all.length
+    ? `<b>${running}</b> de ${all.length} servicios en marcha${crashed ? ` · <span class="bad-text">${crashed} con error</span>` : ""}`
+    : "Aún no hay servicios";
+  // primero los que tienen error, luego los encendidos
+  const order = { crashed: 0, starting: 1, stopping: 1, running: 2, stopped: 3 };
+  const list = [...all].sort((a, b) => order[a.status] - order[b.status]);
+  const html = list.length ? list.map((s) => {
+    const url = s.status === "running" ? openUrl(s) : null;
+    return `<a class="row" href="#/s/${esc(s.id)}" data-status="${s.status}">
+      ${statusHTML(s)}
+      <span class="row-name">${esc(s.name)}</span>
+      <span class="row-meta">
+        ${s.subdomain && url ? `<span class="opt">${esc(url.replace(/^https?:\/\//, ""))}</span>` : ""}
+        ${s.status === "running" ? `<span class="num">${fmtDuration(s.uptime)}</span>` : ""}
+      </span>
+    </a>`;
+  }).join("") : `<div class="row-empty">Añade tu primer servicio con «Nuevo servicio».</div>`;
+  if (el._html !== html) { el.innerHTML = html; el._html = html; }
 }
 
 // ───────────────────────── vista: lista ─────────────────────────
@@ -201,8 +285,11 @@ async function refreshSystem() {
 function viewList() {
   $("#main").innerHTML = `
     <section class="page-head">
-      <h1 class="page-title">Servicios</h1>
-      <div class="counter" id="summary"></div>
+      <div>
+        <h1 class="page-title">Servicios</h1>
+        <p class="page-sub">Enciende, apaga y vigila cada servicio</p>
+      </div>
+      <div id="summary"></div>
     </section>
     <section class="toolbar">
       <label class="search">${ICON.search}<input id="q" type="search" placeholder="buscar…" aria-label="Buscar"></label>
@@ -245,27 +332,29 @@ async function refreshList() {
   } catch (e) { /* el 401 ya redirige */ }
 }
 
-function cardHTML(s, index) {
-  const busy = s.status === "starting" || s.status === "stopping";
+function cardHTML(s) {
   const foot = [];
-  if (s.status === "running") foot.push(`<span><span class="k">Up</span><span class="v">${fmtDuration(s.uptime)}</span></span>`);
-  else if (s.status === "crashed" && s.last_exit != null) foot.push(`<span><span class="k">Exit</span><span class="bad-text">${s.last_exit}</span></span>`);
-  else foot.push(`<span class="dim-text">—</span>`);
+  if (s.status === "running") foot.push(`<span><span class="k">Activo</span><span class="v">${fmtDuration(s.uptime)}</span></span>`);
+  else if (s.status === "crashed" && s.last_exit != null) foot.push(`<span><span class="k">Salida</span><span class="v bad-text">${s.last_exit}</span></span>`);
+  if (s.status === "running" && s.memory != null) foot.push(`<span><span class="k">RAM</span><span class="v">${fmtBytes(s.memory)}</span></span>`);
   if (s.port) {
-    foot.push(`<span title="${s.listening ? "El puerto está escuchando" : "El puerto no está escuchando"}"><span class="k">Port</span>` +
-      `<span class="${s.listening ? "ok-text" : "dim-text"}">:${s.port}${s.listening ? " ●" : " ○"}</span></span>`);
+    foot.push(`<span title="${s.listening ? "El puerto está escuchando" : "El puerto no está escuchando"}"><span class="k">Puerto</span>` +
+      `<span class="v ${s.listening ? "ok-text" : "dim-text"}">${s.port}</span></span>`);
   }
+  if (!foot.length) foot.push(`<span class="dim-text">Detenido</span>`);
   const url = s.status === "running" ? openUrl(s) : null;
-  if (url) foot.push(`<a class="open-link" href="${esc(url)}" target="_blank" rel="noopener">Abrir ↗</a>`);
+  const link = url
+    ? `<a class="card-link" href="${esc(url)}" target="_blank" rel="noopener">${s.subdomain ? ICON.globe : ""}<span>${esc(url.replace(/^https?:\/\//, ""))}</span> ↗</a>`
+    : "";
   return `
     <div class="card-top">
-      <span class="card-index">${String(index + 1).padStart(2, "0")}</span>
-      <span class="status-word"><span class="led"></span>${STATUS_LABEL[s.status]}</span>
-      <button class="power-btn${busy ? " busy" : ""}" role="switch" aria-checked="${isOn(s)}" data-act="toggle" data-id="${esc(s.id)}"
-        title="${isOn(s) ? "Apagar" : "Encender"}" aria-label="${isOn(s) ? "Apagar" : "Encender"} ${esc(s.name)}">${ICON.power}</button>
+      ${statusHTML(s)}
+      <span style="flex:1"></span>
+      ${switchHTML(s)}
     </div>
     <h3 class="card-name">${esc(s.name)}</h3>
     ${s.description ? `<p class="card-desc">${esc(s.description)}</p>` : ""}
+    ${link}
     ${tagsHTML(s.tags)}
     <footer class="card-foot">${foot.join("")}</footer>`;
 }
@@ -286,9 +375,7 @@ function drawList() {
   if (filters._html !== filtersHTML) { filters.innerHTML = filtersHTML; filters._html = filtersHTML; }
 
   const running = all.filter((s) => s.status === "running").length;
-  $("#summary").innerHTML = all.length
-    ? `<b>${String(running).padStart(2, "0")}</b><span class="of">/${String(all.length).padStart(2, "0")}</span> en marcha`
-    : "";
+  $("#summary").innerHTML = all.length ? `<span class="pill"><b>${running}</b> de ${all.length} en marcha</span>` : "";
 
   const q = ui.q.trim().toLowerCase();
   const list = all.filter((s) =>
@@ -319,7 +406,7 @@ function drawList() {
       el.dataset.id = s.id;
       ui.cards.set(s.id, el);
     }
-    const html = cardHTML(s, all.indexOf(s));
+    const html = cardHTML(s);
     if (el._html !== html) { el.innerHTML = html; el._html = html; }
     el.dataset.status = s.status;
     grid.appendChild(el); // mantiene el orden
@@ -362,7 +449,7 @@ async function removeService(s) {
   try {
     const res = await api("DELETE", `/api/services/${s.id}`);
     toast(res.notice ? `Servicio eliminado. ${res.notice}` : "Servicio eliminado", "ok");
-    location.hash = "#/";
+    location.hash = "#/servicios";
   } catch (e) { toast(e.message, "error"); }
 }
 
@@ -385,6 +472,7 @@ async function powerOff() {
 
 function refreshCurrent() {
   if (ui.current) refreshDetail(ui.current.id);
+  else if ($("#ov-rows")) refreshOverview();
   else refreshList();
 }
 
@@ -415,22 +503,18 @@ document.addEventListener("click", async (e) => {
 
 function viewDetail(id) {
   $("#main").innerHTML = `
-    <a class="back" href="#/">${ICON.back}Servicios</a>
+    <a class="back" href="#/servicios">${ICON.back}Servicios</a>
     <div id="d-head"></div>
+    <section class="kpis d-kpis" id="d-kpis"></section>
     <div class="d-body">
-      <aside class="side" id="d-info"></aside>
       <section class="term" id="term">
         <div class="term-bar">
-          <span class="lights">
-            <button type="button" class="r" data-term="close" title="Cerrar (volver a servicios)" aria-label="Volver a servicios">×</button>
-            <button type="button" class="y" data-term="min" title="Restaurar tamaño" aria-label="Restaurar tamaño">−</button>
-            <button type="button" class="g" data-term="max" title="Pantalla completa" aria-label="Pantalla completa">+</button>
-          </span>
-          <span class="term-title" id="live"><span class="led"></span>${esc(id)} <span class="dim">— bash — live</span></span>
+          <span class="term-title" id="live">Consola <span class="live"><span class="dot"></span>en directo</span></span>
           <div class="term-tools">
-            <label class="chk"><input type="checkbox" id="autoscroll" checked>Auto-scroll</label>
-            <a class="btn sm ghost" href="/api/services/${esc(id)}/logs/download" download title="Descargar log" aria-label="Descargar log">${ICON.download}</a>
-            <button class="btn sm ghost" data-act="clear-log" title="Limpiar consola" aria-label="Limpiar consola">${ICON.trash}</button>
+            <label class="chk" title="Auto-scroll"><input type="checkbox" id="autoscroll" checked><span>Auto-scroll</span></label>
+            <a class="btn sm icon ghost" href="/api/services/${esc(id)}/logs/download" download title="Descargar log" aria-label="Descargar log">${ICON.download}</a>
+            <button class="btn sm icon ghost" data-act="clear-log" title="Limpiar consola" aria-label="Limpiar consola">${ICON.trash}</button>
+            <button class="btn sm icon ghost" data-term="max" title="Pantalla completa (Esc para salir)" aria-label="Pantalla completa">${ICON.expand}</button>
           </div>
         </div>
         <pre class="term-out" id="out"></pre>
@@ -440,15 +524,12 @@ function viewDetail(id) {
           <button class="btn sm" type="submit">↵</button>
         </form>
       </section>
+      <aside class="side" id="d-info"></aside>
     </div>`;
 
-  // semáforo de la ventana: rojo vuelve a la lista, amarillo restaura, verde maximiza
   const term = $("#term");
-  term.querySelector(".lights").addEventListener("click", (e) => {
-    const act = e.target.closest("[data-term]")?.dataset.term;
-    if (act === "close") location.hash = "#/";
-    else if (act === "min") term.classList.remove("max");
-    else if (act === "max") term.classList.toggle("max");
+  term.querySelector("[data-term=max]").addEventListener("click", () => {
+    term.classList.toggle("max");
     $("#out").scrollTop = $("#out").scrollHeight;
   });
 
@@ -464,7 +545,7 @@ async function refreshDetail(id) {
   try {
     s = await api("GET", `/api/services/${id}`);
   } catch (e) {
-    if (e.message === "Servicio no encontrado") { toast(e.message, "error"); location.hash = "#/"; }
+    if (e.message === "Servicio no encontrado") { toast(e.message, "error"); location.hash = "#/servicios"; }
     return;
   }
   if (!ui.current || ui.current.id !== id) return;
@@ -478,7 +559,7 @@ function drawDetail(s) {
   const head = `
     <div class="d-head" data-status="${s.status}">
       <div class="d-title">
-        <div class="d-status"><span class="status-word"><span class="led"></span>${STATUS_LABEL[s.status]}</span><span class="sid">#${esc(s.id)}</span></div>
+        <div class="d-status">${statusHTML(s)}<span class="sid">${esc(s.id)}</span></div>
         <h1>${esc(s.name)}</h1>
         ${s.description ? `<p class="d-desc">${esc(s.description)}</p>` : ""}
         ${tagsHTML(s.tags)}
@@ -497,33 +578,35 @@ function drawDetail(s) {
 
   const cell = (k, v, cls = "") => `<div class="${cls}"><dt>${k}</dt><dd>${v}</dd></div>`;
   const dash = '<span class="dim-text">—</span>';
-  let portVal = dash;
-  if (s.port) portVal = `${s.port} ${s.listening ? '<span class="ok-text">●</span>' : '<span class="dim-text">○</span>'}`;
+  const on = s.status === "running";
+  const kpis =
+    kpiHTML(ICON.clock, "Activo", on ? fmtDuration(s.uptime) : "—", on ? `desde ${fmtTime(s.started_at)}` : STATUS_LABEL[s.status], null) +
+    kpiHTML(ICON.cpu, "CPU", s.cpu != null ? `${s.cpu.toFixed(1)}<small>%</small>` : "—", s.processes ? `${s.processes} proceso${s.processes > 1 ? "s" : ""}` : "sin procesos", null) +
+    kpiHTML(ICON.mem, "Memoria", s.memory != null ? fmtBytes(s.memory) : "—", s.pid ? `PID ${s.pid}` : "—", null) +
+    kpiHTML(ICON.globe, "Puerto", s.port ?? "—",
+      s.port ? (s.listening ? '<span class="ok-text">escuchando</span>' : "no escucha") : "sin puerto", null);
+  const kpiEl = $("#d-kpis");
+  if (kpiEl && kpiEl._html !== kpis) { kpiEl.innerHTML = kpis; kpiEl._html = kpis; }
+
   const envKeys = Object.keys(s.env || {});
   const info = `
-    <div>
-      <p class="section-label">Lecturas</p>
+    <div class="panel">
+      <div class="panel-head">Estado</div>
       <dl class="readout">
-        ${cell("Uptime", s.uptime != null ? fmtDuration(s.uptime) : dash)}
-        ${cell("PID", s.pid ?? dash)}
-        ${cell("CPU", s.cpu != null ? `${s.cpu.toFixed(1)}%` : dash)}
-        ${cell("Memoria", s.memory != null ? fmtBytes(s.memory) : dash)}
-        ${cell("Puerto", portVal)}
-        ${cell("Procesos", s.processes ?? dash)}
-        ${cell("Última salida", s.last_exit_at ? `${s.last_exit ?? "?"} <span class="dim-text">· ${fmtTime(s.last_exit_at)}</span>` : dash, "wide")}
-        ${s.url ? cell("URL", `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url.replace(/^https?:\/\//, ""))}</a>`, "wide") : ""}
+        ${s.url ? cell("URL", `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url.replace(/^https?:\/\//, ""))}</a>`) : ""}
+        ${cell("Última salida", s.last_exit_at ? `${s.last_exit ?? "?"} <span class="dim-text">· ${fmtTime(s.last_exit_at)}</span>` : dash)}
+        ${cell("Reinicios auto · 1 h", s.auto_restarts)}
       </dl>
     </div>
-    <div>
-      <p class="section-label">Configuración</p>
+    <div class="panel">
+      <div class="panel-head">Configuración</div>
       <dl class="readout">
         ${cell("Comando", `<code>${esc(s.command)}</code>`, "wide")}
         ${cell("Directorio", `<code>${esc(s.cwd || "~")}</code>`, "wide")}
         ${envKeys.length ? cell("Variables", `<code>${envKeys.map(esc).join("\n")}</code>`, "wide") : ""}
         ${cell("Autoarranque", s.autostart ? "Sí" : "No")}
         ${cell("Si falla", s.restart_on_crash ? "Reinicia" : "Se para")}
-        ${cell("Parada", s.stop_command ? `<code>${esc(s.stop_command)}</code>` : "SIGTERM", "wide")}
-        ${cell("Reinicios auto · 1 h", s.auto_restarts, "wide")}
+        ${cell("Parada", s.stop_command ? `<code>${esc(s.stop_command)}</code>` : "SIGTERM")}
       </dl>
     </div>`;
   const infoEl = $("#d-info");
@@ -840,9 +923,14 @@ function openForm(svc) {
 function route() {
   if (!$("#main")) shell();
   clearView();
-  const m = location.hash.match(/^#\/s\/([a-z0-9-]+)$/);
-  if (m) viewDetail(m[1]);
-  else viewList();
+  const hash = location.hash;
+  const m = hash.match(/^#\/s\/([a-z0-9-]+)$/);
+  let section = "overview";
+  if (m) { viewDetail(m[1]); section = "services"; }
+  else if (hash === "#/servicios") { viewList(); section = "services"; }
+  else viewOverview();
+  document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
+  window.scrollTo(0, 0);
   refreshSystem();
   every(5000, refreshSystem);
 }
