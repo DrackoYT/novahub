@@ -7,8 +7,9 @@ Description=NovaHub - panel de servicios
 After=network-online.target
 
 [Service]
-WorkingDirectory=%h/novahub
-ExecStart=/usr/bin/python3 %h/novahub/server.py
+# Ajusta la ruta si clonaste NovaHub en otra carpeta.
+WorkingDirectory=%h/projectes/novahub
+ExecStart=/usr/bin/python3 %h/projectes/novahub/server.py
 Environment=NOVAHUB_HOST=127.0.0.1
 Environment=NOVAHUB_PORT=8686
 # Activa «Publicar en internet» en el panel (ver README):

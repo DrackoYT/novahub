@@ -146,7 +146,7 @@ async function api(method, url, body) {
   let res;
   try {
     res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, credentials: "same-origin" });
-  } catch (err) {
+  } catch {
     await checkAccessSession();
     throw new Error("Sin conexión con el servidor");
   }
@@ -559,7 +559,7 @@ async function refreshList() {
   try {
     ui.services = (await api("GET", "/api/services")).services;
     drawList();
-  } catch (e) { /* el 401 ya redirige */ }
+  } catch { /* el 401 ya redirige */ }
 }
 
 function cardHTML(s) {

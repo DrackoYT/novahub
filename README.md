@@ -7,12 +7,19 @@ Panel web para encender, apagar y vigilar los servicios de tu servidor con un cl
 - Consola en directo con colores, y caja para **enviar comandos** al proceso (stdin).
 - Reinicio automático si se cae, autoarranque al iniciar el panel y comando de parada suave (p. ej. `stop` en Minecraft).
 - Los servicios **siguen funcionando aunque reinicies o actualices el panel**: al volver los recupera.
-- Sin dependencias: solo Python 3.9+.
+- **Vigilancia**: comprobación de salud (HTTP o puerto) y límite de memoria con reinicio automático.
+- **Publicar en internet** con un subdominio a través de Cloudflare Tunnel, con página «Reiniciando…»
+  (503) mientras el servicio no responde.
+- **Desplegar desde GitHub** (clonar, instalar dependencias, «Actualizar» con un botón) y **plantillas**
+  para empezar proyectos nuevos (web, React + Vite, API, bot de Discord, Flask, Minecraft).
+- Por servicio: **explorador de archivos** (solo lectura) y **Git** (commit, subir y traer cambios).
+- **Procesos**: qué usa la memoria y la CPU del servidor, agrupado por aplicación.
+- Tema claro y oscuro. Sin dependencias: solo Python 3.9+.
 
 ## Puesta en marcha
 
 ```bash
-cd ~/novahub
+cd ~/projectes/novahub            # o donde lo hayas clonado (ajusta también novahub.service)
 python3 server.py set-password     # elige la contraseña del panel
 python3 server.py                  # http://127.0.0.1:8686
 ```

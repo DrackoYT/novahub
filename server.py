@@ -81,7 +81,7 @@ def read_json(path, default):
         return default
 
 
-def write_json(path, data, mode=0o644):
+def write_json(path, data, mode=0o600):  # privados: services.json guarda variables como tokens
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -589,10 +589,11 @@ class Manager:
             self.log(sid, f"\x1b[{color}mel proceso ha terminado"
                           + (f" (código {code})" if code is not None else "") + "\x1b[0m")
             if st.get("desired") == "running" and svc.get("restart_on_crash") and code != 0:
-                recent = [t for t in st.get("restarts", []) if now - t < 60]
+                history = [t for t in st.get("restarts", []) if now - t < 3600]  # se muestra en la ficha (1 h)
+                recent = [t for t in history if now - t < 60]                    # el límite es por minuto
                 if len(recent) < MAX_AUTO_RESTARTS:
                     recent.append(now)
-                    st["restarts"] = recent
+                    st["restarts"] = history + [now]
                     delay = 2 * len(recent)
                     st["restart_at"] = now + delay
                     self.log(sid, f"reinicio automático en {delay} s "
@@ -637,6 +638,8 @@ class Manager:
         with self.lock:
             if self.running(sid) or sid in self.transition:
                 raise ApiError(409, "Detén el servicio antes de eliminarlo")
+            if (self.state.get(sid) or {}).get("updating"):
+                raise ApiError(409, "Espera a que termine de actualizarse antes de eliminarlo")
             self.services.pop(sid, None)
             self.state.pop(sid, None)
             self.save_services()
@@ -741,8 +744,11 @@ class Auth:
 
     def throttled(self, ip):
         now = time.time()
-        self.fails[ip] = [t for t in self.fails.get(ip, []) if now - t < 300]
-        return len(self.fails[ip]) >= 5
+        for key in list(self.fails):  # limpia también las IPs antiguas
+            self.fails[key] = [t for t in self.fails[key] if now - t < 300]
+            if not self.fails[key]:
+                del self.fails[key]
+        return len(self.fails.get(ip, [])) >= 5
 
     def failed(self, ip):
         self.fails.setdefault(ip, []).append(time.time())
@@ -1041,10 +1047,11 @@ class Power:
 
 # ───────────────────────────── HTTP ─────────────────────────────
 
-MANAGER: Manager
-AUTH: Auth
-PUBLISHER: Publisher
-GATEWAY: "Gateway"
+# Se crean en main(); aquí solo se declaran.
+MANAGER: Manager = None
+AUTH: Auth = None
+PUBLISHER: Publisher = None
+GATEWAY: "Gateway" = None
 POWER = Power()
 
 
@@ -1475,7 +1482,7 @@ class Gateway:
     def __init__(self):
         self.loop = asyncio.new_event_loop()
         self.servers = {}   # sid -> (puerto pasarela, puerto servicio, servidor)
-        self.failed = {}    # sid -> (puertos) que no se pudieron abrir: no se reintenta hasta que cambien
+        self.failed = {}    # sid -> (puertos, momento) que no se pudieron abrir: se reintenta cada minuto
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
 
     def sync(self):
@@ -1486,7 +1493,8 @@ class Gateway:
                 srv = self.servers.pop(sid)[2]
                 self.loop.call_soon_threadsafe(srv.close)
         for sid, ports in want.items():
-            if sid in self.servers or self.failed.get(sid) == ports:
+            failed = self.failed.get(sid)
+            if sid in self.servers or (failed and failed[0] == ports and time.time() - failed[1] < 60):
                 continue
             fut = asyncio.run_coroutine_threadsafe(
                 asyncio.start_server(partial(self.handle, sid), "127.0.0.1", ports[0], reuse_address=True), self.loop)
@@ -1494,8 +1502,9 @@ class Gateway:
                 self.servers[sid] = (*ports, fut.result(5))
                 self.failed.pop(sid, None)
             except Exception as e:  # noqa: BLE001
-                self.failed[sid] = ports
-                print(f"[pasarela] no se pudo abrir el puerto {ports[0]} para «{sid}»: {e}", flush=True)
+                if not failed or failed[0] != ports:  # se avisa una vez, no en cada reintento
+                    print(f"[pasarela] no se pudo abrir el puerto {ports[0]} para «{sid}»: {e} (se reintenta cada minuto)", flush=True)
+                self.failed[sid] = (ports, time.time())
 
     async def handle(self, sid, reader, writer):
         svc = MANAGER.services.get(sid)
@@ -1786,7 +1795,20 @@ class Deployer:
         job["log"].append(f"$ {' '.join(cmd)}")
         # en modo texto, el \r del progreso de git también corta línea: cada actualización llega por separado
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=GIT_ENV)
-        end = time.time() + timeout
+        watchdog = threading.Timer(timeout, proc.kill)  # aunque no escriba nada, no se queda colgado para siempre
+        watchdog.start()
+        try:
+            self._read_progress(job, proc)
+        finally:
+            watchdog.cancel()
+        if proc.wait() != 0:
+            if proc.returncode == -signal.SIGKILL:
+                limit = f"{timeout} s" if timeout < 120 else f"{timeout // 60} min"
+                raise RuntimeError(f"«{cmd[0]} {cmd[1]}» ha tardado más de {limit} y se ha cortado")
+            raise RuntimeError(f"«{cmd[0]} {cmd[1]}» ha fallado (código {proc.returncode})")
+
+    @staticmethod
+    def _read_progress(job, proc):
         for line in proc.stdout:
             line = line.rstrip()
             if line and job["log"] and line.split(":")[0] == job["log"][-1].split(":")[0] and "%" in line:
@@ -1794,11 +1816,6 @@ class Deployer:
             elif line:
                 job["log"].append(line)
             del job["log"][:-400]
-            if time.time() > end:
-                proc.kill()
-                raise RuntimeError("ha tardado demasiado")
-        if proc.wait() != 0:
-            raise RuntimeError(f"«{cmd[0]} {cmd[1]}» ha fallado (código {proc.returncode})")
 
     def _clone(self, job, owner, name, dest):
         try:
@@ -1897,13 +1914,13 @@ STATIC_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{name}}</title>
+  <title>{{name_html}}</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <main>
-    <h1>{{name}}</h1>
-    <p>Tu web ya está en marcha. Edita <code>index.html</code> y <code>style.css</code> en <code>{{dir}}</code>.</p>
+    <h1>{{name_html}}</h1>
+    <p>Tu web ya está en marcha. Edita <code>index.html</code> y <code>style.css</code> en <code>{{dir_html}}</code>.</p>
   </main>
 </body>
 </html>
@@ -1937,7 +1954,7 @@ VITE_INDEX = """<!doctype html>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{{name}}</title>
+    <title>{{name_html}}</title>
   </head>
   <body>
     <div id="root"></div>
@@ -1958,11 +1975,13 @@ createRoot(document.getElementById('root')).render(
 """
 VITE_APP = """import { useState } from 'react'
 
+const NAME = {{name_json}}
+
 export default function App() {
   const [clicks, setClicks] = useState(0)
   return (
     <main>
-      <h1>{{name}}</h1>
+      <h1>{NAME}</h1>
       <p>Edita <code>src/App.jsx</code>: los cambios se ven al momento.</p>
       <button onClick={() => setClicks(clicks + 1)}>Has pulsado {clicks} veces</button>
     </main>
@@ -1986,11 +2005,12 @@ EXPRESS_PACKAGE = """{
 """
 EXPRESS_INDEX = """import express from 'express'
 
+const NAME = {{name_json}}
 const app = express()
 app.use(express.json())
 
 app.get('/', (req, res) => {
-  res.json({ servicio: '{{name}}', estado: 'en marcha' })
+  res.json({ servicio: NAME, estado: 'en marcha' })
 })
 
 app.get('/api/hora', (req, res) => {
@@ -1999,7 +2019,7 @@ app.get('/api/hora', (req, res) => {
 
 const port = process.env.PORT || {{port}}
 app.listen(port, '127.0.0.1', () => {
-  console.log(`{{name}} escuchando en http://127.0.0.1:${port}`)
+  console.log(`${NAME} escuchando en http://127.0.0.1:${port}`)
 })
 """
 
@@ -2031,16 +2051,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
 client.login(process.env.DISCORD_TOKEN)
 """
 
-FLASK_APP = """import os
+FLASK_APP = """import html
+import os
 
 from flask import Flask
 
+NAME = {{name_json}}
+FOLDER = {{dir_json}}
 app = Flask(__name__)
 
 
 @app.get("/")
 def index():
-    return "<h1>{{name}}</h1><p>Edita <code>app.py</code> en {{dir}}.</p>"
+    return f"<h1>{html.escape(NAME)}</h1><p>Edita <code>app.py</code> en {html.escape(FOLDER)}.</p>"
 
 
 if __name__ == "__main__":
@@ -2048,7 +2071,7 @@ if __name__ == "__main__":
 """
 
 MC_PROPERTIES = """server-port={{port}}
-motd={{name}}
+motd={{name_motd}}
 max-players=10
 online-mode=true
 """
@@ -2160,7 +2183,12 @@ def template_create(data):
         if port in listening_ports():
             raise ApiError(409, f"El puerto {port} ya está en uso")
     fields = data.get("fields") or {}
-    values = {"name": name, "slug": slug, "port": port or "", "dir": dest}
+    import html as _html
+    values = {"name": name, "slug": slug, "port": port or "", "dir": dest,
+              # escapados para cada contexto: un nombre con comillas o <> no debe romper el código generado
+              "name_html": _html.escape(name), "dir_html": _html.escape(dest),
+              "name_json": json.dumps(name), "dir_json": json.dumps(dest),
+              "name_motd": name.encode("unicode_escape").decode("ascii")}  # server.properties es ISO-8859-1 con escapes \u
     env = {}
     for f in t.get("fields", []):
         val = str(fields.get(f["key"]) or f.get("default") or "").strip()
@@ -2278,7 +2306,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def read_body(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ApiError(400, "Cabecera Content-Length inválida")
+        if length < 0:
+            raise ApiError(400, "Cabecera Content-Length inválida")
         if length > 1024 * 1024:
             raise ApiError(413, "Petición demasiado grande")
         if not length:
