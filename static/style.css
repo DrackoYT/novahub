@@ -443,6 +443,11 @@ main { max-width: 1260px; margin: 0 auto; padding: 30px 24px 64px; }
 .gh-desc { flex-basis: 100%; color: var(--soft); font-size: 13px; }
 .gh-log { max-height: 340px; min-height: 160px; }
 
+/* avisos por correo */
+.nt-ok { margin: 0; padding: 10px 12px; border-radius: var(--r-sm); background: var(--ok-bg); color: var(--ok); font-weight: 600; font-size: 14px; }
+.git-note.bad { background: var(--err-bg); color: var(--err); }
+.field small a { color: var(--nova-text); font-weight: 600; }
+
 /* plantillas */
 .tpl-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .tpl {

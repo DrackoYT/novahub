@@ -26,6 +26,7 @@ const ICON = {
   git: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 8.5v7M18 10.5c0 4-6 3-11 6"/></svg>',
   upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9M7 14l5-5 5 5M5 3h14"/></svg>',
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
   moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>',
 };
 
@@ -231,6 +232,7 @@ function shell() {
       <div class="top-actions">
         <span class="lcd host-chip" id="host-chip"></span>
         <button class="btn primary" data-act="new">${ICON.plus}<span>Nuevo servicio</span></button>
+        <button class="btn icon" data-act="settings" title="Ajustes: avisos por correo" aria-label="Ajustes">${ICON.settings}</button>
         <button class="btn icon" data-act="theme" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema">${currentTheme() === "dark" ? ICON.sun : ICON.moon}</button>
         <button class="btn icon" data-act="poweroff" title="Apagar el servidor" aria-label="Apagar el servidor">${ICON.power}</button>
         <button class="btn icon ghost" data-act="logout" title="Cerrar sesión" aria-label="Cerrar sesión">${ICON.logout}</button>
@@ -911,6 +913,71 @@ async function openGithub() {
   });
 }
 
+// Ajustes → avisos por correo (Gmail con contraseña de aplicación).
+async function openSettings() {
+  const dlg = modal(`
+    <form id="nt-form" novalidate>
+      <header><h2>Avisos por correo</h2><button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
+      <div class="body" id="nt-body"><div class="pane-msg">Cargando…</div></div>
+      <footer>
+        <button type="button" class="btn ghost" data-close>Cancelar</button>
+        <button type="button" class="btn" id="nt-test">Enviar correo de prueba</button>
+        <button type="submit" class="btn primary" id="nt-save">Guardar</button>
+      </footer>
+    </form>`);
+  const body = $("#nt-body", dlg);
+  const draw = (n) => {
+    const status = n.last_error ? `<p class="git-note bad">Último error: ${esc(n.last_error)}</p>`
+      : n.last_sent ? `<p class="nt-ok">Último correo enviado ${fmtAgo(n.last_sent)}.</p>`
+      : n.configured ? `<p class="nt-ok">Configurado. Pulsa «Enviar correo de prueba» para comprobarlo.</p>` : "";
+    body.innerHTML = `
+      <p>NovaHub te escribirá cuando algo vaya mal. Como mucho un correo por servicio y tipo de aviso cada 10 minutos.</p>
+      ${status}
+      <div class="form-error" id="nt-error"></div>
+      <label class="field"><span>Tu Gmail</span><input id="nt-user" type="email" autocomplete="off" placeholder="tu.cuenta@gmail.com" value="${esc(n.user)}"></label>
+      <label class="field"><span>Contraseña de aplicación</span>
+        <input id="nt-pass" type="password" autocomplete="new-password" spellcheck="false" placeholder="${n.configured ? "guardada · déjala vacía para mantenerla" : "16 letras"}">
+        <small>No es tu contraseña de Google: créala en <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>
+          (hace falta tener activada la verificación en dos pasos). Se guarda en el servidor y no se vuelve a mostrar.</small></label>
+      <label class="field"><span>Enviar a</span><input id="nt-to" autocomplete="off" placeholder="${esc(n.user || "el mismo Gmail")}" value="${esc(n.to)}">
+        <small>Opcional. Varias direcciones separadas por comas.</small></label>
+      <p class="label">Avisarme cuando…</p>
+      <div class="checks">${n.events.map((e) => `
+        <label><input type="checkbox" data-event="${e.key}" ${e.on ? "checked" : ""}><span><strong>${esc(e.label)}</strong></span></label>`).join("")}
+      </div>`;
+  };
+  const values = () => {
+    const events = {};
+    body.querySelectorAll("[data-event]").forEach((c) => { events[c.dataset.event] = c.checked; });
+    return { user: $("#nt-user", dlg).value.trim(), app_password: $("#nt-pass", dlg).value, to: $("#nt-to", dlg).value.trim(), events };
+  };
+  const busy = (on) => dlg.querySelectorAll("footer .btn").forEach((b) => { b.disabled = on; });
+  const save = async () => {
+    $("#nt-error", dlg).textContent = "";
+    return api("PUT", "/api/notify", values());
+  };
+  $("#nt-form", dlg).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    busy(true);
+    try { await save(); dlg.close(); toast("Avisos guardados", "ok"); }
+    catch (err) { $("#nt-error", dlg).textContent = err.message; busy(false); }
+  });
+  $("#nt-test", dlg).addEventListener("click", async () => {
+    busy(true);
+    try {
+      draw(await save());
+      draw(await api("POST", "/api/notify/test"));
+      toast("Correo de prueba enviado: mira tu bandeja de entrada", "ok");
+    } catch (err) {
+      const el = $("#nt-error", dlg);
+      if (el) el.textContent = err.message;
+    }
+    busy(false);
+  });
+  try { draw(await api("GET", "/api/notify")); }
+  catch (err) { body.innerHTML = `<div class="pane-msg bad-text">${esc(err.message)}</div>`; }
+}
+
 async function powerOff() {
   try {
     const p = await api("GET", "/api/power");
@@ -943,6 +1010,7 @@ document.addEventListener("click", async (e) => {
   else if (act === "new") openNew();
   else if (act === "poweroff") powerOff();
   else if (act === "theme") toggleTheme();
+  else if (act === "settings") openSettings();
   else if (act === "logout") {
     await api("POST", "/api/logout").catch(() => {});
     showLogin();

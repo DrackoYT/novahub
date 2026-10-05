@@ -84,6 +84,16 @@ Opcionales: `NOVAHUB_TUNNEL` (si no, se usa el `tunnel:` del config) y `NOVAHUB_
 del túnel, pero **el registro DNS se queda** en Cloudflare (cloudflared no puede borrarlo): bórralo
 a mano en *DNS → Records* si ya no lo quieres.
 
+## Avisos por correo (Gmail)
+
+En **⚙ Ajustes** de la cabecera: tu Gmail, una *contraseña de aplicación* (créala en
+<https://myaccount.google.com/apppasswords>; necesita la verificación en dos pasos) y qué avisos quieres:
+caídas, servicios que no responden, exceso de memoria, encendido/apagado del servidor y actualizaciones
+fallidas. Cada correo incluye las últimas líneas de la consola y un enlace a la ficha del servicio.
+Como mucho un correo por servicio y tipo de aviso cada 10 minutos (y 30 por hora en total).
+La configuración se guarda en `data/notify.json` (permisos 600). Para los enlaces se usa la dirección
+pública del panel según el túnel, o `NOVAHUB_PUBLIC_URL` si la defines.
+
 ## Apagar el servidor (y el enchufe Tapo)
 
 El botón ⏻ de la barra superior para todos los servicios (con su comando de parada), programa en el

@@ -22,8 +22,11 @@ import os
 import re
 import secrets
 import shutil
+import queue
 import signal
+import smtplib
 import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -32,6 +35,7 @@ import time
 import traceback
 from functools import partial
 from datetime import datetime
+from email.message import EmailMessage
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -45,6 +49,7 @@ SERVICES_FILE = os.path.join(DATA_DIR, "services.json")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 AUTH_FILE = os.path.join(DATA_DIR, "auth.json")
 ROADMAP_FILE = os.path.join(DATA_DIR, "roadmap.json")
+NOTIFY_FILE = os.path.join(DATA_DIR, "notify.json")
 
 LOG_MAX_BYTES = 5 * 1024 * 1024    # al superarlo, el log se rota a <id>.log.1
 LOG_TAIL_BYTES = 64 * 1024         # lo que se envía al abrir la consola
@@ -354,6 +359,8 @@ class Manager:
                         self.spawn(sid)
                     except Exception as e:  # noqa: BLE001
                         self.log(sid, f"\x1b[31mno se pudo iniciar: {e}\x1b[0m")
+                        NOTIFIER.notify("crash", sid, f"{svc['name']} no ha podido arrancar",
+                                        f"Al iniciar NovaHub, el autoarranque de «{svc['name']}» ha fallado:\n{e}")
             self.save_state()
 
     def spawn(self, sid):
@@ -551,6 +558,10 @@ class Manager:
                     st["mem_gave_up"] = True
                     self.log(sid, f"\x1b[31musa {used} (límite {limit} MB), pero ya se ha reiniciado {len(recent)} veces "
                                   "en la última hora: no se vuelve a reiniciar. Sube el límite o revisa el programa.\x1b[0m")
+                    NOTIFIER.notify("memory", sid, f"{svc['name']} usa demasiada memoria",
+                                    f"«{svc['name']}» usa {used} (límite {limit} MB) y ya se ha reiniciado {len(recent)} veces "
+                                    "en la última hora, así que NovaHub ha dejado de reiniciarlo. Sube el límite o revisa el programa.",
+                                    key="gaveup")
                     self.save_state()
                 continue
             st["mem_gave_up"] = False
@@ -558,6 +569,9 @@ class Manager:
             st["mem_restarts"] = recent
             self.log(sid, f"\x1b[33musa {used} de memoria (límite {limit} MB) desde hace "
                           f"{MEM_CHECKS * MEM_CHECK_EVERY} s: reiniciando\x1b[0m")
+            NOTIFIER.notify("memory", sid, f"{svc['name']} se ha reiniciado por memoria",
+                            f"«{svc['name']}» usaba {used} de memoria (límite {limit} MB) durante "
+                            f"{MEM_CHECKS * MEM_CHECK_EVERY} s y se ha reiniciado.")
             self.save_state()
             self.stop(sid, then_start=True)
 
@@ -598,9 +612,22 @@ class Manager:
                     st["restart_at"] = now + delay
                     self.log(sid, f"reinicio automático en {delay} s "
                                   f"(intento {len(recent)}/{MAX_AUTO_RESTARTS})")
+                    NOTIFIER.notify("crash", sid, f"{svc['name']} se ha caído",
+                                    f"«{svc['name']}» {_ended(code)} y se está reiniciando solo "
+                                    f"(intento {len(recent)} de {MAX_AUTO_RESTARTS} en este minuto).", log=True)
                 else:
                     st.update(crashed=True, desired="stopped")
                     self.log(sid, "\x1b[31mdemasiados fallos seguidos, se deja de reintentar\x1b[0m")
+                    NOTIFIER.notify("crash", sid, f"{svc['name']} está parado: falla una y otra vez",
+                                    f"«{svc['name']}» se ha caído {MAX_AUTO_RESTARTS} veces en un minuto y NovaHub ha dejado "
+                                    "de reintentarlo. Revisa la consola y vuelve a encenderlo cuando esté arreglado.",
+                                    log=True, key="gaveup")
+            elif st.get("desired") == "running" and code != 0:
+                st["crashed"] = True
+                st["desired"] = "stopped"
+                NOTIFIER.notify("crash", sid, f"{svc['name']} se ha caído",
+                                f"«{svc['name']}» {_ended(code)}. No tiene activado «Reiniciar si se "
+                                "cae», así que sigue parado.", log=True)
             else:
                 st["crashed"] = code not in (0, None)
                 st["desired"] = "stopped"
@@ -1034,6 +1061,9 @@ class Power:
                 ok, msg = self.tapo("off-in", str(TAPO_DELAY))
                 say(f"enchufe Tapo: corte en {TAPO_DELAY} s" if ok else f"enchufe Tapo: no se pudo programar el corte ({msg})")
             self.phase = "poweroff"
+            NOTIFIER.send_now("power", "El servidor se está apagando",
+                              "Se ha pedido apagar el servidor desde el panel. Los servicios se han parado"
+                              + (" y el enchufe Tapo cortará la corriente en 90 s." if tapo else "."))
             say("systemctl poweroff")
             res = subprocess.run(POWEROFF_CMD, capture_output=True, text=True, timeout=30)
             if res.returncode != 0:
@@ -1428,12 +1458,20 @@ class Health:
                 st["health_gave_up"] = True
                 MANAGER.log(sid, f"\x1b[31mno responde ({detail}) y ya se ha reiniciado {len(recent)} veces en la última "
                                  "hora: no se vuelve a reiniciar. Revisa la consola o la ruta de la comprobación.\x1b[0m")
+                name = MANAGER.services[sid]["name"]
+                NOTIFIER.notify("health", sid, f"{name} no responde",
+                                f"«{name}» no responde ({detail}) y ya se ha reiniciado {len(recent)} veces en la última hora: "
+                                "NovaHub ha dejado de reiniciarlo.", log=True, key="gaveup")
                 MANAGER.save_state()
             return
         st["health_gave_up"] = False
         recent.append(now)
         st["health_restarts"] = recent
         MANAGER.log(sid, f"\x1b[33mno responde desde hace {HEALTH_FAILS * HEALTH_EVERY} s: reiniciando\x1b[0m")
+        name = MANAGER.services[sid]["name"]
+        NOTIFIER.notify("health", sid, f"{name} no respondía y se ha reiniciado",
+                        f"«{name}» no ha respondido a la comprobación de salud durante {HEALTH_FAILS * HEALTH_EVERY} s "
+                        f"({detail}) y se ha reiniciado.", log=True)
         MANAGER.save_state()
         MANAGER.stop(sid, then_start=True)
 
@@ -1669,6 +1707,178 @@ class Roadmap:
 ROADMAP = Roadmap()
 
 
+# ───────────────────────────── avisos por correo (Gmail) ─────────────────────────────
+
+NOTIFY_EVENTS = {
+    "crash": "Un servicio se cae, no arranca o se deja de reintentar",
+    "health": "Un servicio deja de responder",
+    "memory": "Un servicio usa más memoria de su límite",
+    "power": "El servidor se enciende o se apaga",
+    "update": "Falla una actualización desde GitHub",
+}
+NOTIFY_COOLDOWN = 600   # como mucho un correo por servicio y tipo de aviso cada 10 min
+NOTIFY_MAX_HOUR = 30    # y nunca más de 30 por hora en total
+EMAIL_RE = re.compile(r"[^@\s,]+@[^@\s,]+\.[^@\s,]+")
+PANEL_URL = None        # dirección pública del panel para los enlaces de los correos (se calcula en main)
+
+
+def _ended(code):
+    return f"ha terminado con error (código {code})" if code is not None else "ha terminado inesperadamente"
+
+
+def strip_ansi(text):
+    return re.sub(r"\x1b\[[0-9;?]*[@-~]", "", text)
+
+
+def log_tail(sid, lines=20):
+    try:
+        with open(log_path(sid), "rb") as f:
+            f.seek(max(0, os.path.getsize(log_path(sid)) - 16384))
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    return "\n".join(strip_ansi(text).splitlines()[-lines:])
+
+
+class Notifier:
+    """Correos de aviso por SMTP de Gmail con una contraseña de aplicación.
+    Se encolan y los envía un hilo propio: nada del panel espera nunca a Gmail."""
+
+    def __init__(self):
+        self.queue = queue.Queue()
+        self.lock = threading.Lock()
+        self.last = {}        # (tipo, servicio, clave) -> momento del último correo
+        self.sent = []        # momentos de los correos de la última hora
+        self.last_error = None
+        self.last_sent = None
+
+    def config(self):
+        return read_json(NOTIFY_FILE, {})
+
+    def configured(self, cfg=None):
+        cfg = cfg or self.config()
+        return bool(cfg.get("user") and cfg.get("app_password"))
+
+    def public(self):
+        cfg = self.config()
+        events = cfg.get("events") or {}
+        return {"configured": self.configured(cfg), "user": cfg.get("user", ""), "to": cfg.get("to", ""),
+                "events": [{"key": k, "label": v, "on": events.get(k, True)} for k, v in NOTIFY_EVENTS.items()],
+                "last_error": self.last_error, "last_sent": self.last_sent}
+
+    def save(self, data):
+        cfg = self.config()
+        user = str(data.get("user") or "").strip()
+        if user and not EMAIL_RE.fullmatch(user):
+            raise ApiError(400, "Escribe una dirección de Gmail válida")
+        password = re.sub(r"\s+", "", str(data.get("app_password") or ""))  # Google la muestra con espacios
+        if password and not re.fullmatch(r"[a-zA-Z]{16}", password):
+            raise ApiError(400, "La contraseña de aplicación son 16 letras (Google la muestra en grupos de 4)")
+        to = ", ".join(t.strip() for t in str(data.get("to") or "").split(",") if t.strip())
+        for addr in filter(None, (t.strip() for t in to.split(","))):
+            if not EMAIL_RE.fullmatch(addr):
+                raise ApiError(400, f"Dirección de destino inválida: {addr}")
+        # sin «events» en la petición se conservan los guardados (no se reactivan todos)
+        events = data["events"] if isinstance(data.get("events"), dict) else (cfg.get("events") or {})
+        cfg.update(user=user, to=to, events={k: bool(events.get(k, True)) for k in NOTIFY_EVENTS})
+        if password:
+            cfg["app_password"] = password   # vacío = se mantiene la guardada
+        if not user:
+            cfg.pop("app_password", None)    # sin cuenta no tiene sentido guardar la contraseña
+        write_json(NOTIFY_FILE, cfg)
+        return self.public()
+
+    # ── componer y enviar ──
+    def compose(self, cfg, subject, text, sid=None, log=False):
+        lines = [text, ""]
+        if sid and log:
+            tail = log_tail(sid)
+            if tail:
+                lines += ["Últimas líneas de la consola:", "─" * 40, tail, "─" * 40, ""]
+        if PANEL_URL:
+            lines.append(f"Abrir en el panel: {PANEL_URL}/#/s/{sid}" if sid else f"Abrir el panel: {PANEL_URL}")
+        lines.append(f"— NovaHub en {socket.gethostname()}, {datetime.now():%d/%m/%Y %H:%M:%S}")
+        msg = EmailMessage()
+        msg["Subject"] = f"[NovaHub] {subject}"
+        msg["From"] = f"NovaHub <{cfg['user']}>"
+        msg["To"] = cfg.get("to") or cfg["user"]
+        msg.set_content("\n".join(lines))
+        return msg
+
+    @staticmethod
+    def deliver(cfg, msg):
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20, context=ssl.create_default_context()) as smtp:
+            try:
+                smtp.login(cfg["user"], cfg["app_password"])
+            except smtplib.SMTPServerDisconnected as e:
+                # Gmail suele cortar la conexión (en vez de responder 535) si la contraseña no vale
+                raise smtplib.SMTPAuthenticationError(535, b"Gmail ha cerrado la conexion al identificarse") from e
+            smtp.send_message(msg)
+
+    def notify(self, event, sid, subject, text, log=False, key=""):
+        """Encola un aviso si está activado y no se ha mandado uno igual hace poco. No bloquea."""
+        cfg = self.config()
+        if not self.configured(cfg) or not (cfg.get("events") or {}).get(event, True):
+            return
+        now = time.time()
+        with self.lock:
+            k = (event, sid, key)
+            if now - self.last.get(k, 0) < NOTIFY_COOLDOWN:
+                return
+            self.sent = [t for t in self.sent if now - t < 3600]
+            if len(self.sent) >= NOTIFY_MAX_HOUR:
+                return
+            self.last[k] = now
+            self.sent.append(now)
+        self.queue.put(self.compose(cfg, subject, text, sid, log))
+
+    def send_now(self, event, subject, text):
+        """Envío inmediato (p. ej. justo antes de apagar el servidor): no se puede dejar en la cola."""
+        cfg = self.config()
+        if not self.configured(cfg) or not (cfg.get("events") or {}).get(event, True):
+            return
+        try:
+            self.deliver(cfg, self.compose(cfg, subject, text))
+            self.last_sent, self.last_error = time.time(), None
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"{datetime.now():%H:%M} · {e}"
+
+    def test(self):
+        cfg = self.config()
+        if not self.configured(cfg):
+            raise ApiError(400, "Primero guarda tu Gmail y la contraseña de aplicación")
+        try:
+            self.deliver(cfg, self.compose(cfg, "Correo de prueba",
+                                           "Los avisos de NovaHub funcionan. Te escribiremos aquí cuando algo vaya mal."))
+        except smtplib.SMTPAuthenticationError:
+            self.last_error = f"{datetime.now():%H:%M} · Gmail ha rechazado el usuario o la contraseña de aplicación"
+            raise ApiError(400, "Gmail ha rechazado el acceso: revisa la dirección y la contraseña de aplicación "
+                                "(no sirve tu contraseña normal)")
+        except (OSError, smtplib.SMTPException) as e:
+            self.last_error = f"{datetime.now():%H:%M} · {e}"
+            raise ApiError(502, f"No se pudo enviar: {e}")
+        self.last_sent, self.last_error = time.time(), None
+        return self.public()
+
+    def loop(self):
+        while True:
+            msg = self.queue.get()
+            for attempt in range(3):  # Gmail puede fallar un momento: dos reintentos espaciados
+                try:
+                    self.deliver(self.config(), msg)
+                    self.last_sent, self.last_error = time.time(), None
+                    break
+                except Exception as e:  # noqa: BLE001
+                    self.last_error = f"{datetime.now():%H:%M} · {e}"
+                    print(f"[avisos] no se pudo enviar «{msg['Subject']}»: {e}", flush=True)
+                    if isinstance(e, smtplib.SMTPAuthenticationError):
+                        break  # con la contraseña mal, reintentar no sirve
+                    time.sleep(30 * (attempt + 1))
+
+
+NOTIFIER = Notifier()
+
+
 # ───────────────────────────── desplegar desde GitHub ─────────────────────────────
 
 PROJECTS_DIR = os.path.expanduser(os.environ.get("NOVAHUB_PROJECTS", "~/projectes"))
@@ -1883,6 +2093,9 @@ class Deployer:
         except Exception as e:  # noqa: BLE001
             msg = str(e)
             MANAGER.log(sid, f"\x1b[31mno se pudo actualizar: {e}\x1b[0m")
+            name = MANAGER.services[sid]["name"]
+            NOTIFIER.notify("update", sid, f"No se pudo actualizar {name}",
+                            f"La actualización desde GitHub de «{name}» ha fallado: {e}", log=True)
         finally:
             with MANAGER.lock:
                 st = MANAGER.st(sid)
@@ -2399,6 +2612,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True})
         if path == "/api/system":
             return self.send_json(system_info())
+        if path == "/api/notify":
+            if method == "GET":
+                return self.send_json(NOTIFIER.public())
+            if method == "PUT":
+                return self.send_json(NOTIFIER.save(self.read_body()))
+            raise ApiError(405, "Método no permitido")
+        if path == "/api/notify/test" and method == "POST":
+            return self.send_json(NOTIFIER.test())
         if path == "/api/templates" and method == "GET":
             return self.send_json(templates_public())
         if path == "/api/templates/create" and method == "POST":
@@ -2621,6 +2842,18 @@ def seed_example():
     write_json(SERVICES_FILE, [{**DEMO, "created_at": time.time()}])
 
 
+def panel_url(port):
+    """https://<host> del panel según la regla del túnel que apunta a su puerto (si está publicado)."""
+    if not PUBLISHER.enabled:
+        return None
+    try:
+        entries = PUBLISHER.entries(PUBLISHER.read())[0]
+    except (OSError, ApiError):
+        return None
+    host = next((e[2] for e in entries if e[2] and e[3] and e[3].rstrip("/").endswith(f":{port}")), None)
+    return f"https://{host}" if host else None
+
+
 def main():
     global MANAGER, AUTH, PUBLISHER, GATEWAY
     parser = argparse.ArgumentParser(description="NovaHub — gestor de servicios")
@@ -2651,6 +2884,17 @@ def main():
     threading.Thread(target=HEALTH.loop, daemon=True).start()
     GATEWAY.sync()
     PUBLISHER.reconcile()
+    threading.Thread(target=NOTIFIER.loop, daemon=True).start()
+    global PANEL_URL
+    PANEL_URL = os.environ.get("NOVAHUB_PUBLIC_URL", "").rstrip("/") or panel_url(args.port)
+    with open("/proc/uptime") as f:
+        uptime = float(f.read().split()[0])
+    if uptime < 300:  # el servidor acaba de arrancar (no un simple reinicio del panel)
+        failed = [s["name"] for sid, s in MANAGER.services.items() if s.get("autostart") and not MANAGER.running(sid)]
+        NOTIFIER.notify("power", None, "El servidor se ha encendido",
+                        f"El servidor lleva {int(uptime)} s encendido y NovaHub está en marcha."
+                        + (f"\nNo han podido arrancar: {', '.join(failed)}." if failed else
+                           "\nTodos los servicios con autoarranque están en marcha."))
     threading.Thread(target=MANAGER.monitor, daemon=True).start()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
