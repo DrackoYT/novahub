@@ -5,14 +5,27 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const BRAND = `<span class="wordmark">NOVA<b>HUB</b></span>`;
-// Rótulo de arranque del login (fuente «ANSI Shadow»).
-const BANNER = `███╗   ██╗ ██████╗ ██╗   ██╗ █████╗ ██╗  ██╗██╗   ██╗██████╗
-████╗  ██║██╔═══██╗██║   ██║██╔══██╗██║  ██║██║   ██║██╔══██╗
-██╔██╗ ██║██║   ██║██║   ██║███████║███████║██║   ██║██████╔╝
-██║╚██╗██║██║   ██║╚██╗ ██╔╝██╔══██║██╔══██║██║   ██║██╔══██╗
-██║ ╚████║╚██████╔╝ ╚████╔╝ ██║  ██║██║  ██║╚██████╔╝██████╔╝
-╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝`;
+const ICON = {
+  power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v8M6.3 7.2a8 8 0 1 0 11.4 0"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>',
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>',
+  grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></svg>',
+  globe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+  restart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.2L3 16M3 21v-5h5"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>',
+  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>',
+  expand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>',
+  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>',
+};
+
+// Marca: el orbe de «Nebulosa» con el nombre en Unbounded.
+const BRAND = `<span class="orb" aria-hidden="true"></span><span class="wordmark">NovaHub</span>`;
 
 const STATUS_LABEL = {
   running: "En marcha",
@@ -22,22 +35,27 @@ const STATUS_LABEL = {
   crashed: "Error",
 };
 const isOn = (s) => s.status === "running" || s.status === "starting";
-const STATUS_SHORT = { running: "ON ", stopped: "OFF", starting: "...", stopping: "...", crashed: "ERR" };
-const statusHTML = (s) => {
+const statusHTML = (s) => `<span class="status">${STATUS_LABEL[s.status]}</span>`;
+// Tecla de encendido: hundida y morada mientras el servicio está en marcha.
+function keyHTML(s) {
   const busy = s.status === "starting" || s.status === "stopping";
-  return `<span class="status${busy ? " busy" : ""}" title="${STATUS_LABEL[s.status]}">${STATUS_SHORT[s.status]}</span>`;
-};
-function switchHTML(s) {
-  const busy = s.status === "starting" || s.status === "stopping";
-  return `<button class="switch${busy ? " busy" : ""}" role="switch" aria-checked="${isOn(s)}" data-act="toggle" data-id="${esc(s.id)}"
-    title="${isOn(s) ? "Apagar" : "Encender"}" aria-label="${isOn(s) ? "Apagar" : "Encender"} ${esc(s.name)}"><span class="on">ON</span><span class="off">OFF</span></button>`;
+  return `<button class="key${busy ? " busy" : ""}" role="switch" aria-checked="${isOn(s)}" data-act="toggle" data-id="${esc(s.id)}"
+    title="${isOn(s) ? "Apagar" : "Encender"}" aria-label="${isOn(s) ? "Apagar" : "Encender"} ${esc(s.name)}">${ICON.power}</button>`;
 }
 const pct = (a, b) => (b ? (a / b) * 100 : 0);
-// barra de texto: [██████░░░░░░░░]; ámbar desde el 75 %, rojo desde el 90 %
-function tbarHTML(p, cells = 20) {
-  const n = Math.round((Math.min(100, Math.max(0, p)) / 100) * cells);
-  const cls = p >= 90 ? " crit" : p >= 75 ? " hot" : "";
-  return `<span class="tbar${cls}">[<span class="f">${"█".repeat(n)}</span><span class="e">${"░".repeat(cells - n)}</span>]</span>`;
+// medidor de uso; ámbar desde el 75 %, rojo desde el 90 %
+const meterHTML = (p) => `<div class="meter${p >= 90 ? " crit" : p >= 75 ? " hot" : ""}"><i style="width:${Math.min(100, Math.max(0, p)).toFixed(1)}%"></i></div>`;
+
+// Tema: claro/oscuro según el sistema, o el elegido con el botón (se recuerda en este navegador).
+function currentTheme() {
+  return document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+}
+function toggleTheme() {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("nh-theme", next); } catch { /* sin almacenamiento: solo esta visita */ }
+  const btn = $("[data-act=theme]");
+  if (btn) btn.innerHTML = next === "dark" ? ICON.sun : ICON.moon;
 }
 
 function fmtDuration(sec) {
@@ -133,15 +151,12 @@ function showLogin() {
   clearView();
   app.innerHTML = `
     <div class="login-wrap">
-      <div class="login">
-        <pre class="banner" aria-label="NovaHub">${BANNER}</pre>
-        <pre class="boot">novahub v2 · panel de servicios
-cargando módulos ........... <span class="ok">OK</span>
-enlace seguro .............. <span class="ok">OK</span>
-acceso restringido: identifícate</pre>
+      <div class="login module">
+        <div class="brand">${BRAND}</div>
+        <p class="sub">Panel de servicios de tu servidor</p>
         <form id="login-form">
           <div class="form-error" id="login-error"></div>
-          <div class="prompt-line"><label for="pw">password:</label><input id="pw" type="password" name="password" autocomplete="current-password" required autofocus></div>
+          <label class="field"><span>Contraseña</span><input id="pw" type="password" name="password" autocomplete="current-password" required autofocus></label>
           <button class="btn primary" type="submit">Entrar</button>
         </form>
       </div>
@@ -163,8 +178,8 @@ acceso restringido: identifícate</pre>
 // ───────────────────────── esqueleto ─────────────────────────
 
 const NAV = [
-  ["overview", "#/", "Resumen", "1"],
-  ["services", "#/servicios", "Servicios", "2"],
+  ["overview", "#/", "Resumen", "1", ICON.home],
+  ["services", "#/servicios", "Servicios", "2", ICON.grid],
 ];
 
 function shell() {
@@ -172,21 +187,17 @@ function shell() {
     <header class="topbar">
       <a class="brand" href="#/" aria-label="NovaHub · inicio">${BRAND}</a>
       <nav class="nav" aria-label="Secciones">
-        ${NAV.map(([key, href, label, k]) => `<a href="${href}" data-nav="${key}"><span class="key">${k}</span>${label}</a>`).join("")}
+        ${NAV.map(([key, href, label, k, icon]) => `<a href="${href}" data-nav="${key}" title="${label} (${k})">${icon}<span>${label}</span></a>`).join("")}
       </nav>
       <div class="top-actions">
-        <span class="host-chip" id="host-chip"></span>
-        <span class="clock num" id="clock"></span>
-        <button class="btn primary" data-act="new"><span>Nuevo servicio</span></button>
-        <button class="btn" data-act="poweroff" title="Apagar el servidor">Apagar</button>
-        <button class="btn" data-act="logout" title="Cerrar sesión">Salir</button>
+        <span class="lcd host-chip" id="host-chip"></span>
+        <button class="btn primary" data-act="new">${ICON.plus}<span>Nuevo servicio</span></button>
+        <button class="btn icon" data-act="theme" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema">${currentTheme() === "dark" ? ICON.sun : ICON.moon}</button>
+        <button class="btn icon" data-act="poweroff" title="Apagar el servidor" aria-label="Apagar el servidor">${ICON.power}</button>
+        <button class="btn icon ghost" data-act="logout" title="Cerrar sesión" aria-label="Cerrar sesión">${ICON.logout}</button>
       </div>
     </header>
     <main id="main"></main>`;
-  const tick = () => { const c = $("#clock"); if (c) c.textContent = new Date().toLocaleTimeString("es-ES"); };
-  tick();
-  clearInterval(ui.clock);
-  ui.clock = setInterval(tick, 1000);
 }
 
 async function refreshSystem() {
@@ -198,7 +209,7 @@ async function refreshSystem() {
     ui.user = s.user;
     ui.host = s.hostname;
     const chip = $("#host-chip");
-    if (chip) chip.innerHTML = `<span>${esc(s.user)}@<b>${esc(s.hostname)}</b></span>`;
+    if (chip) chip.textContent = `${s.user}@${s.hostname}`;
     drawKpis();
     if (!ui.current && ui.services.length) { drawList(); drawOverview(); } // los enlaces «Abrir» dependen de la IP del servidor
   } catch { /* silencioso */ }
@@ -210,13 +221,13 @@ function viewOverview() {
   $("#main").innerHTML = `
     <section class="page-head">
       <div>
-        <h1 class="page-title cursor">Resumen</h1>
-        <p class="page-sub" id="ov-sub">estado del servidor y de tus servicios</p>
+        <h1 class="page-title">Resumen</h1>
+        <p class="page-sub" id="ov-sub">Estado del servidor y de tus servicios</p>
       </div>
     </section>
-    <section class="box" id="kpis"><span class="box-title">sistema</span></section>
-    <div class="section-title"><h2></h2><a href="#/servicios">ver todos →</a></div>
-    <section class="box flush"><span class="box-title">servicios</span><div class="rows" id="ov-rows"></div></section>`;
+    <section class="kpis" id="kpis"></section>
+    <div class="section-title"><h2>Servicios</h2><a href="#/servicios">Ver todos →</a></div>
+    <section class="module rows" id="ov-rows"></section>`;
   drawKpis();
   refreshOverview();
   every(3000, refreshOverview);
@@ -229,18 +240,25 @@ async function refreshOverview() {
   } catch { /* el 401 ya redirige */ }
 }
 
+// Módulo de cifra: rótulo, valor grande, medidor opcional y lectura en LCD.
+function kpiHTML(label, value, lcd, p) {
+  return `<div class="module kpi">
+    <span class="label">${label}</span>
+    <span class="kpi-value">${value}</span>
+    ${p != null ? meterHTML(p) : ""}
+    ${lcd ? `<span class="lcd">${lcd}</span>` : ""}
+  </div>`;
+}
+
 function drawKpis() {
   const el = $("#kpis"), s = ui.sys;
   if (!el || !s) return;
   const cpu = pct(s.load[0], s.cpus), mem = pct(s.mem_used, s.mem_total), disk = pct(s.disk_used, s.disk_total);
-  const line = (k, p, v, sub) => `<span class="k">${k}</span>${p != null ? tbarHTML(p) : "<span></span>"}<span class="v num">${v}</span><span class="s">${sub}</span>`;
-  const html = `<span class="box-title">sistema · <b>${esc(s.hostname)}</b></span>
-    <div class="meters">
-      ${line("cpu", cpu, `${cpu.toFixed(0)}%`, `carga ${s.load[0].toFixed(2)} / ${s.cpus} núcleos`)}
-      ${line("ram", mem, fmtBytes(s.mem_used), `de ${fmtBytes(s.mem_total)}`)}
-      ${line("disco", disk, `${disk.toFixed(0)}%`, `${fmtBytes(s.disk_used)} de ${fmtBytes(s.disk_total)}`)}
-      ${line("uptime", null, fmtDuration(s.uptime), `${esc(s.user)}@${esc(s.hostname)}`)}
-    </div>`;
+  const html =
+    kpiHTML("CPU", `${cpu.toFixed(0)}<small>%</small>`, `carga ${s.load[0].toFixed(2)} · ${s.cpus} núcleos`, cpu) +
+    kpiHTML("Memoria", fmtBytes(s.mem_used), `de ${fmtBytes(s.mem_total)}`, mem) +
+    kpiHTML("Disco", `${disk.toFixed(0)}<small>%</small>`, `${fmtBytes(s.disk_used)} / ${fmtBytes(s.disk_total)}`, disk) +
+    kpiHTML("Encendido", fmtDuration(s.uptime), esc(s.hostname), null);
   if (el._html !== html) { el.innerHTML = html; el._html = html; }
 }
 
@@ -252,23 +270,22 @@ function drawOverview() {
   const crashed = all.filter((s) => s.status === "crashed").length;
   const sub = $("#ov-sub");
   if (sub) sub.innerHTML = all.length
-    ? `<span class="hi">${running}/${all.length}</span> servicios en marcha${crashed ? ` · <span class="bad-text">${crashed} con error</span>` : ""}`
-    : "aún no hay servicios";
+    ? `<b>${running} de ${all.length}</b> servicios en marcha${crashed ? ` · <span class="bad-text">${crashed} con error</span>` : ""}`
+    : "Aún no hay servicios";
   // primero los que tienen error, luego los encendidos
   const order = { crashed: 0, starting: 1, stopping: 1, running: 2, stopped: 3 };
   const list = [...all].sort((a, b) => order[a.status] - order[b.status]);
   const html = list.length ? list.map((s) => {
     const url = s.status === "running" ? openUrl(s) : null;
     return `<a class="row" href="#/s/${esc(s.id)}" data-status="${s.status}">
+      ${statusHTML(s)}
       <span class="row-name">${esc(s.name)}</span>
-      <span class="row-fill"></span>
       <span class="row-meta">
-        ${s.subdomain && url ? `<span class="opt amber">${esc(url.replace(/^https?:\/\//, ""))}</span>` : ""}
+        ${s.subdomain && url ? `<span class="opt url">${esc(url.replace(/^https?:\/\//, ""))}</span>` : ""}
         ${s.status === "running" ? `<span class="num">${fmtDuration(s.uptime)}</span>` : ""}
       </span>
-      ${statusHTML(s)}
     </a>`;
-  }).join("") : `<div class="row-empty">-- vacío -- crea tu primer servicio con [nuevo servicio]</div>`;
+  }).join("") : `<div class="row-empty">Añade tu primer servicio con «Nuevo servicio».</div>`;
   if (el._html !== html) { el.innerHTML = html; el._html = html; }
 }
 
@@ -278,13 +295,13 @@ function viewList() {
   $("#main").innerHTML = `
     <section class="page-head">
       <div>
-        <h1 class="page-title cursor">Servicios</h1>
-        <p class="page-sub">enciende, apaga y vigila cada proceso</p>
+        <h1 class="page-title">Servicios</h1>
+        <p class="page-sub">Enciende, apaga y vigila cada servicio</p>
       </div>
       <div id="summary"></div>
     </section>
     <section class="toolbar">
-      <label class="search"><input id="q" type="search" placeholder="buscar" aria-label="Buscar"></label>
+      <label class="search">${ICON.search}<input id="q" type="search" placeholder="Buscar…" aria-label="Buscar"></label>
       <div class="filters" id="filters"></div>
     </section>
     <section class="grid" id="grid"></section>`;
@@ -324,7 +341,7 @@ async function refreshList() {
   } catch (e) { /* el 401 ya redirige */ }
 }
 
-function cardHTML(s, index) {
+function cardHTML(s) {
   const foot = [];
   if (s.status === "running") foot.push(`<span><span class="k">Activo</span><span class="v">${fmtDuration(s.uptime)}</span></span>`);
   else if (s.status === "crashed" && s.last_exit != null) foot.push(`<span><span class="k">Salida</span><span class="v bad-text">${s.last_exit}</span></span>`);
@@ -333,17 +350,18 @@ function cardHTML(s, index) {
     foot.push(`<span title="${s.listening ? "El puerto está escuchando" : "El puerto no está escuchando"}"><span class="k">Puerto</span>` +
       `<span class="v ${s.listening ? "ok-text" : "dim-text"}">${s.port}</span></span>`);
   }
-  if (!foot.length) foot.push(`<span class="faint">-- detenido --</span>`);
+  if (!foot.length) foot.push(`<span class="dim-text">Detenido</span>`);
   const url = s.status === "running" ? openUrl(s) : null;
   const link = url
-    ? `<a class="card-link" href="${esc(url)}" target="_blank" rel="noopener">${esc(url.replace(/^https?:\/\//, ""))}</a>`
+    ? `<a class="card-link" href="${esc(url)}" target="_blank" rel="noopener">${s.subdomain ? ICON.globe : ""}<span>${esc(url.replace(/^https?:\/\//, ""))}</span> ↗</a>`
     : "";
   return `
-    <span class="box-title">${String(index + 1).padStart(2, "0")} · <b>${esc(s.id)}</b></span>
     <div class="card-top">
-      ${statusHTML(s)}
-      <h3 class="card-name">${esc(s.name)}</h3>
-      ${switchHTML(s)}
+      <div class="grow">
+        ${statusHTML(s)}
+        <h3 class="card-name">${esc(s.name)}</h3>
+      </div>
+      ${keyHTML(s)}
     </div>
     ${s.description ? `<p class="card-desc">${esc(s.description)}</p>` : ""}
     ${link}
@@ -361,13 +379,13 @@ function drawList() {
   if (ui.tag && !tags.includes(ui.tag)) ui.tag = null;
   const filtersHTML = tags.length
     ? `<button class="chip${ui.tag ? "" : " active"}" data-tag="">Todos</button>` +
-      tags.map((t) => `<button class="chip tagchip${ui.tag === t ? " active" : ""}" data-tag="${esc(t)}">${esc(t)}</button>`).join("")
+      tags.map((t) => `<button class="chip${ui.tag === t ? " active" : ""}" data-tag="${esc(t)}"><span class="swatch ${tapeClass(t)}"></span>${esc(t)}</button>`).join("")
     : "";
   const filters = $("#filters");
   if (filters._html !== filtersHTML) { filters.innerHTML = filtersHTML; filters._html = filtersHTML; }
 
   const running = all.filter((s) => s.status === "running").length;
-  $("#summary").innerHTML = all.length ? `<span class="pill"><b>${running}/${all.length}</b> en marcha</span>` : "";
+  $("#summary").innerHTML = all.length ? `<span class="lcd">${running}/${all.length} en marcha</span>` : "";
 
   const q = ui.q.trim().toLowerCase();
   const list = all.filter((s) =>
@@ -380,8 +398,8 @@ function drawList() {
     grid.insertAdjacentHTML("beforeend", `
       <div class="empty">
         <h2>Aún no hay servicios</h2>
-        <p>añade tu primer servicio: un bot, una web, un servidor de juegos…</p>
-        <button class="btn primary" data-act="new">Crear servicio</button>
+        <p>Añade tu primer servicio: un bot, una web, un servidor de juegos…</p>
+        <button class="btn primary" data-act="new">${ICON.plus}Crear servicio</button>
       </div>`);
     return;
   }
@@ -393,17 +411,17 @@ function drawList() {
     let el = ui.cards.get(s.id);
     if (!el) {
       el = document.createElement("article");
-      el.className = "card box";
+      el.className = "card module";
       el.tabIndex = 0;
       el.dataset.id = s.id;
       ui.cards.set(s.id, el);
     }
-    const html = cardHTML(s, all.indexOf(s));
+    const html = cardHTML(s);
     if (el._html !== html) { el.innerHTML = html; el._html = html; }
     el.dataset.status = s.status;
     grid.appendChild(el); // mantiene el orden
   }
-  if (!list.length) grid.insertAdjacentHTML("beforeend", `<div class="empty"><p>-- ningún servicio coincide con el filtro --</p></div>`);
+  if (!list.length) grid.insertAdjacentHTML("beforeend", `<div class="empty"><p>Ningún servicio coincide con el filtro.</p></div>`);
 }
 
 // ───────────────────────── acciones ─────────────────────────
@@ -476,6 +494,7 @@ document.addEventListener("click", async (e) => {
   if (act === "toggle") { e.stopPropagation(); toggle(el.dataset.id || s?.id); }
   else if (act === "new") openForm(null);
   else if (act === "poweroff") powerOff();
+  else if (act === "theme") toggleTheme();
   else if (act === "logout") {
     await api("POST", "/api/logout").catch(() => {});
     showLogin();
@@ -495,26 +514,28 @@ document.addEventListener("click", async (e) => {
 
 function viewDetail(id) {
   $("#main").innerHTML = `
-    <a class="back" href="#/servicios">Servicios</a>
+    <a class="back" href="#/servicios">${ICON.back}Servicios</a>
     <div id="d-head"></div>
-    <section class="d-kpis" id="d-kpis"></section>
+    <section class="kpis d-kpis" id="d-kpis"></section>
     <div class="d-body">
-      <section class="term box" id="term">
+      <section class="term module" id="term">
         <div class="term-bar">
-          <span class="term-title" id="live">consola <span class="live">en directo</span></span>
+          <span class="term-title" id="live">Consola <span class="live">en directo</span></span>
           <div class="term-tools">
-            <label class="chk" title="Auto-scroll"><input type="checkbox" id="autoscroll" checked><span>auto-scroll</span></label>
-            <a class="btn sm" href="/api/services/${esc(id)}/logs/download" download title="Descargar log">Log</a>
-            <button class="btn sm" data-act="clear-log" title="Limpiar consola">Limpiar</button>
-            <button class="btn sm" data-term="max" title="Pantalla completa (Esc para salir)">Max</button>
+            <label class="chk" title="Auto-scroll"><input type="checkbox" id="autoscroll" checked><span>Auto-scroll</span></label>
+            <a class="btn sm icon" href="/api/services/${esc(id)}/logs/download" download title="Descargar log" aria-label="Descargar log">${ICON.download}</a>
+            <button class="btn sm icon" data-act="clear-log" title="Limpiar consola" aria-label="Limpiar consola">${ICON.trash}</button>
+            <button class="btn sm icon" data-term="max" title="Pantalla completa (Esc para salir)" aria-label="Pantalla completa">${ICON.expand}</button>
           </div>
         </div>
-        <pre class="term-out" id="out"></pre>
-        <form class="term-in" id="cin">
-          <span class="prompt" id="prompt"></span>
-          <input id="cmd" placeholder="enviar un comando al proceso…" autocomplete="off" spellcheck="false" aria-label="Comando">
-          <button class="btn sm" type="submit">↵</button>
-        </form>
+        <div class="screen">
+          <pre class="term-out" id="out"></pre>
+          <form class="term-in" id="cin">
+            <span class="prompt" id="prompt"></span>
+            <input id="cmd" placeholder="enviar un comando al proceso…" autocomplete="off" spellcheck="false" aria-label="Comando">
+            <button class="btn sm" type="submit">↵</button>
+          </form>
+        </div>
       </section>
       <aside class="side" id="d-info"></aside>
     </div>`;
@@ -551,18 +572,18 @@ function drawDetail(s) {
   const head = `
     <div class="d-head" data-status="${s.status}">
       <div class="d-title">
-        <div class="d-status">${statusHTML(s)}<span class="sid">#${esc(s.id)}</span></div>
-        <h1 class="cursor">${esc(s.name)}</h1>
+        <div class="d-status">${statusHTML(s)}<span class="sid">${esc(s.id)}</span></div>
+        <h1>${esc(s.name)}</h1>
         ${s.description ? `<p class="d-desc">${esc(s.description)}</p>` : ""}
         ${tagsHTML(s.tags)}
       </div>
       <div class="d-actions">
         ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Abrir ↗</a>` : ""}
-        <button class="btn" data-act="restart" ${s.status === "running" ? "" : "disabled"}>Reiniciar</button>
-        <button class="btn" data-act="edit">Editar</button>
-        <button class="btn danger" data-act="delete" ${isOn(s) || busy ? "disabled title=\"Detén el servicio para eliminarlo\"" : ""}>Eliminar</button>
+        <button class="btn" data-act="restart" ${s.status === "running" ? "" : "disabled"}>${ICON.restart}Reiniciar</button>
+        <button class="btn" data-act="edit">${ICON.edit}Editar</button>
+        <button class="btn danger" data-act="delete" ${isOn(s) || busy ? "disabled title=\"Detén el servicio para eliminarlo\"" : ""}>${ICON.trash}Eliminar</button>
         <button class="btn power ${isOn(s) ? "off" : "on"}" data-act="toggle" ${s.status === "stopping" ? "disabled" : ""}>
-          ${isOn(s) ? "Apagar" : "Encender"}</button>
+          ${ICON.power}${isOn(s) ? "Apagar" : "Encender"}</button>
       </div>
     </div>`;
   const headEl = $("#d-head");
@@ -571,27 +592,26 @@ function drawDetail(s) {
   const cell = (k, v, cls = "") => `<div class="${cls}"><dt>${k}</dt><dd>${v}</dd></div>`;
   const dash = '<span class="dim-text">—</span>';
   const on = s.status === "running";
-  const kpi = (k, v, sub) => `<span class="d-kpi"><span class="k">${k}</span><span class="v num">${v}</span><span class="s">${sub}</span></span>`;
   const kpis =
-    kpi("up", on ? fmtDuration(s.uptime) : "--", on ? `desde ${fmtTime(s.started_at)}` : STATUS_LABEL[s.status].toLowerCase()) +
-    kpi("cpu", s.cpu != null ? `${s.cpu.toFixed(1)}%` : "--", s.processes ? `${s.processes} proc` : "") +
-    kpi("mem", s.memory != null ? fmtBytes(s.memory) : "--", s.pid ? `pid ${s.pid}` : "") +
-    kpi("port", s.port ?? "--", s.port ? (s.listening ? '<span class="ok-text">escuchando</span>' : "no escucha") : "");
+    kpiHTML("Activo", on ? fmtDuration(s.uptime) : "—", on ? `desde ${fmtTime(s.started_at)}` : STATUS_LABEL[s.status].toLowerCase()) +
+    kpiHTML("CPU", s.cpu != null ? `${s.cpu.toFixed(1)}<small>%</small>` : "—", s.processes ? `${s.processes} proceso${s.processes > 1 ? "s" : ""}` : "sin procesos") +
+    kpiHTML("Memoria", s.memory != null ? fmtBytes(s.memory) : "—", s.pid ? `PID ${s.pid}` : "sin proceso") +
+    kpiHTML("Puerto", s.port ?? "—", s.port ? (s.listening ? "escuchando" : "no escucha") : "sin puerto");
   const kpiEl = $("#d-kpis");
   if (kpiEl && kpiEl._html !== kpis) { kpiEl.innerHTML = kpis; kpiEl._html = kpis; }
 
   const envKeys = Object.keys(s.env || {});
   const info = `
-    <div class="box">
-      <span class="box-title">estado</span>
+    <div class="module">
+      <span class="label">Estado</span>
       <dl class="readout">
         ${s.url ? cell("URL", `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url.replace(/^https?:\/\//, ""))}</a>`) : ""}
         ${cell("Última salida", s.last_exit_at ? `${s.last_exit ?? "?"} <span class="dim-text">· ${fmtTime(s.last_exit_at)}</span>` : dash)}
         ${cell("Reinicios auto · 1 h", s.auto_restarts)}
       </dl>
     </div>
-    <div class="box">
-      <span class="box-title">configuración</span>
+    <div class="module">
+      <span class="label">Configuración</span>
       <dl class="readout">
         ${cell("Comando", `<code>${esc(s.command)}</code>`, "wide")}
         ${cell("Directorio", `<code>${esc(s.cwd || "~")}</code>`, "wide")}
@@ -820,7 +840,7 @@ function openForm(svc) {
     <form id="svc-form" novalidate>
       <header>
         <h2>${svc ? "Editar servicio" : "Nuevo servicio"}</h2>
-        <button type="button" class="btn ghost icon" data-close aria-label="Cerrar"></button>
+        <button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button>
       </header>
       <div class="body">
         <div class="form-error" id="form-error"></div>

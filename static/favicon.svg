@@ -1,1 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path fill="#2b2a27" d="M4.7 9.5 16 16v13L4.7 22.5z"/><path fill="#1d1c1a" d="M27.3 9.5 16 16v13l11.3-6.5z"/><path fill="#7b4dff" d="M16 3l11.3 6.5L16 16 4.7 9.5z"/><path fill="none" stroke="#ecebe5" stroke-width="1.8" stroke-linejoin="round" d="M16 3l11.3 6.5v13L16 29 4.7 22.5v-13zM4.7 9.5 16 16l11.3-6.5M16 16v13"/><circle fill="#fff" cx="16" cy="9.5" r="2.1"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <radialGradient id="o" cx="35%" cy="30%" r="70%">
+      <stop offset="0" stop-color="#fff"/><stop offset=".3" stop-color="#b89cff"/><stop offset=".75" stop-color="#6a35f0"/><stop offset="1" stop-color="#4a1fc7"/>
+    </radialGradient>
+    <radialGradient id="g"><stop offset=".55" stop-color="#7b4dff" stop-opacity=".55"/><stop offset="1" stop-color="#7b4dff" stop-opacity="0"/></radialGradient>
+  </defs>
+  <circle cx="16" cy="16" r="16" fill="url(#g)"/>
+  <circle cx="16" cy="16" r="11" fill="url(#o)"/>
+</svg>
