@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- build.sh sustituye esta dirección por la de tu panel -->
+    <string name="panel_url">https://novahub.example.com</string>
+</resources>

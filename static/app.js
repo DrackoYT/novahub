@@ -1657,6 +1657,14 @@ function setApp(body) {
 const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 
 function appInstallHTML() {
+  const apk = ui.sys?.android_apk ? `<h3 class="set-h">Android sin navegador ni Google Play</h3>
+    <p>App propia de NovaHub (APK). Descárgala aquí, pásala al móvil (cable USB, Bluetooth…) y ábrela con el gestor de archivos;
+      Android pedirá permitir «instalar apps de origen desconocido» para ese gestor.</p>
+    <a class="btn" href="/api/app/android" download>${ICON.download}Descargar la app para Android (APK)</a>` : "";
+  return appInstallHTMLWeb() + apk;
+}
+
+function appInstallHTMLWeb() {
   if (standalone()) return '<p class="nt-ok">Ya estás usando NovaHub como app.</p>';
   if (ui.installPrompt) {
     return `<p>Ábrela desde la pantalla de inicio, a pantalla completa y sin la barra del navegador.</p>

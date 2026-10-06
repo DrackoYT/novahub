@@ -3438,6 +3438,7 @@ class Deployer:
 
 
 SERVE_PY = os.path.join(BASE_DIR, "serve.py")
+ANDROID_APK = os.path.join(DATA_DIR, "app", "NovaHub.apk")   # lo deja ahí android/build.sh (NOVAHUB_APK_OUT)
 BUILDS_DIR = os.path.join(DATA_DIR, "builds")
 
 
@@ -4666,7 +4667,7 @@ def route_permission(method, path, service_param=""):
     """(permiso, servicio) que exige cada petición de la API; None = cualquier usuario con sesión."""
     if path == "/api/me" or (path == "/api/account" and method == "PUT"):
         return None, None
-    if method == "GET" and path in ("/api/system", "/api/services"):
+    if method == "GET" and path in ("/api/system", "/api/services", "/api/app/android"):
         return "view", None
     if method == "GET" and path == "/api/metrics":
         return "view", (service_param if service_param and service_param != "system" else None)
@@ -4932,7 +4933,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(AUTH.save_settings(self.read_body()))
             raise ApiError(405, "Método no permitido")
         if path == "/api/system":
-            return self.send_json(system_info())
+            return self.send_json({**system_info(), "android_apk": os.path.isfile(ANDROID_APK)})
+        if path == "/api/app/android" and method == "GET":
+            return self.download_apk()
         if path == "/api/git-identity":
             if method == "GET":
                 return self.send_json(git_identity())
@@ -5166,6 +5169,19 @@ class Handler(BaseHTTPRequestHandler):
             pass
         finally:
             conn.close()
+
+    def download_apk(self):
+        """La app de Android compilada con android/build.sh (data/app/NovaHub.apk), para pasarla al móvil."""
+        if not os.path.isfile(ANDROID_APK):
+            raise ApiError(404, "Aún no se ha compilado la app de Android (android/build.sh)")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.android.package-archive")
+        self.send_header("Content-Disposition", 'attachment; filename="NovaHub.apk"')
+        self.send_header("Content-Length", str(os.path.getsize(ANDROID_APK)))
+        self.common_headers()
+        self.end_headers()
+        with open(ANDROID_APK, "rb") as f:
+            shutil.copyfileobj(f, self.wfile, 64 * 1024)
 
     def download_snapshot(self, sid, name):
         full = BACKUPS.path_of(sid, name)
