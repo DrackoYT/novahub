@@ -183,6 +183,7 @@ const ui = {
 function clearView() {
   ui.timers.forEach(clearInterval);
   ui.timers = [];
+  ui.backupPoll = null;
   if (ui.es) { ui.es.close(); ui.es = null; }
   ui.term = null;
   ui.current = null;
@@ -1768,8 +1769,8 @@ function drawBackups(id, b) {
       if (!$("#backups") || $("#backups").hidden) return;
       const fresh = await api("GET", `/api/services/${id}/backups`).catch(() => null);
       if (!fresh) return;
+      if (!fresh.running) { clearInterval(ui.backupPoll); ui.backupPoll = null; }
       drawBackups(id, fresh);
-      if (!fresh.running) { clearInterval(ui.backupPoll); ui.backupPoll = null; drawBackups(id, fresh); }
     }, 2000);
     ui.timers.push(ui.backupPoll);
   }

@@ -5,8 +5,9 @@
 
 - Solo escucha en 127.0.0.1: desde fuera se llega por la pasarela y el túnel de NovaHub.
 - --spa: las rutas que no son archivos devuelven index.html (React, Vue… con rutas en el navegador).
-- Los archivos con huella en el nombre (assets/app-3f9a1c.js) se guardan en caché un año; index.html
-  nunca, para que una compilación nueva se vea al momento.
+- Los archivos con huella en el nombre dentro de assets/ o static/ (assets/app-3f9a1c.js, lo que generan
+  Vite y Create React App) se guardan en caché un año; el resto, incluido index.html, se revalida siempre
+  para que una compilación nueva se vea al momento.
 - Comprime con gzip el texto (HTML, CSS, JS, JSON, SVG) si el navegador lo acepta.
 """
 
@@ -20,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
 HASHED = re.compile(r"[-.][0-9A-Za-z_]{8,}\.[a-z0-9]+$")  # app-3f9a1c2b.js, index.BcD3eF4g.css
+HASHED_DIRS = ("assets", "static")  # solo ahí: «logo-transparente.png» en la raíz no lleva huella
 COMPRESSIBLE = ("text/", "application/javascript", "application/json", "image/svg+xml", "application/xml")
 mimetypes.add_type("application/javascript", ".mjs")
 mimetypes.add_type("application/wasm", ".wasm")
@@ -38,6 +40,8 @@ class StaticHandler(BaseHTTPRequestHandler):
 
     def resolve(self):
         rel = unquote(urlparse(self.path).path).lstrip("/")
+        if "\0" in rel:
+            return None
         full = os.path.realpath(os.path.join(self.root, rel))
         if full != self.root and not full.startswith(self.root + os.sep):
             return None  # fuera de la carpeta (../ o enlaces): no existe
@@ -84,7 +88,8 @@ class StaticHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
             self.send_header("Vary", "Accept-Encoding")
         name = os.path.basename(full)
-        if name == "index.html" or not HASHED.search(name):
+        top = os.path.relpath(full, self.root).split(os.sep)[0]
+        if name == "index.html" or top not in HASHED_DIRS or not HASHED.search(name):
             self.send_header("Cache-Control", "no-cache")
         else:
             self.send_header("Cache-Control", "public, max-age=31536000, immutable")

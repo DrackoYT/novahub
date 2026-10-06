@@ -754,6 +754,7 @@ class Manager:
                     os.remove(path)
                 except FileNotFoundError:
                     pass
+            shutil.rmtree(os.path.join(BUILDS_DIR, sid), ignore_errors=True)  # compilaciones de producción
 
     def clear_log(self, sid):
         try:
@@ -814,7 +815,7 @@ class Auth:
     def __init__(self):
         self.data = read_json(AUTH_FILE, {})
         self.fails = {}    # ip -> [timestamps]
-        self.revoked = {}  # firma de token -> caducidad (sesiones cerradas antes de caducar)
+        self.revoked = {}  # «emitido» de la sesión -> caducidad máxima (sesiones cerradas antes de caducar)
 
     def configured(self):
         return bool(self.data.get("password"))
@@ -875,11 +876,13 @@ class Auth:
         if not token or "." not in token or not self.configured():
             return None
         payload, sig = token.rsplit(".", 1)
-        if not hmac.compare_digest(sig, self._sign(payload)) or sig in self.revoked:
+        if not hmac.compare_digest(sig, self._sign(payload)):
             return None
         try:
             issued, expires = (int(x) for x in payload.split(":"))
         except ValueError:
+            return None
+        if issued in self.revoked:  # sesión cerrada: vale para todos sus tokens, también los renovados
             return None
         return (issued, expires) if expires > time.time() else None
 
@@ -891,8 +894,9 @@ class Auth:
         parsed = self.parse_token(token)
         if parsed:
             now = time.time()
-            self.revoked = {s: exp for s, exp in self.revoked.items() if exp > now}  # limpia los caducados
-            self.revoked[token.rsplit(".", 1)[1]] = parsed[1]
+            self.revoked = {i: exp for i, exp in self.revoked.items() if exp > now}  # limpia los caducados
+            # ningún token de esta sesión puede durar más que su máximo absoluto
+            self.revoked[parsed[0]] = max(parsed[1], parsed[0] + self.settings()["max_hours"] * 3600)
 
     def throttled(self, ip):
         now = time.time()
@@ -2688,7 +2692,10 @@ class Deployer:
                 MANAGER.log(sid, what + "…")
                 self._logged(sid, cmd, root, 900)
             if MANAGER.services[sid].get("mode") == "prod":
-                self._build(sid, root)
+                info = self._build(sid, root)
+                with MANAGER.lock:  # por si venía de una versión que servía dist/ directamente
+                    MANAGER.services[sid]["command"] = self.prod_command(info)
+                    MANAGER.save_services()
             if MANAGER.running(sid):
                 MANAGER.log(sid, f"{len(changed)} archivo(s) nuevos: reiniciando")
                 MANAGER.restart(sid)
@@ -2723,7 +2730,31 @@ class Deployer:
         if not os.path.isfile(os.path.join(root, info["dir"], "index.html")):
             raise RuntimeError(f"la compilación no ha generado {info['dir']}/index.html")
         MANAGER.log(sid, f"\x1b[32mcompilado en {time.time() - t0:.0f} s → {info['dir']}/\x1b[0m")
+        info["serve"] = self._publish_build(sid, root, info)
         return info
+
+    @staticmethod
+    def _publish_build(sid, root, info):
+        """Copia la compilación a data/builds/<id>/<versión> y apunta «current» a ella. serve.py sirve esa
+        copia: una compilación a medias o fallida (npm vacía dist/ al empezar) nunca rompe la web en marcha."""
+        base = os.path.join(BUILDS_DIR, sid)
+        os.makedirs(base, mode=0o700, exist_ok=True)
+        ver = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        shutil.copytree(os.path.join(root, info["dir"]), os.path.join(base, ver), symlinks=True)
+        link, tmp = os.path.join(base, "current"), os.path.join(base, "current.tmp")
+        if os.path.lexists(tmp):
+            os.remove(tmp)
+        os.symlink(ver, tmp)
+        os.replace(tmp, link)  # cambio atómico de versión
+        versions = sorted(d for d in os.listdir(base) if d not in ("current", "current.tmp"))
+        for old in versions[:-2]:  # se conserva la anterior: serve.py la usa hasta que se reinicia
+            shutil.rmtree(os.path.join(base, old), ignore_errors=True)
+        return link
+
+    @staticmethod
+    def prod_command(info):
+        return (f"exec python3 {shlex.quote(SERVE_PY)} {shlex.quote(info['serve'])} "
+                f'--port "$NOVAHUB_SERVICE_PORT"' + (" --spa" if info["spa"] else ""))
 
     def set_mode(self, sid, mode):
         if mode not in ("dev", "prod"):
@@ -2760,8 +2791,7 @@ class Deployer:
                 svc = MANAGER.services[sid]
                 if svc.get("mode") != "prod":
                     svc["dev_command"] = svc["command"]  # para poder volver a desarrollo tal cual
-                svc.update(mode="prod", command=f"exec python3 {shlex.quote(SERVE_PY)} {shlex.quote(info['dir'])} "
-                                                f'--port "$NOVAHUB_SERVICE_PORT"' + (" --spa" if info["spa"] else ""))
+                svc.update(mode="prod", command=self.prod_command(info))
                 MANAGER.save_services()
                 if MANAGER.running(sid):
                     MANAGER.log(sid, "reiniciando con la versión compilada")
@@ -2784,6 +2814,7 @@ class Deployer:
 
 
 SERVE_PY = os.path.join(BASE_DIR, "serve.py")
+BUILDS_DIR = os.path.join(DATA_DIR, "builds")
 
 
 def build_info(svc):
@@ -2806,8 +2837,6 @@ def build_info(svc):
 
 DEPLOYER = Deployer()
 
-
-# ───────────────────────────── copias de seguridad ─────────────────────────────
 
 # ───────────────────────────── gráficas de uso ─────────────────────────────
 
@@ -2877,7 +2906,8 @@ class Metrics:
                 self.coarse.setdefault(key, deque(maxlen=86400 // METRICS_COARSE)).append(
                     [round(now), round(sum(p[1] for p in recent) / len(recent), 1),
                      round(sum(p[2] for p in recent) / len(recent))])
-        live = set(MANAGER.services) | {"system"}
+        with MANAGER.lock:
+            live = set(MANAGER.services) | {"system"}
         for store in (self.fine, self.coarse):  # servicios borrados
             for key in set(store) - live:
                 del store[key]
@@ -2918,6 +2948,8 @@ class Metrics:
 METRICS = Metrics()
 
 
+# ───────────────────────────── copias de seguridad ─────────────────────────────
+
 # Las copias van al disco duro de datos (HDD), no al SSD del sistema: si el SSD muere, las copias siguen ahí.
 BACKUP_MOUNT = os.environ.get("NOVAHUB_BACKUP_MOUNT", "/mnt/dades")   # "" = no exigir disco montado (pruebas)
 SNAPSHOT_DIR = os.path.abspath(os.environ.get("NOVAHUB_BACKUP_DIR", os.path.join(BACKUP_MOUNT or DATA_DIR, "novahub-copias")))
@@ -2927,6 +2959,7 @@ BACKUP_DEFAULTS = {"enabled": False, "every": "daily", "at": "04:00", "hours": 6
                    "exclude": ["node_modules", ".git", ".venv", "venv", "__pycache__", "dist", "build", ".cache", ".next"],
                    "keep": 7, "stop": False}
 BACKUP_MIN_FREE = 1024 ** 3  # no se empieza una copia con menos de 1 GB libre
+BACKUP_RETRY = 1800          # una copia automática fallida se reintenta a los 30 min
 
 
 def backup_config(svc):
@@ -3084,7 +3117,7 @@ class Backups:
         except Exception as e:  # noqa: BLE001
             msg = e.msg if isinstance(e, ApiError) else str(e)
             MANAGER.log(sid, f"\x1b[31mla copia de seguridad ha fallado: {msg}\x1b[0m")
-            self._record(sid, False, msg)
+            self._record(sid, False, msg, failed_auto=kind == "auto")
             NOTIFIER.notify("backup", sid, f"Ha fallado la copia de seguridad de {svc['name']}",
                             f"La copia de seguridad de «{svc['name']}» ha fallado: {msg}", level="danger")
         finally:
@@ -3134,7 +3167,9 @@ class Backups:
 
         try:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz", compresslevel=6) as tar:
+            meta = {"novahub.exclude": json.dumps(cfg["exclude"])}  # para restaurar con las mismas exclusiones
+            with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz", compresslevel=6,
+                                                           format=tarfile.PAX_FORMAT, pax_headers=meta) as tar:
                 for rel in scope:
                     tar.add(os.path.join(root, rel), arcname=os.path.normpath(rel), filter=keep)
             os.replace(tmp, final)
@@ -3158,9 +3193,13 @@ class Backups:
                 os.remove(os.path.join(folder, c["name"]))
 
     def _stop_and_wait(self, sid):
-        """Para el servicio y espera a que termine. True si estaba en marcha (hay que volver a arrancarlo)."""
-        if not MANAGER.running(sid):
-            return False
+        """Para el servicio y espera a que termine. True si estaba en marcha o pendiente de reintento
+        (hay que volver a arrancarlo al acabar)."""
+        if not MANAGER.running(sid) and sid not in MANAGER.transition:
+            pending = bool((MANAGER.state.get(sid) or {}).get("restart_at"))
+            if pending:
+                MANAGER.stop(sid)  # cancela el reintento: no puede arrancar a mitad de la restauración
+            return pending
         MANAGER.stop(sid)
         end = time.time() + MANAGER.services[sid].get("stop_timeout", 15) + 20
         while time.time() < end and (MANAGER.running(sid) or sid in MANAGER.transition):
@@ -3169,13 +3208,14 @@ class Backups:
             raise ApiError(500, "el servicio no se ha detenido a tiempo")
         return True
 
-    def _record(self, sid, ok, msg, name=None):
+    def _record(self, sid, ok, msg, name=None, failed_auto=False):
         with MANAGER.lock:
             st = MANAGER.st(sid)
             prev = st.get("backup") or {}
             st["backup"] = {**prev, "at": time.time(), "ok": ok, "msg": msg,
                             **({"last_name": name, "last_ok_at": time.time()} if name else {}),
-                            **({"last_auto": time.time()} if name and name.endswith("_auto.tar.gz") else {})}
+                            **({"last_auto": time.time()} if name and name.endswith("_auto.tar.gz") else {}),
+                            **({"auto_failed_at": time.time()} if failed_auto else {})}
             MANAGER.save_state()
 
     # ── restaurar ──
@@ -3199,6 +3239,10 @@ class Backups:
             MANAGER.log(sid, f"el estado actual queda guardado en {safety}")
             with tarfile.open(self.path_of(sid, name), "r:gz") as tar:
                 members = tar.getmembers()
+                try:  # lo que se excluyó al hacer ESA copia (si hoy se excluye otra cosa, no se borra nada de más)
+                    exclude = json.loads(tar.pax_headers["novahub.exclude"])
+                except (KeyError, ValueError):
+                    exclude = cfg["exclude"]
                 tops = {m.name.split("/")[0] for m in members}
                 in_archive = {os.path.normpath(m.name) for m in members}
                 # Deja cada carpeta copiada exactamente como en la copia: borra lo que no estaba en ella
@@ -3209,12 +3253,12 @@ class Backups:
                         continue
                     own = {os.path.realpath(DATA_DIR), os.path.realpath(SNAPSHOT_DIR)}
                     for dirpath, dirnames, filenames in os.walk(base, topdown=True):
-                        dirnames[:] = [d for d in dirnames if not _excluded(d, cfg["exclude"])
+                        dirnames[:] = [d for d in dirnames if not _excluded(d, exclude)
                                        and os.path.realpath(os.path.join(dirpath, d)) not in own]
                         for fname in filenames:
                             full = os.path.join(dirpath, fname)
                             rel = os.path.normpath(os.path.join(top, os.path.relpath(full, base)))
-                            if rel not in in_archive and not _excluded(fname, cfg["exclude"]):
+                            if rel not in in_archive and not _excluded(fname, exclude):
                                 os.remove(full)
                 tar.extractall(root, filter="data")  # filtro «data»: nada fuera de la carpeta ni enlaces peligrosos
             MANAGER.log(sid, f"\x1b[32mrestaurada la copia {name}\x1b[0m")
@@ -3239,12 +3283,18 @@ class Backups:
         cfg = backup_config(MANAGER.services[sid])
         if not cfg["enabled"]:
             return None
-        last = ((MANAGER.state.get(sid) or {}).get("backup") or {}).get("last_auto") or 0
+        state = (MANAGER.state.get(sid) or {}).get("backup") or {}
+        last = state.get("last_auto") or 0
         if cfg["every"] == "hours":
-            return max(time.time(), last + cfg["hours"] * 3600) if last else time.time()
-        h, m = map(int, cfg["at"].split(":"))
-        today = datetime.now().replace(hour=h, minute=m, second=0, microsecond=0).timestamp()
-        return today if last < today else today + 86400
+            nxt = max(time.time(), last + cfg["hours"] * 3600) if last else time.time()
+        else:
+            h, m = map(int, cfg["at"].split(":"))
+            today = datetime.now().replace(hour=h, minute=m, second=0, microsecond=0).timestamp()
+            nxt = today if last < today else today + 86400
+        failed = state.get("auto_failed_at") or 0
+        if failed > last:  # la última automática falló (disco sin montar…): se reintenta cada 30 min
+            nxt = max(nxt, failed + BACKUP_RETRY)
+        return nxt
 
     def loop(self):
         while True:
