@@ -53,7 +53,7 @@ El panel escucha solo en `127.0.0.1`; Cloudflare se conecta desde dentro del ser
 3. `~/.cloudflared/config.yml`:
    ```yaml
    tunnel: novahub
-   credentials-file: /home/sergi/.cloudflared/<ID-DEL-TUNEL>.json
+   credentials-file: /home/<usuario>/.cloudflared/<ID-DEL-TUNEL>.json
    ingress:
      - hostname: panel.tudominio.com
        service: http://localhost:8686
@@ -106,7 +106,7 @@ recompila, o si la compilación falla, la web publicada sigue funcionando con la
 ## App para el móvil
 
 NovaHub se instala como app (PWA): icono en la pantalla de inicio y se abre a pantalla completa, sin la barra
-del navegador. Sigue yendo por el túnel (https://novahub.novaasist.dev), con Cloudflare Access y la contraseña.
+del navegador. Sigue yendo por el túnel (tu dominio publicado), con Cloudflare Access y la contraseña.
 
 - **Android (Chrome):** Ajustes → «Instalar NovaHub», o menú ⋮ → «Instalar aplicación».
 - **iPhone (Safari):** Compartir → «Añadir a pantalla de inicio».
@@ -183,7 +183,7 @@ cambiarles el rol o los servicios y borrarlos; cada uno cambia su contraseña en
 - Desde la terminal: `python3 server.py set-password [usuario]` (crea un administrador si no existe).
 - Para que alguien llegue desde internet, añade también su correo a la regla de **Cloudflare Access**.
 - La primera vez, la contraseña única de antes pasa a ser la del usuario administrador con el nombre del usuario
-  del sistema (aquí, `sergi`).
+  del sistema.
 
 ## Contenedores (Podman)
 

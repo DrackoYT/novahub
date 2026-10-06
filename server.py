@@ -4265,11 +4265,13 @@ class Remotes:
         try:
             sysinfo = self.call(s, "GET", "/api/system", timeout=4)
             svcs = self.call(s, "GET", "/api/services", timeout=4)["services"]
-            st = {"online": True, "hostname": sysinfo.get("hostname"), "cpus": sysinfo.get("cpus"), "load": sysinfo.get("load"),
-                  "mem_used": sysinfo.get("mem_used"), "mem_total": sysinfo.get("mem_total"), "uptime": sysinfo.get("uptime"),
-                  "services": len(svcs), "running": sum(1 for x in svcs if x["status"] == "running"),
-                  "crashed": sum(1 for x in svcs if x["status"] == "crashed")}
-        except ApiError as e:
+            num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0  # noqa: E731 — datos de otro servidor
+            st = {"online": True, "hostname": str(sysinfo.get("hostname") or "")[:64], "cpus": num(sysinfo.get("cpus")),
+                  "mem_used": num(sysinfo.get("mem_used")), "mem_total": num(sysinfo.get("mem_total")), "uptime": num(sysinfo.get("uptime")),
+                  "services": len(svcs), "running": sum(1 for x in svcs if x.get("status") == "running"),
+                  "crashed": sum(1 for x in svcs if x.get("status") == "crashed")}
+        except (ApiError, TypeError, AttributeError, KeyError) as e:
+            e = e if isinstance(e, ApiError) else ApiError(502, "respuesta inesperada")
             st = {"online": False, "error": e.msg}
         self.cache[s["id"]] = (time.time(), st)
         return st
@@ -5134,7 +5136,18 @@ class Handler(BaseHTTPRequestHandler):
         if res.status == 401:
             raise ApiError(502, f"«{s['name']}» no acepta la llave (¿la han revocado?)")
         self.send_response(res.status)
-        for h in ("Content-Type", "Content-Disposition", "Content-Length", "Cache-Control"):
+        # Solo pasan tal cual JSON y la consola en directo. Todo lo demás sale como descarga: un servidor remoto
+        # comprometido no puede colar una página o un script que este panel sirva como suyo.
+        ctype = (res.getheader("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype in ("application/json", "text/event-stream"):
+            self.send_header("Content-Type", res.getheader("Content-Type"))
+        else:
+            fn = re.search(r'filename="([^"]+)"', res.getheader("Content-Disposition") or "")
+            name = re.sub(r"[^A-Za-z0-9._-]", "_", fn.group(1) if fn else "descarga")[:100]
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Content-Security-Policy", "sandbox; default-src 'none'")
+        for h in ("Content-Length", "Cache-Control"):
             if res.getheader(h):
                 self.send_header(h, res.getheader(h))
         if self.renewed_cookie:  # mientras se usa otro servidor, la sesión de este panel también se alarga
