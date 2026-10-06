@@ -39,8 +39,9 @@ const STATUS_LABEL = {
   starting: "Iniciando…",
   stopping: "Deteniendo…",
   crashed: "Error",
+  retrying: "Reintentando",
 };
-const isOn = (s) => s.status === "running" || s.status === "starting";
+const isOn = (s) => s.status === "running" || s.status === "starting" || s.status === "retrying";
 const statusHTML = (s) => `<span class="status">${STATUS_LABEL[s.status]}</span>`;
 // Tecla de encendido: hundida y morada mientras el servicio está en marcha.
 function keyHTML(s) {
@@ -315,7 +316,7 @@ function drawOverview() {
     ? `<b>${running} de ${all.length}</b> servicios en marcha${crashed ? ` · <span class="bad-text">${crashed} con error</span>` : ""}`
     : "Aún no hay servicios";
   // primero los que tienen error, luego los encendidos
-  const order = { crashed: 0, starting: 1, stopping: 1, running: 2, stopped: 3 };
+  const order = { crashed: 0, retrying: 0, starting: 1, stopping: 1, running: 2, stopped: 3 };
   const list = [...all].sort((a, b) => order[a.status] - order[b.status]);
   const html = list.length ? list.map((s) => {
     const url = s.status === "running" ? openUrl(s) : null;

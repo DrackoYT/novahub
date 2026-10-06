@@ -54,7 +54,10 @@ NOTIFY_FILE = os.path.join(DATA_DIR, "notify.json")
 LOG_MAX_BYTES = 5 * 1024 * 1024    # al superarlo, el log se rota a <id>.log.1
 LOG_TAIL_BYTES = 64 * 1024         # lo que se envía al abrir la consola
 SESSION_TTL = 30 * 24 * 3600
-MAX_AUTO_RESTARTS = 5              # reinicios automáticos permitidos por minuto
+MAX_AUTO_RESTARTS = 5              # reinicios rápidos seguidos; después se reintenta en modo lento
+SLOW_RETRY = 300                   # modo lento: un intento cada 5 min, sin rendirse nunca
+BOOT_WINDOW = 300                  # primeros 5 min tras encender el servidor: fallos pasajeros sin correo
+NETWORK_WAIT = 120                 # al encender el servidor, máximo que se espera a tener red y DNS
 MEM_CHECK_EVERY = 10               # segundos entre lecturas de memoria
 MEM_CHECKS = 3                     # lecturas seguidas por encima del límite antes de reiniciar (≈30 s)
 MEM_RESTARTS_PER_HOUR = 3          # más que esto y se deja de reiniciar: el programa necesita más memoria
@@ -100,6 +103,23 @@ def log_path(sid):
 
 def fifo_path(sid):
     return os.path.join(RUN_DIR, f"{sid}.stdin")
+
+
+def uptime():
+    with open("/proc/uptime") as f:
+        return float(f.read().split()[0])
+
+
+def wait_for_network(timeout=NETWORK_WAIT):
+    """True cuando hay DNS (al encender, el túnel fallaba por arrancar antes que el resolvedor)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            socket.getaddrinfo("cloudflare.com", 443)
+            return True
+        except OSError:
+            time.sleep(2)
+    return False
 
 
 def proc_stat(pid):
@@ -306,6 +326,7 @@ class Manager:
         self.services = {s["id"]: s for s in read_json(SERVICES_FILE, [])}
         self.state = read_json(STATE_FILE, {})
         self.procs = {}       # sid -> Popen (solo los lanzados por esta instancia)
+        self.autostart_done = True
         self.transition = {}  # sid -> "stopping"
         self.cpu_prev = {}    # sid -> (pid, ticks, monotonic)
 
@@ -329,7 +350,7 @@ class Manager:
         if sid in self.transition:
             return self.transition[sid]
         if st.get("restart_at"):
-            return "starting"
+            return "retrying" if st["restart_at"] - time.time() > 15 else "starting"
         if self.running(sid):
             return "running"
         return "crashed" if st.get("crashed") else "stopped"
@@ -352,21 +373,39 @@ class Manager:
                 if st.get("pid") and not self.running(sid):
                     st["pid"] = None
                     st["desired"] = "stopped"
-            with open("/proc/uptime") as f:
-                server_booted = float(f.read().split()[0]) < 300
-            for sid, svc in self.services.items():
-                # Autoarranque = al encender el servidor. Si solo se reinicia NovaHub, se respeta
-                # lo que se apagó a propósito (desired «stopped»).
-                desired = (self.state.get(sid) or {}).get("desired")
-                if svc.get("autostart") and not self.running(sid) and (server_booted or desired != "stopped"):
-                    try:
-                        self.log(sid, "autoarranque al iniciar NovaHub")
-                        self.spawn(sid)
-                    except Exception as e:  # noqa: BLE001
-                        self.log(sid, f"\x1b[31mno se pudo iniciar: {e}\x1b[0m")
-                        NOTIFIER.notify("crash", sid, f"{svc['name']} no ha podido arrancar",
-                                        f"Al iniciar NovaHub, el autoarranque de «{svc['name']}» ha fallado:\n{e}")
+            server_booted = uptime() < BOOT_WINDOW
+            # Autoarranque = al encender el servidor. Si solo se reinicia NovaHub, se respeta
+            # lo que se apagó a propósito (desired «stopped»).
+            todo = [sid for sid, svc in self.services.items()
+                    if svc.get("autostart") and not self.running(sid)
+                    and (server_booted or (self.state.get(sid) or {}).get("desired") != "stopped")]
             self.save_state()
+        self.autostart_done = False
+        if server_booted and todo:
+            # recién encendido: puede no haber red todavía; se espera en segundo plano para no
+            # retrasar el arranque de NovaHub (systemd espera su READY)
+            threading.Thread(target=self._autostart, args=(todo, True), name="autoarranque", daemon=True).start()
+        else:
+            self._autostart(todo, False)
+
+    def _autostart(self, todo, wait_network):
+        if wait_network and not wait_for_network():
+            for sid in todo:
+                self.log(sid, "\x1b[33mtras 2 min sigue sin haber red: se arranca igualmente\x1b[0m")
+        with self.lock:
+            for sid in todo:
+                svc = self.services.get(sid)
+                if not svc or self.running(sid):
+                    continue
+                try:
+                    self.log(sid, "autoarranque al encender el servidor" if wait_network else "autoarranque al iniciar NovaHub")
+                    self.spawn(sid)
+                except Exception as e:  # noqa: BLE001
+                    self.log(sid, f"\x1b[31mno se pudo iniciar: {e}\x1b[0m")
+                    NOTIFIER.notify("crash", sid, f"{svc['name']} no ha podido arrancar",
+                                    f"El autoarranque de «{svc['name']}» ha fallado:\n{e}", level="danger")
+            self.save_state()
+        self.autostart_done = True
 
     def spawn(self, sid):
         svc = self.services[sid]
@@ -425,7 +464,7 @@ class Manager:
     def stop(self, sid, then_start=False):
         with self.lock:
             st = self.st(sid)
-            st.update(desired="stopped", crashed=False, restart_at=None)
+            st.update(desired="stopped", crashed=False, restart_at=None, down_notified=False)
             if sid in self.transition:
                 return
             if not self.running(sid):
@@ -599,7 +638,15 @@ class Manager:
             if rotate and self.running(sid):
                 self._rotate_live(sid)
 
-            if not st.get("pid") or self.running(sid):
+            if self.running(sid):
+                # lleva 2 min estable después de haber fallado en serio: se avisa de que ha vuelto
+                if st.get("down_notified") and now - (st.get("started_at") or now) > 120:
+                    st["down_notified"] = False
+                    NOTIFIER.notify("crash", sid, f"{svc['name']} vuelve a funcionar",
+                                    f"«{svc['name']}» lleva 2 minutos en marcha sin fallar.", level="ok", key="recovered")
+                    self.save_state()
+                continue
+            if not st.get("pid"):
                 continue
 
             # El proceso ha terminado sin que lo pidiéramos.
@@ -610,30 +657,36 @@ class Manager:
                           + (f" (código {code})" if code is not None else "") + "\x1b[0m")
             if st.get("desired") == "running" and svc.get("restart_on_crash") and code != 0:
                 history = [t for t in st.get("restarts", []) if now - t < 3600]  # se muestra en la ficha (1 h)
-                recent = [t for t in history if now - t < 60]                    # el límite es por minuto
+                recent = [t for t in history if now - t < 60]                    # rápidos: por minuto
+                st["restarts"] = history + [now]
+                booting = uptime() < BOOT_WINDOW  # recién encendido: los fallos pasajeros no merecen correo
                 if len(recent) < MAX_AUTO_RESTARTS:
-                    recent.append(now)
-                    st["restarts"] = history + [now]
-                    delay = 2 * len(recent)
+                    delay = 2 * (len(recent) + 1)
                     st["restart_at"] = now + delay
                     self.log(sid, f"reinicio automático en {delay} s "
-                                  f"(intento {len(recent)}/{MAX_AUTO_RESTARTS})")
-                    NOTIFIER.notify("crash", sid, f"{svc['name']} se ha caído",
-                                    f"«{svc['name']}» {_ended(code)} y se está reiniciando solo "
-                                    f"(intento {len(recent)} de {MAX_AUTO_RESTARTS} en este minuto).", log=True)
+                                  f"(intento {len(recent) + 1}/{MAX_AUTO_RESTARTS})")
+                    if not booting and not st.get("down_notified"):
+                        NOTIFIER.notify("crash", sid, f"{svc['name']} se ha caído",
+                                        f"«{svc['name']}» {_ended(code)} y se está reiniciando solo.",
+                                        log=True, level="warning")
                 else:
-                    st.update(crashed=True, desired="stopped")
-                    self.log(sid, "\x1b[31mdemasiados fallos seguidos, se deja de reintentar\x1b[0m")
-                    NOTIFIER.notify("crash", sid, f"{svc['name']} está parado: falla una y otra vez",
-                                    f"«{svc['name']}» se ha caído {MAX_AUTO_RESTARTS} veces en un minuto y NovaHub ha dejado "
-                                    "de reintentarlo. Revisa la consola y vuelve a encenderlo cuando esté arreglado.",
-                                    log=True, key="gaveup")
+                    # Ya no son fallos pasajeros: se sigue intentando, pero cada 5 min (p. ej. sin internet
+                    # un buen rato). Nunca se abandona del todo: el túnel debe volver solo.
+                    st["restart_at"] = now + SLOW_RETRY
+                    self.log(sid, f"\x1b[31mfalla una y otra vez: se reintentará cada {SLOW_RETRY // 60} min "
+                                  "(apágalo si no quieres que siga intentándolo)\x1b[0m")
+                    if not st.get("down_notified"):
+                        st["down_notified"] = True
+                        NOTIFIER.notify("crash", sid, f"{svc['name']} falla una y otra vez",
+                                        f"«{svc['name']}» se ha caído {MAX_AUTO_RESTARTS} veces seguidas. NovaHub lo seguirá "
+                                        f"intentando cada {SLOW_RETRY // 60} minutos y te avisará cuando vuelva a funcionar.",
+                                        log=True, key="gaveup", level="danger")
             elif st.get("desired") == "running" and code != 0:
                 st["crashed"] = True
                 st["desired"] = "stopped"
                 NOTIFIER.notify("crash", sid, f"{svc['name']} se ha caído",
                                 f"«{svc['name']}» {_ended(code)}. No tiene activado «Reiniciar si se "
-                                "cae», así que sigue parado.", log=True)
+                                "cae», así que sigue parado.", log=True, level="danger")
             else:
                 st["crashed"] = code not in (0, None)
                 st["desired"] = "stopped"
@@ -1747,6 +1800,103 @@ def log_tail(sid, lines=20):
     return "\n".join(strip_ansi(text).splitlines()[-lines:])
 
 
+def make_orb_png(size=96):
+    """El orbe de NovaHub como PNG (sin dependencias): degradado radial morado con halo."""
+    import struct
+    import zlib
+    rows = []
+    c = size / 2
+    r = size * 0.36          # esfera
+    for y in range(size):
+        row = bytearray([0])
+        for x in range(size):
+            dx, dy = x + 0.5 - c, y + 0.5 - c
+            d = (dx * dx + dy * dy) ** 0.5
+            if d <= r:
+                # luz arriba a la izquierda: blanco → lila → morado intenso
+                lx, ly = x + 0.5 - (c - r * 0.3), y + 0.5 - (c - r * 0.4)
+                t = min(1.0, (lx * lx + ly * ly) ** 0.5 / (r * 1.55))
+                stops = [(0.0, (255, 255, 255)), (0.3, (184, 156, 255)), (0.75, (106, 53, 240)), (1.0, (74, 31, 199))]
+                for (t0, c0), (t1, c1) in zip(stops, stops[1:]):
+                    if t <= t1:
+                        k = (t - t0) / (t1 - t0)
+                        rgb = [round(a + (b - a) * k) for a, b in zip(c0, c1)]
+                        break
+                alpha = 255 if d <= r - 1 else round(255 * (r - d + 1))
+                row += bytes(rgb + [max(0, min(255, alpha))])
+            else:
+                glow = max(0.0, 1 - (d - r) / (size / 2 - r))  # halo morado que se desvanece
+                row += bytes([123, 77, 255, round(110 * glow ** 2)])
+        rows.append(bytes(row))
+    raw = zlib.compress(b"".join(rows), 9)
+    chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)  # noqa: E731
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) \
+        + chunk(b"IDAT", raw) + chunk(b"IEND", b"")
+
+
+ORB_PNG = make_orb_png()
+
+EMAIL_LEVELS = {  # etiqueta, fondo, texto
+    "danger": ("Problema", "#fde2e2", "#c0262d"),
+    "warning": ("Aviso", "#fff0d6", "#9a5b00"),
+    "ok": ("Todo bien", "#d9f7e3", "#0f7a3a"),
+    "info": ("Información", "#ece6ff", "#5a2fe0"),
+}
+
+
+def email_html(subject, text, level, service, host, stamp, tail, link):
+    """HTML para clientes de correo: tablas y estilos en línea (Gmail y Outlook ignoran el CSS externo)."""
+    import html as h
+    label, pill_bg, pill_fg = EMAIL_LEVELS.get(level, EMAIL_LEVELS["info"])
+    font = "-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
+    mono = "ui-monospace,Menlo,Consolas,'Courier New',monospace"
+    paragraphs = "".join(f'<p style="margin:0 0 12px;font:15px/1.55 {font};color:#4a4456;">{h.escape(p)}</p>'
+                         for p in text.split("\n") if p.strip())
+    facts = [("Servicio", service), ("Servidor", host), ("Cuándo", stamp)]
+    facts_html = "".join(
+        f'<tr><td style="padding:7px 0;border-top:1px solid #e1dde8;font:13px {font};color:#6a6478;">{k}</td>'
+        f'<td align="right" style="padding:7px 0;border-top:1px solid #e1dde8;font:600 13px {font};color:#1c1924;">{h.escape(v)}</td></tr>'
+        for k, v in facts if v)
+    console = (f'<p style="margin:18px 0 6px;font:600 11px {mono};letter-spacing:1.5px;text-transform:uppercase;color:#6a6478;">'
+               f'Últimas líneas de la consola</p>'
+               f'<pre style="margin:0;padding:14px 16px;background:#1b1822;color:#e8e4f0;border-radius:10px;'
+               f'font:12px/1.55 {mono};white-space:pre-wrap;word-break:break-word;">{h.escape(tail)}</pre>') if tail else ""
+    button = (f'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:22px 0 4px;"><tr>'
+              f'<td style="background:#6c3ff5;border-radius:10px;border-bottom:3px solid #3d1bb0;">'
+              f'<a href="{h.escape(link)}" style="display:inline-block;padding:12px 22px;font:700 15px {font};'
+              f'color:#ffffff;text-decoration:none;">Abrir en el panel</a></td></tr></table>') if link else ""
+    preheader = h.escape(text.split("\n")[0][:140])
+    return f"""<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light"><title>{h.escape(subject)}</title></head>
+<body style="margin:0;padding:0;background:#e9e6ee;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">{preheader}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#e9e6ee;">
+<tr><td align="center" style="padding:28px 12px 36px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;">
+    <tr><td style="padding:0 6px 14px;">
+      <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+        <td style="vertical-align:middle;"><img src="cid:orb@novahub" width="34" height="34" alt="" style="display:block;border:0;"></td>
+        <td style="vertical-align:middle;padding-left:8px;font:800 19px {font};letter-spacing:-0.3px;color:#1c1924;">NovaHub</td>
+      </tr></table>
+    </td></tr>
+    <tr><td style="background:#f7f5fa;border-radius:18px;border-bottom:3px solid #d3cddc;padding:26px 26px 22px;">
+      <span style="display:inline-block;padding:4px 10px;border-radius:7px;background:{pill_bg};color:{pill_fg};
+        font:700 11px {mono};letter-spacing:1.2px;text-transform:uppercase;">{label}</span>
+      <h1 style="margin:14px 0 14px;font:800 23px/1.25 {font};letter-spacing:-0.4px;color:#1c1924;">{h.escape(subject)}</h1>
+      {paragraphs}
+      {console}
+      {button}
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:18px;">{facts_html}</table>
+    </td></tr>
+    <tr><td align="center" style="padding:16px 10px 0;font:12px/1.5 {font};color:#8a8496;">
+      Te escribe NovaHub porque tienes activados estos avisos. Puedes cambiarlos en ⚙ Ajustes del panel.
+    </td></tr>
+  </table>
+</td></tr></table>
+</body></html>"""
+
+
 class Notifier:
     """Correos de aviso por SMTP de Gmail con una contraseña de aplicación.
     Se encolan y los envía un hilo propio: nada del panel espera nunca a Gmail."""
@@ -1805,20 +1955,28 @@ class Notifier:
         return self.public()
 
     # ── componer y enviar ──
-    def compose(self, cfg, subject, text, sid=None, log=False):
+    def compose(self, cfg, subject, text, sid=None, log=False, level="info"):
+        """Correo con versión en texto y en HTML (estilo NovaHub, con el orbe incrustado)."""
+        tail = log_tail(sid) if sid and log else ""
+        link = (f"{PANEL_URL}/#/s/{sid}" if sid else PANEL_URL) if PANEL_URL else None
+        stamp = f"{datetime.now():%d/%m/%Y %H:%M}"
+        host = socket.gethostname()
+        name = MANAGER.services.get(sid, {}).get("name") if sid and MANAGER else None
+
         lines = [text, ""]
-        if sid and log:
-            tail = log_tail(sid)
-            if tail:
-                lines += ["Últimas líneas de la consola:", "─" * 40, tail, "─" * 40, ""]
-        if PANEL_URL:
-            lines.append(f"Abrir en el panel: {PANEL_URL}/#/s/{sid}" if sid else f"Abrir el panel: {PANEL_URL}")
-        lines.append(f"— NovaHub en {socket.gethostname()}, {datetime.now():%d/%m/%Y %H:%M:%S}")
+        if tail:
+            lines += ["Últimas líneas de la consola:", "─" * 40, tail, "─" * 40, ""]
+        if link:
+            lines.append(f"Abrir en el panel: {link}")
+        lines.append(f"— NovaHub en {host}, {stamp}")
+
         msg = EmailMessage()
         msg["Subject"] = f"[NovaHub] {subject}"
         msg["From"] = f"NovaHub <{cfg['user']}>"
         msg["To"] = cfg.get("to") or cfg["user"]
         msg.set_content("\n".join(lines))
+        msg.add_alternative(email_html(subject, text, level, name, host, stamp, tail, link), subtype="html")
+        msg.get_payload()[1].add_related(ORB_PNG, "image", "png", cid="<orb@novahub>", filename="novahub.png")
         return msg
 
     @staticmethod
@@ -1831,8 +1989,9 @@ class Notifier:
                 raise smtplib.SMTPAuthenticationError(535, b"Gmail ha cerrado la conexion al identificarse") from e
             smtp.send_message(msg)
 
-    def notify(self, event, sid, subject, text, log=False, key=""):
+    def notify(self, event, sid, subject, text, log=False, key="", level=None):
         """Encola un aviso si está activado y no se ha mandado uno igual hace poco. No bloquea."""
+        level = level or ("danger" if key == "gaveup" or event == "novahub" else "info" if event == "power" else "warning")
         cfg = self.config()
         if not self.configured(cfg) or not (cfg.get("events") or {}).get(event, True):
             return
@@ -1846,15 +2005,15 @@ class Notifier:
                 return
             self.last[k] = now
             self.sent.append(now)
-        self.queue.put(self.compose(cfg, subject, text, sid, log))
+        self.queue.put(self.compose(cfg, subject, text, sid, log, level))
 
-    def send_now(self, event, subject, text):
+    def send_now(self, event, subject, text, level="info"):
         """Envío inmediato (p. ej. justo antes de apagar el servidor): no se puede dejar en la cola."""
         cfg = self.config()
         if not self.configured(cfg) or not (cfg.get("events") or {}).get(event, True):
             return
         try:
-            self.deliver(cfg, self.compose(cfg, subject, text))
+            self.deliver(cfg, self.compose(cfg, subject, text, level=level))
             self.last_sent, self.last_error = time.time(), None
         except Exception as e:  # noqa: BLE001
             self.last_error = f"{datetime.now():%H:%M} · {e}"
@@ -1865,7 +2024,8 @@ class Notifier:
             raise ApiError(400, "Primero guarda tu Gmail y la contraseña de aplicación")
         try:
             self.deliver(cfg, self.compose(cfg, "Correo de prueba",
-                                           "Los avisos de NovaHub funcionan. Te escribiremos aquí cuando algo vaya mal."))
+                                           "Los avisos de NovaHub funcionan. Te escribiremos aquí cuando algo vaya mal.",
+                                           level="ok"))
         except smtplib.SMTPAuthenticationError:
             self.last_error = f"{datetime.now():%H:%M} · Gmail ha rechazado el usuario o la contraseña de aplicación"
             raise ApiError(400, "Gmail ha rechazado el acceso: revisa la dirección y la contraseña de aplicación "
@@ -2034,24 +2194,40 @@ def journal_tail(lines=40):
 
 def startup_notice(prev, failed):
     """Al arrancar: avisa del encendido del servidor y de si NovaHub (o el servidor) se cerró de golpe."""
-    with open("/proc/uptime") as f:
-        uptime = float(f.read().split()[0])
-    autostart = (f"\nNo han podido arrancar: {', '.join(failed)}." if failed
-                 else "\nTodos los servicios con autoarranque están en marcha.")
-    if uptime < 300:  # el servidor acaba de arrancar
-        if prev == "running":
-            NOTIFIER.notify("power", None, "El servidor se ha encendido tras un apagado inesperado",
-                            f"El servidor lleva {int(uptime)} s encendido, pero la última vez NovaHub no se cerró de forma "
-                            "ordenada: probablemente hubo un corte de luz o un reinicio forzado." + autostart)
-        else:
-            NOTIFIER.notify("power", None, "El servidor se ha encendido",
-                            f"El servidor lleva {int(uptime)} s encendido y NovaHub está en marcha." + autostart)
+    up = uptime()
+    if up < BOOT_WINDOW:
+        # recién encendido: se espera a que el autoarranque termine y los servicios se asienten,
+        # para contar cómo han quedado de verdad (no los fallos pasajeros de los primeros segundos)
+        threading.Thread(target=_boot_report, args=(prev,), name="aviso-encendido", daemon=True).start()
     elif prev == "running":
         tail = journal_tail()
+        autostart = (f"\nNo han podido arrancar: {', '.join(failed)}." if failed
+                     else "\nTodos los servicios con autoarranque están en marcha.")
         NOTIFIER.notify("novahub", None, "NovaHub se ha reiniciado tras un fallo",
                         "NovaHub se cerró de forma inesperada (un error, falta de memoria o el watchdog de systemd) "
                         "y systemd lo ha vuelto a arrancar. Tus servicios no se han visto afectados."
                         + autostart + (f"\n\nÚltimas líneas del registro de NovaHub:\n{tail}" if tail else ""))
+
+
+def _boot_report(prev):
+    end = time.time() + 240
+    while time.time() < end and not MANAGER.autostart_done:
+        time.sleep(2)
+    time.sleep(60)  # margen para reintentos y comprobaciones de salud
+    with MANAGER.lock:
+        auto = [(sid, s) for sid, s in MANAGER.services.items() if s.get("autostart")]
+        down = [s["name"] for sid, s in auto if not MANAGER.running(sid)]
+    ok = [s["name"] for sid, s in auto if s["name"] not in down]
+    lines = [f"El servidor se encendió hace {int(uptime() // 60)} min y NovaHub está en marcha."]
+    if prev == "running":
+        lines.insert(0, "La última vez NovaHub no se cerró de forma ordenada: probablemente hubo un corte de luz "
+                        "o un reinicio forzado.")
+    if ok:
+        lines.append(f"En marcha: {', '.join(ok)}.")
+    if down:
+        lines.append(f"No han podido arrancar: {', '.join(down)}. NovaHub lo sigue intentando.")
+    subject = "El servidor se ha encendido tras un apagado inesperado" if prev == "running" else "El servidor se ha encendido"
+    NOTIFIER.notify("power", None, subject, "\n".join(lines), level="warning" if (down or prev == "running") else "ok")
 
 
 # ───────────────────────────── desplegar desde GitHub ─────────────────────────────

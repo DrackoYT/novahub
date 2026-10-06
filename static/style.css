@@ -170,7 +170,7 @@ code, .mono { font-family: var(--f-mono); }
 }
 [data-status="running"] .status { background: var(--ok-bg); color: var(--ok); }
 [data-status="crashed"] .status { background: var(--err-bg); color: var(--err); }
-[data-status="starting"] .status, [data-status="stopping"] .status { background: var(--warn-bg); color: var(--warn); }
+[data-status="starting"] .status, [data-status="stopping"] .status, [data-status="retrying"] .status { background: var(--warn-bg); color: var(--warn); }
 
 /* etiquetas */
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
