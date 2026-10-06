@@ -20,6 +20,7 @@ Para dudas o ideas, abre un issue.
 - Cuando hay un grupo de cambios listo y revisado: `tools/publicar-version.sh X.Y.Z` pone el número en `server.py`,
   mueve «Sin publicar» a esa versión, crea la etiqueta `vX.Y.Z` y la release de GitHub. Los paneles con el canal
   estable la ven en su Centro de actualizaciones.
-- Parches (`1.0.1`) para arreglos, menores (`1.1.0`) para funciones nuevas compatibles, mayores (`2.0.0`) si hay que
-  hacer algo a mano al actualizar (explícalo en el CHANGELOG).
+- **Cada mejora terminada (o arreglo) es un parche**: `1.0.1`, `1.0.2`…
+- **Un bloque grande de mejoras, después de su revisión de código, es una versión menor**: `1.1.0`.
+- Una **mayor** (`2.0.0`) solo si al actualizar hay que hacer algo a mano (explícalo en el CHANGELOG).
 
