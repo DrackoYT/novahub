@@ -5,6 +5,8 @@ errores; las versiones menores añaden funciones sin romper nada; las mayores pu
 
 ## Sin publicar
 
+## 1.0.1 — 2026-10-06
+
 - **Centro de actualizaciones** (Ajustes → Actualizaciones): NovaHub (versiones de GitHub o canal de desarrollo, con
   copia previa y vuelta atrás automática si la versión nueva no arranca), el sistema con apt (solo seguridad o todo,
   y de seguridad automáticas cada noche si quieres), reinicio pendiente con reinicio ordenado del servidor, imágenes de
