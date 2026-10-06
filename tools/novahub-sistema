@@ -1,0 +1,28 @@
+#!/bin/sh
+# Lo único que NovaHub puede ejecutar como root, mediante una regla de sudoers solo para este script.
+# Órdenes fijas, sin parámetros que lleguen del panel. Se instala en /usr/local/sbin, propiedad de root:
+#
+#   sudo install -o root -g root -m 755 tools/novahub-sistema /usr/local/sbin/novahub-sistema
+#   echo "$USER ALL=(root) NOPASSWD: /usr/local/sbin/novahub-sistema" | sudo tee /etc/sudoers.d/novahub-sistema
+#   sudo chmod 440 /etc/sudoers.d/novahub-sistema
+set -eu
+export DEBIAN_FRONTEND=noninteractive LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin
+APT="apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+case "${1:-}" in
+  update)
+    exec apt-get update ;;
+  upgrade)   # todo lo pendiente, sin quitar paquetes (las versiones nuevas de la distribución se hacen a mano)
+    apt-get update
+    exec $APT upgrade ;;
+  security)  # solo los paquetes que vienen del repositorio de seguridad
+    apt-get update
+    pkgs=$(apt list --upgradable 2>/dev/null | grep -E '^[^/]+/[^ ]*-security' | cut -d/ -f1 | tr '\n' ' ')
+    if [ -z "$pkgs" ]; then echo "No hay actualizaciones de seguridad pendientes"; exit 0; fi
+    # shellcheck disable=SC2086
+    exec $APT install --only-upgrade $pkgs ;;
+  reboot)
+    exec systemctl reboot ;;
+  *)
+    echo "uso: novahub-sistema update|upgrade|security|reboot" >&2
+    exit 2 ;;
+esac

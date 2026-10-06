@@ -12,3 +12,14 @@
 - Pull requests pequeños y con una explicación de qué cambia y por qué.
 
 Para dudas o ideas, abre un issue.
+
+## Versiones
+
+- Los commits van a `main`; **no** cada commit es una versión.
+- Cada cambio para los usuarios se apunta en `CHANGELOG.md`, bajo «Sin publicar».
+- Cuando hay un grupo de cambios listo y revisado: `tools/publicar-version.sh X.Y.Z` pone el número en `server.py`,
+  mueve «Sin publicar» a esa versión, crea la etiqueta `vX.Y.Z` y la release de GitHub. Los paneles con el canal
+  estable la ven en su Centro de actualizaciones.
+- Parches (`1.0.1`) para arreglos, menores (`1.1.0`) para funciones nuevas compatibles, mayores (`2.0.0`) si hay que
+  hacer algo a mano al actualizar (explícalo en el CHANGELOG).
+

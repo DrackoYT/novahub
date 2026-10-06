@@ -311,6 +311,7 @@ async function refreshSystem() {
     const chip = $("#host-chip");
     if (chip) chip.textContent = `${ui.me?.username || s.user}@${s.hostname}`;
     drawKpis();
+    drawUpdatesBanner();
     if (!ui.current && ui.services.length) { drawList(); drawOverview(); } // los enlaces «Abrir» dependen de la IP del servidor
   } catch { /* silencioso */ }
 }
@@ -456,6 +457,17 @@ function drawChart(plot, d, sp) {
   svg.addEventListener("pointerleave", () => { hover.hidden = tip.hidden = true; });
 }
 
+// Aviso en el resumen si hay actualizaciones (solo administradores, solo este servidor)
+function drawUpdatesBanner() {
+  const el = $("#ov-updates"), u = ui.sys?.updates;
+  if (!el) return;
+  const parts = !u ? [] : [u.novahub ? "versión nueva de NovaHub" : "", u.security ? `${u.security} de seguridad` : u.system ? `${u.system} del sistema` : "",
+    u.reboot ? "reinicio pendiente" : ""].filter(Boolean);
+  const html = parts.length ? `<a class="upd-banner ${u.security || u.reboot ? "warn" : ""}" href="#/ajustes/actualizaciones">${ICON.download}
+    <span><b>Actualizaciones:</b> ${parts.join(" · ")}</span><span class="grow"></span><span>Ver →</span></a>` : "";
+  if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+
 function viewNoAccess() {
   $("#main").innerHTML = `<div class="empty"><h2>Sin permiso</h2>
     <p>Tu usuario (${esc(ui.me?.role_label || "")}) no puede abrir esta página. Pídele acceso a un administrador.</p>
@@ -543,6 +555,7 @@ function viewOverview() {
         <p class="page-sub" id="ov-sub">Estado del servidor y de tus servicios</p>
       </div>
     </section>
+    <div id="ov-updates"></div>
     <section class="kpis" id="kpis"></section>
     <div id="ov-servers"></div>
     ${usageHTML("system")}
@@ -1345,6 +1358,7 @@ async function openGithub() {
 
 const SETTINGS = [
   ["cuenta", "Mi cuenta", "Tu contraseña", ICON.user, null],
+  ["actualizaciones", "Actualizaciones", "NovaHub, sistema y servicios", ICON.download, "admin"],
   ["usuarios", "Usuarios", "Quién entra y qué puede hacer", ICON.users, "admin"],
   ["servidores", "Servidores", "Otros servidores en este panel", ICON.server, "admin"],
   ["remoto", "Acceso remoto", "Llaves para otros paneles", ICON.key, "admin"],
@@ -1368,7 +1382,7 @@ function viewSettings(cat) {
       <section class="module set-body" id="set-body"><div class="pane-msg">Cargando…</div></section>
     </div>`;
   $(".set-nav a.active").scrollIntoView({ block: "nearest", inline: "center" });  // en el móvil la lista se desliza
-  ({ cuenta: setAccount, usuarios: setUsers, servidores: setServers, remoto: setTokens, avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, git: setGit, app: setApp })[cat]($("#set-body"));
+  ({ cuenta: setAccount, actualizaciones: setUpdates, usuarios: setUsers, servidores: setServers, remoto: setTokens, avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, git: setGit, app: setApp })[cat]($("#set-body"));
 }
 
 // Pie con «Guardar» y el error, común a todas las categorías
@@ -1478,6 +1492,103 @@ async function setGit(body) {
     </div>`, async (f) => {
     await api("PUT", "/api/git-identity", { name: f.name.value.trim(), email: f.email.value.trim() });
   });
+}
+
+async function setUpdates(body) {
+  const draw = (u) => {
+    const nh = u.novahub || {}, apt = u.apt || {}, pk = apt.packages || [];
+    const sec = pk.filter((p) => p.security), busy = !!u.job;
+    const svcName = (id) => ui.services.find((s) => s.id === id)?.name || id;
+    const pkgRow = (p) => `<li><b class="mono">${esc(p.name)}</b> <span class="dim-text mono">${esc(p.from)} → ${esc(p.to)}</span>${p.security ? ' <span class="status bad">seguridad</span>' : ""}</li>`;
+    const card = (title, sub, inner, cls = "") => `<section class="upd-card ${cls}"><header><h3>${title}</h3>${sub ? `<span>${sub}</span>` : ""}</header>${inner}</section>`;
+    const novahub = nh.error ? `<p class="git-note">${esc(nh.error)}</p>`
+      : nh.available ? `<p class="nt-ok"><b>Versión nueva: ${esc(nh.channel === "dev" ? `${nh.behind} commit(s) nuevos (${nh.latest})` : nh.name || nh.latest)}</b></p>
+          ${nh.notes ? `<details class="adv"><summary>Novedades</summary><pre class="upd-notes">${esc(nh.notes)}</pre></details>` : ""}
+          ${nh.dirty ? '<p class="git-note">Hay cambios sin guardar en los archivos de NovaHub: no se puede actualizar hasta resolverlos.</p>' : ""}
+          ${!nh.systemd ? '<p class="git-note">NovaHub no funciona como servicio de systemd: actualízalo a mano.</p>' : ""}
+          <button type="button" class="btn primary" data-up="novahub" ${busy || nh.dirty || !nh.systemd ? "disabled" : ""}>${ICON.download}Actualizar NovaHub</button>
+          <small class="dim-text upd-help">Guarda una copia de los datos, instala la versión, reinicia el panel (unos segundos) y comprueba que responde. Si no, vuelve sola a la versión anterior. Los servicios no se paran.</small>`
+      : `<p class="dim-text">Tienes la última ${nh.channel === "dev" ? "versión de desarrollo" : "versión"}.</p>`;
+    const system = apt.error ? `<p class="git-note">${esc(apt.error)}</p>` : `
+      <p>${pk.length ? `<b>${pk.length}</b> paquete${pk.length === 1 ? "" : "s"} por actualizar${sec.length ? ` · <b class="bad-text">${sec.length} de seguridad</b>` : ""}` : "El sistema está al día."}</p>
+      ${pk.length ? `<details class="adv"><summary>Ver paquetes</summary><ul class="upd-list">${[...sec, ...pk.filter((p) => !p.security)].map(pkgRow).join("")}</ul></details>` : ""}
+      ${u.sudo ? `<div class="upd-actions">
+          <button type="button" class="btn" data-up="security" ${busy || !sec.length ? "disabled" : ""}>Solo seguridad</button>
+          <button type="button" class="btn primary" data-up="upgrade" ${busy || !pk.length ? "disabled" : ""}>Actualizar todo</button></div>
+          <label class="chk-line upd-auto"><input type="checkbox" id="up-auto" ${u.config.auto_security ? "checked" : ""}> Instalar solas las de seguridad cada noche a las
+            <input id="up-hour" class="upd-hour" inputmode="numeric" value="${u.config.auto_hour}">:00</label>`
+        : `<div class="git-note"><b>Falta un permiso de una sola vez.</b> NovaHub no es root; para actualizar el sistema usa un script con
+          órdenes fijas que solo puede ejecutar como root. Ejecuta en el servidor (desde la carpeta de NovaHub):
+          <pre class="upd-cmd">sudo install -o root -g root -m 755 tools/novahub-sistema /usr/local/sbin/novahub-sistema
+echo "$USER ALL=(root) NOPASSWD: /usr/local/sbin/novahub-sistema" | sudo tee /etc/sudoers.d/novahub-sistema
+sudo chmod 440 /etc/sudoers.d/novahub-sistema</pre></div>`}`;
+    const reboot = u.reboot ? card("Reinicio pendiente", fmtAgo(u.reboot.since), `
+      <p>Se ha actualizado el núcleo u otra pieza básica${u.reboot.packages.length ? ` (${u.reboot.packages.slice(0, 4).map(esc).join(", ")})` : ""}: no se usa hasta reiniciar el servidor.</p>
+      <button type="button" class="btn" data-up="reboot" ${busy || !u.sudo ? "disabled" : ""}>${ICON.restart}Reiniciar el servidor</button>
+      <small class="dim-text upd-help">Para los servicios en orden y reinicia. Al volver, se encienden solos los que tienen autoarranque.</small>`, "warn") : "";
+    const svcs = Object.entries(u.services || {}).filter(([, s]) => s.available);
+    const deps = Object.entries(u.deps || {}).filter(([, d]) => d.count);
+    const services = (svcs.length || deps.length) ? `<ul class="upd-rows">
+        ${svcs.map(([id, s]) => `<li><span><b>${esc(svcName(id))}</b><small>${esc(s.msg)}</small></span>
+          <button type="button" class="btn sm" data-up="service" data-id="${esc(id)}" data-what="${esc(s.kind)}" ${busy ? "disabled" : ""}>Actualizar</button></li>`).join("")}
+        ${deps.map(([id, d]) => `<li><span><b>${esc(svcName(id))}</b><small>${d.count} dependencia${d.count === 1 ? "" : "s"} con versión nueva
+            (${d.safe} sin cambios grandes)</small>
+            <details class="adv"><summary>Ver</summary><ul class="upd-list">${d.items.map((i) => `<li><b class="mono">${esc(i.name)}</b>
+              <span class="dim-text mono">${esc(i.current)} → ${esc(i.safe ? i.wanted : i.latest)}</span> <span class="dim-text">${esc(i.tool)}${i.safe ? "" : " · versión mayor, a mano"}</span></li>`).join("")}</ul></details></span>
+          <button type="button" class="btn sm" data-up="service" data-id="${esc(id)}" data-what="deps" ${busy || !d.safe ? "disabled" : ""}>Actualizar</button></li>`).join("")}
+      </ul><small class="dim-text upd-help">Antes de actualizar las dependencias de un proyecto se hace una copia de seguridad del servicio. Solo se instalan las versiones compatibles (npm update, pip sin saltos de versión mayor); los cambios grandes, a mano.</small>`
+      : '<p class="dim-text">Los servicios están al día (imágenes de contenedores, repositorios de git y dependencias).</p>';
+    body.innerHTML = `
+      <div class="upd-top">
+        <div><h2 class="set-title">Actualizaciones</h2>
+          <p class="set-sub">NovaHub <b>${esc(u.version)}</b>${u.commit ? ` <span class="dim-text mono">· ${esc(u.commit)}</span>` : ""} ·
+            ${u.checking ? "comprobando…" : u.last_check ? `comprobado ${fmtAgo(u.last_check)}` : "sin comprobar todavía"}</p></div>
+        <button type="button" class="btn" data-up="check" ${u.checking ? "disabled" : ""}>${ICON.restart}Comprobar ahora</button>
+      </div>
+      ${busy ? `<p class="nt-ok upd-busy">Actualizando: ${esc(u.job)}…</p>` : ""}
+      ${reboot}
+      ${card("NovaHub", `<label class="upd-channel">Canal <select id="up-channel"><option value="stable" ${u.config.channel === "stable" ? "selected" : ""}>Estable (versiones)</option>
+        <option value="dev" ${u.config.channel === "dev" ? "selected" : ""}>Desarrollo (cada cambio)</option></select></label>`, novahub)}
+      ${card("Sistema", "apt · Python, Node, núcleo, librerías…", system)}
+      ${card("Servicios", "contenedores, git y dependencias", services)}
+      ${u.log ? `<details class="adv" ${busy ? "open" : ""}><summary>Registro</summary><pre class="upd-log" id="upd-log">${esc(u.log)}</pre></details>` : ""}
+      ${u.history.length ? `<h3 class="set-h">Historial</h3><ul class="upd-hist">${u.history.map((h) => `<li><span class="${h.ok ? "ok-text" : "bad-text"}">${h.ok ? "✓" : "✗"}</span>
+        <b>${esc(h.what)}</b> ${esc(h.msg)} <span class="dim-text">· ${fmtAgo(h.at)}</span></li>`).join("")}</ul>` : ""}
+      <label class="chk-line upd-auto"><input type="checkbox" id="up-notify" ${u.config.notify ? "checked" : ""}> Avisarme por correo cuando haya actualizaciones</label>`;
+    const log = $("#upd-log", body); if (log) log.scrollTop = log.scrollHeight;
+    ui.updBusy = busy || u.checking;
+  };
+  const load = async () => { try { draw(await api("GET", "/api/updates")); } catch (e) { body.innerHTML = `<div class="pane-msg bad-text">${esc(e.message)}</div>`; } };
+  const saveCfg = async () => {
+    try { draw(await api("PUT", "/api/updates", { channel: $("#up-channel", body).value, auto_security: !!$("#up-auto", body)?.checked,
+      auto_hour: $("#up-hour", body)?.value ?? 4, notify: $("#up-notify", body).checked })); toast("Guardado", "ok"); }
+    catch (e) { toast(e.message, "error"); }
+  };
+  body.onchange = (e) => { if (["up-channel", "up-auto", "up-hour", "up-notify"].includes(e.target.id)) saveCfg(); };
+  body.onclick = async (e) => {
+    const b = e.target.closest("[data-up]");
+    if (!b) return;
+    const act = b.dataset.up;
+    try {
+      if (act === "check") draw(await api("POST", "/api/updates/check"));
+      else if (act === "novahub") {
+        if (!(await confirmDialog("Actualizar NovaHub", "El panel se reiniciará unos segundos (tus servicios siguen funcionando). Si la versión nueva no arranca, se vuelve sola a la anterior.", "Actualizar"))) return;
+        draw(await api("POST", "/api/updates/novahub"));
+        toast("Actualizando NovaHub: el panel volverá en unos segundos", "ok");
+      } else if (act === "security" || act === "upgrade") {
+        if (!(await confirmDialog("Actualizar el sistema", act === "security" ? "Se instalarán solo las actualizaciones de seguridad." : "Se instalarán todas las actualizaciones pendientes del sistema. Puede tardar unos minutos.", "Actualizar"))) return;
+        draw(await api("POST", "/api/updates/system", { mode: act }));
+      } else if (act === "reboot") {
+        if (!(await confirmDialog("Reiniciar el servidor", "Se pararán los servicios en orden y el servidor se reiniciará. El panel volverá en uno o dos minutos.", "Reiniciar"))) return;
+        await api("POST", "/api/updates/reboot");
+        toast("Reiniciando el servidor…", "ok");
+      } else if (act === "service") {
+        draw(await api("POST", "/api/updates/service", { id: b.dataset.id, what: b.dataset.what }));
+      }
+    } catch (err) { toast(err.message, "error"); }
+  };
+  await load();
+  every(4000, () => { if (ui.updBusy && $("#set-body") === body) load(); });
 }
 
 async function setAccount(body) {

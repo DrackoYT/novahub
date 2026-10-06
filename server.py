@@ -42,6 +42,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+VERSION = "1.0.0"   # versión semántica (MAYOR.MENOR.PARCHE); cada versión publicada lleva su etiqueta vX.Y.Z en git
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 mimetypes.add_type("application/manifest+json", ".webmanifest")  # manifiesto de la app (PWA)
 DATA_DIR = os.path.abspath(os.environ.get("NOVAHUB_DATA", os.path.join(BASE_DIR, "data")))
@@ -1555,9 +1556,17 @@ class Power:
         self.phase = "stopping"
         threading.Thread(target=self._run, args=(tapo,), daemon=True).start()
 
-    def _run(self, tapo):
+    def reboot(self):
+        if self.phase:
+            raise ApiError(409, "El servidor ya se está apagando o reiniciando")
+        if not UPDATES.sudo_ok():
+            raise ApiError(400, "Falta el permiso de sistema de NovaHub (Ajustes → Actualizaciones)")
+        self.phase = "stopping"
+        threading.Thread(target=self._run, args=(False, True), daemon=True).start()
+
+    def _run(self, tapo, reboot=False):
         def say(msg):
-            print(f"[apagado] {msg}", flush=True)
+            print(f"[{'reinicio' if reboot else 'apagado'}] {msg}", flush=True)
 
         try:
             sids = [sid for sid, s in MANAGER.services.items()
@@ -1568,6 +1577,16 @@ class Power:
             limit = time.time() + max([MANAGER.services[s].get("stop_timeout", 15) for s in sids] + [0]) + 30
             while time.time() < limit and any(MANAGER.running(s) or s in MANAGER.transition for s in sids):
                 time.sleep(0.5)
+            if reboot:
+                NOTIFIER.send_now("power", "El servidor se está reiniciando",
+                                  "Se ha pedido reiniciar el servidor desde el panel (actualizaciones). Los servicios con "
+                                  "autoarranque volverán a encenderse solos.")
+                self.phase = "reboot"
+                say("reiniciando")
+                res = subprocess.run(["sudo", "-n", SYSTEM_SCRIPT, "reboot"], capture_output=True, text=True, timeout=30)
+                if res.returncode != 0:
+                    raise RuntimeError(res.stderr.strip() or f"código {res.returncode}")
+                return
             # el correo va antes de programar el corte: si Gmail tarda, no se come el margen del enchufe
             NOTIFIER.send_now("power", "El servidor se está apagando",
                               "Se ha pedido apagar el servidor desde el panel. Los servicios se han parado"
@@ -2512,6 +2531,12 @@ class Roadmap:
             if "done" in data:
                 item["done"] = bool(data["done"])
                 item["done_at"] = time.time() if item["done"] else None
+            for key, size in (("title", 120), ("desc", 800), ("tag", 30)):  # editar el texto de una mejora
+                if key in data:
+                    val = re.sub(r"[\x00-\x1f\x7f]", " ", str(data[key] or "")).strip()[:size]
+                    if key == "title" and not val:
+                        raise ApiError(400, "La mejora necesita un título")
+                    item[key] = val
             write_json(ROADMAP_FILE, items)
             return items
 
@@ -2554,6 +2579,7 @@ NOTIFY_EVENTS = {
     "novahub": "NovaHub se reinicia tras un fallo o tiene un problema interno",
     "backup": "Falla una copia de seguridad o una restauración",
     "task": "Falla una tarea programada",
+    "updates": "Hay actualizaciones disponibles, o una actualización termina o falla",
 }
 NOTIFY_COOLDOWN = 600   # como mucho un correo por servicio y tipo de aviso cada 10 min
 NOTIFY_MAX_HOUR = 30    # y nunca más de 30 por hora en total
@@ -3562,7 +3588,7 @@ METRICS = Metrics()
 BACKUP_MOUNT = os.environ.get("NOVAHUB_BACKUP_MOUNT", "")
 SNAPSHOT_DIR = os.path.abspath(os.environ.get("NOVAHUB_BACKUP_DIR", os.path.join(BACKUP_MOUNT or DATA_DIR, "novahub-copias")))
 # bk_DDMMAA_HHMMSS_tipo.tar.gz → bk_061026_040000_auto.tar.gz (fecha de la copia; la hora evita choques el mismo día)
-SNAPSHOT_NAME = re.compile(r"bk_\d{6}_\d{6}_(auto|manual|antes-de-restaurar)\.tar\.gz")
+SNAPSHOT_NAME = re.compile(r"bk_\d{6}_\d{6}_(auto|manual|antes-de-restaurar|antes-de-actualizar)\.tar\.gz")
 BACKUP_DEFAULTS = {"enabled": False, "every": "daily", "at": "04:00", "hours": 6, "paths": [],
                    "exclude": ["node_modules", ".git", ".venv", "venv", "__pycache__", "dist", "build", ".cache", ".next"],
                    "keep": 7, "stop": False}
@@ -3796,7 +3822,7 @@ class Backups:
         """Retención: las automáticas según «conservar»; de las previas a restaurar, las 3 últimas.
         Las manuales solo se borran a mano."""
         folder = self.folder(sid)
-        for kind, limit in (("auto", keep), ("antes-de-restaurar", 3)):
+        for kind, limit in (("auto", keep), ("antes-de-restaurar", 3), ("antes-de-actualizar", 3)):
             for c in self.list(sid, kind)[limit:]:  # por fecha: el nombre DDMMAA no se ordena solo
                 os.remove(os.path.join(folder, c["name"]))
 
@@ -4275,6 +4301,429 @@ class Remotes:
 
 
 REMOTES = Remotes()
+
+
+# ───────────────────────────── centro de actualizaciones ─────────────────────────────
+# NovaHub (versiones de GitHub o canal de desarrollo), el sistema (apt), el reinicio pendiente, las imágenes de los
+# contenedores, los servicios con git y las dependencias de cada proyecto. Se comprueba solo cada pocas horas;
+# aplicar cada cosa es un botón. Lo que necesita root pasa por un único script (tools/novahub-sistema) con sudo.
+
+UPDATES_FILE = os.path.join(DATA_DIR, "updates.json")
+UPDATE_LOG = os.path.join(LOG_DIR, "_actualizaciones.log")
+UPDATE_RESULT = os.path.join(DATA_DIR, "update-result.json")   # lo escribe updater.py al acabar
+RUNNING_FILE = os.path.join(DATA_DIR, "running.json")          # versión y commit con los que arrancó este proceso
+SYSTEM_SCRIPT = "/usr/local/sbin/novahub-sistema"
+UPDATE_REPO = os.environ.get("NOVAHUB_UPDATE_REPO", "").strip()  # «usuario/repo» si no se puede deducir del git
+UPDATES_DEFAULTS = {"channel": "stable", "auto_security": False, "auto_hour": 4, "notify": True}
+UPDATE_CHECK_EVERY = 6 * 3600
+SEMVER = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def semver(text):
+    m = SEMVER.match(str(text or "").strip())
+    return tuple(int(x or 0) for x in m.groups()) if m else (0, 0, 0)
+
+
+def current_commit():
+    res = git(BASE_DIR, "rev-parse", "HEAD") if os.path.isdir(os.path.join(BASE_DIR, ".git")) else None
+    return res.stdout.strip() if res is not None and res.returncode == 0 else None
+
+
+class Updates:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.data = read_json(UPDATES_FILE, {})
+        self.data.setdefault("config", {})
+        self.data.setdefault("history", [])
+        self.job = None   # lo que se está aplicando ahora mismo («sistema», «novahub»…)
+        self.checking = False
+
+    # ── estado ──
+    def config(self):
+        return {**UPDATES_DEFAULTS, **self.data.get("config", {})}
+
+    def save(self):
+        with self.lock:
+            write_json(UPDATES_FILE, self.data)
+
+    def save_config(self, data):
+        cfg = self.config()
+        channel = data.get("channel", cfg["channel"])
+        if channel not in ("stable", "dev"):
+            raise ApiError(400, "Canal desconocido")
+        try:
+            hour = int(data.get("auto_hour", cfg["auto_hour"]))
+        except (TypeError, ValueError):
+            raise ApiError(400, "Hora no válida")
+        if not 0 <= hour <= 23:
+            raise ApiError(400, "La hora debe estar entre 0 y 23")
+        self.data["config"] = {"channel": channel, "auto_security": bool(data.get("auto_security", cfg["auto_security"])),
+                               "auto_hour": hour, "notify": bool(data.get("notify", cfg["notify"]))}
+        self.save()
+        if channel != cfg["channel"]:
+            self.start_check()
+        return self.public()
+
+    def history(self, what, ok, msg):
+        self.data["history"] = ([{"at": time.time(), "what": what, "ok": ok, "msg": msg}] + self.data["history"])[:50]
+        self.save()
+
+    @staticmethod
+    def sudo_ok():
+        if not os.path.isfile(SYSTEM_SCRIPT):
+            return False
+        try:
+            return subprocess.run(["sudo", "-n", "-l", SYSTEM_SCRIPT, "upgrade"], capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    def public(self):
+        self._collect_result()
+        d = self.data
+        log_tail = ""
+        try:
+            with open(UPDATE_LOG, "rb") as f:
+                f.seek(max(0, os.path.getsize(UPDATE_LOG) - 6000))
+                log_tail = strip_ansi(f.read().decode("utf-8", "replace"))
+        except OSError:
+            pass
+        apt = d.get("apt") or {}
+        counts = {
+            "novahub": 1 if (d.get("novahub") or {}).get("available") else 0,
+            "system": len(apt.get("packages") or []),
+            "security": sum(1 for p in apt.get("packages") or [] if p.get("security")),
+            "services": sum(1 for s in (d.get("services") or {}).values() if s.get("available")),
+            "deps": sum(1 for s in (d.get("deps") or {}).values() if s.get("count")),
+        }
+        return {"version": VERSION, "commit": (current_commit() or "")[:7], "config": self.config(),
+                "last_check": d.get("last_check"), "checking": self.checking, "job": self.job,
+                "novahub": d.get("novahub"), "apt": apt, "reboot": self.reboot_info(), "sudo": self.sudo_ok(),
+                "services": d.get("services") or {}, "deps": d.get("deps") or {}, "history": d["history"][:15],
+                "counts": counts, "total": counts["novahub"] + counts["system"] + counts["services"] + counts["deps"],
+                "log": log_tail}
+
+    @staticmethod
+    def reboot_info():
+        if not os.path.exists("/var/run/reboot-required"):
+            return None
+        try:
+            with open("/var/run/reboot-required.pkgs") as f:
+                pkgs = sorted({l.strip() for l in f if l.strip()})
+        except OSError:
+            pkgs = []
+        return {"since": os.path.getmtime("/var/run/reboot-required"), "packages": pkgs}
+
+    def _collect_result(self):
+        """Resultado de una actualización de NovaHub (lo deja updater.py; este proceso puede ser ya el nuevo)."""
+        if not os.path.isfile(UPDATE_RESULT):
+            return
+        r = read_json(UPDATE_RESULT, None)
+        try:
+            os.remove(UPDATE_RESULT)
+        except OSError:
+            pass
+        if r:
+            self.history("NovaHub", r.get("ok"), r.get("msg", ""))
+            if r.get("ok"):
+                self.data["novahub"] = {**(self.data.get("novahub") or {}), "available": False}
+                self.save()
+            NOTIFIER.notify("updates", None, "NovaHub actualizado" if r.get("ok") else "La actualización de NovaHub ha fallado",
+                            r.get("msg", ""), key="novahub-update", level="ok" if r.get("ok") else "danger")
+
+    # ── comprobar ──
+    def start_check(self):
+        with self.lock:
+            if self.checking:
+                return
+            self.checking = True
+        threading.Thread(target=self.check_all, name="comprobar-actualizaciones", daemon=True).start()
+
+    def check_all(self, pull_images=False):
+        try:
+            before = self.public()["total"]
+            for name, fn in (("novahub", self.check_novahub), ("apt", self.check_apt),
+                             ("services", lambda: self.check_services(pull_images)), ("deps", self.check_deps)):
+                try:
+                    self.data[name] = fn()
+                except Exception as e:  # noqa: BLE001
+                    self.data[name] = {"error": str(e)[:300]}
+            self.data["last_check"] = time.time()
+            self.save()
+            p = self.public()
+            if self.config()["notify"] and p["total"] > before:
+                c = p["counts"]
+                parts = [f"NovaHub {self.data['novahub'].get('latest')}" if c["novahub"] else "",
+                         f"{c['system']} paquete(s) del sistema" + (f" ({c['security']} de seguridad)" if c["security"] else "") if c["system"] else "",
+                         f"{c['services']} servicio(s)" if c["services"] else "", f"{c['deps']} proyecto(s) con dependencias nuevas" if c["deps"] else ""]
+                NOTIFIER.notify("updates", None, "Hay actualizaciones disponibles",
+                                "Hay actualizaciones en el servidor: " + ", ".join(x for x in parts if x)
+                                + ". Revísalas en Ajustes → Actualizaciones.", key="disponibles", level="info")
+        finally:
+            self.checking = False
+
+    def github_repo(self):
+        if UPDATE_REPO:
+            return UPDATE_REPO
+        res = git(BASE_DIR, "remote", "get-url", "origin")
+        m = re.search(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?$", res.stdout.strip()) if res.returncode == 0 else None
+        return m.group(1) if m else None
+
+    def check_novahub(self):
+        commit = current_commit()
+        if not commit:
+            return {"error": "NovaHub no está instalado con git: actualízalo a mano (o clónalo con git para tener actualizaciones)."}
+        out = {"commit": commit[:7], "channel": self.config()["channel"], "available": False,
+               "dirty": bool(git(BASE_DIR, "status", "--porcelain", "--untracked-files=no").stdout.strip()),
+               "systemd": bool(os.environ.get("NOTIFY_SOCKET"))}
+        if out["channel"] == "dev":
+            branch = git(BASE_DIR, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or "main"
+            res = git(BASE_DIR, "fetch", "-q", "origin", branch, timeout=60)
+            if res.returncode != 0:
+                raise RuntimeError(git_output(res) or "no se pudo consultar GitHub")
+            target = git(BASE_DIR, "rev-parse", f"origin/{branch}").stdout.strip()
+            behind = git(BASE_DIR, "rev-list", "--count", f"HEAD..{target}").stdout.strip()
+            ahead = git(BASE_DIR, "rev-list", "--count", f"{target}..HEAD").stdout.strip()
+            log_lines = git(BASE_DIR, "log", "--format=%h %s", f"HEAD..{target}", "-n", "30").stdout.strip()
+            out.update(branch=branch, target=target, latest=target[:7], behind=int(behind or 0), ahead=int(ahead or 0),
+                       notes=log_lines, available=int(behind or 0) > 0)
+            return out
+        repo = self.github_repo()
+        if not repo:
+            raise RuntimeError("No se sabe de qué repositorio de GitHub viene NovaHub (define NOVAHUB_UPDATE_REPO)")
+        import urllib.request
+        try:
+            req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/latest",
+                                         headers={"User-Agent": "NovaHub", "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                rel = json.loads(r.read(1_000_000))
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"no se pudo consultar GitHub: {e}")
+        tag = rel.get("tag_name") or ""
+        out.update(repo=repo, latest=tag.lstrip("v"), tag=tag, name=rel.get("name") or tag, notes=(rel.get("body") or "")[:6000],
+                   url=rel.get("html_url"), published=rel.get("published_at"), available=semver(tag) > semver(VERSION))
+        return out
+
+    def check_apt(self):
+        if not shutil.which("apt"):
+            return {"error": "Este sistema no usa apt (Debian/Ubuntu): las actualizaciones del sistema no están disponibles."}
+        if self.sudo_ok():  # refresca las listas (como root, por el script)
+            subprocess.run(["sudo", "-n", SYSTEM_SCRIPT, "update"], capture_output=True, timeout=300)
+        res = subprocess.run(["apt", "list", "--upgradable"], capture_output=True, text=True, timeout=120, env={**os.environ, "LC_ALL": "C"})
+        pkgs = []
+        for line in res.stdout.splitlines():
+            m = re.match(r"([^/\s]+)/(\S+)\s+(\S+)\s+\S+\s+\[upgradable from: ([^\]]+)\]", line)
+            if m:
+                pkgs.append({"name": m.group(1), "to": m.group(3), "from": m.group(4), "security": "-security" in m.group(2)})
+        return {"packages": pkgs, "checked": time.time()}
+
+    def check_services(self, pull_images=False):
+        out = {}
+        for sid, svc in list(MANAGER.services.items()):
+            kind = svc.get("kind") or "process"
+            try:
+                if kind == "container" and shutil.which("podman"):
+                    image = full_image(svc["image"])
+                    if pull_images:  # se descarga ya: aplicar será solo reiniciar
+                        subprocess.run(["podman", "pull", "-q", image], capture_output=True, timeout=1800)
+                    have = subprocess.run(["podman", "image", "inspect", "--format", "{{.Id}}", image], capture_output=True, text=True, timeout=30).stdout.strip()
+                    used = subprocess.run(["podman", "inspect", "--format", "{{.Image}}", container_name(sid)], capture_output=True, text=True, timeout=30).stdout.strip()
+                    if used and have and used != have:
+                        out[sid] = {"kind": "image", "available": True, "msg": "Imagen nueva descargada: se aplica al reiniciar"}
+                elif kind == "process" and os.path.isdir(os.path.join(service_root(svc), ".git")):
+                    root = service_root(svc)
+                    if git(root, "rev-parse", "--abbrev-ref", "@{u}").returncode != 0:
+                        continue
+                    if git(root, "fetch", "-q", timeout=60).returncode != 0:
+                        continue
+                    behind = int(git(root, "rev-list", "--count", "HEAD..@{u}").stdout.strip() or 0)
+                    if behind:
+                        out[sid] = {"kind": "git", "available": True, "msg": f"{behind} cambio(s) nuevo(s) en GitHub",
+                                    "log": git(root, "log", "--format=%h %s", "HEAD..@{u}", "-n", "10").stdout.strip()}
+            except (ApiError, OSError, subprocess.TimeoutExpired, KeyError):
+                continue
+        return out
+
+    def check_deps(self):
+        out = {}
+        for sid, svc in list(MANAGER.services.items()):
+            if (svc.get("kind") or "process") != "process":
+                continue
+            try:
+                root = service_root(svc)
+            except ApiError:
+                continue
+            items = []
+            if os.path.isfile(os.path.join(root, "package.json")) and os.path.isdir(os.path.join(root, "node_modules")) and shutil.which("npm"):
+                res = subprocess.run(["npm", "outdated", "--json"], cwd=root, capture_output=True, text=True, timeout=180)
+                try:
+                    for name, v in (json.loads(res.stdout or "{}") or {}).items():
+                        if isinstance(v, dict) and v.get("current"):
+                            items.append({"name": name, "current": v.get("current"), "wanted": v.get("wanted"), "latest": v.get("latest"),
+                                          "tool": "npm", "safe": v.get("wanted") not in (None, v.get("current"))})
+                except ValueError:
+                    pass
+            venv = next((os.path.join(root, d) for d in (".venv", "venv") if os.path.isfile(os.path.join(root, d, "bin", "pip"))), None)
+            if venv:
+                res = subprocess.run([os.path.join(venv, "bin", "pip"), "list", "--outdated", "--format", "json"],
+                                     cwd=root, capture_output=True, text=True, timeout=180)
+                try:
+                    for p in json.loads(res.stdout or "[]"):
+                        items.append({"name": p["name"], "current": p["version"], "latest": p["latest_version"], "wanted": p["latest_version"],
+                                      "tool": "pip", "safe": semver(p["latest_version"])[0] == semver(p["version"])[0]})
+                except (ValueError, KeyError):
+                    pass
+            if items:
+                out[sid] = {"count": len(items), "safe": sum(1 for i in items if i["safe"]), "items": items[:200]}
+        return out
+
+    # ── aplicar ──
+    def _run_job(self, name, fn):
+        with self.lock:
+            if self.job:
+                raise ApiError(409, f"Ya hay una actualización en curso ({self.job})")
+            self.job = name
+
+        def go():
+            ok, msg = True, "Hecho"
+            try:
+                msg = fn() or msg
+            except Exception as e:  # noqa: BLE001
+                ok, msg = False, e.msg if isinstance(e, ApiError) else str(e)
+            finally:
+                self.job = None
+            self._ulog(("✓ " if ok else "✗ ") + msg)
+            self.history(name, ok, msg)
+            if not ok:
+                NOTIFIER.notify("updates", None, f"Ha fallado una actualización ({name})", msg, key=f"fallo-{name}", level="danger")
+            self.start_check()
+        threading.Thread(target=go, name="actualizar", daemon=True).start()
+        return self.public()
+
+    @staticmethod
+    def _ulog(msg):
+        with open(UPDATE_LOG, "ab") as f:
+            f.write(f"[{datetime.now():%d/%m %H:%M:%S}] {msg}\n".encode())
+
+    def _logged(self, cmd, cwd=None, timeout=3600):
+        self._ulog("$ " + " ".join(cmd))
+        with open(UPDATE_LOG, "ab") as f:
+            res = subprocess.run(cmd, cwd=cwd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=timeout)
+        if res.returncode != 0:
+            raise RuntimeError(f"«{' '.join(cmd[-2:])}» ha terminado con código {res.returncode}")
+
+    def apply_system(self, mode):
+        if mode not in ("security", "upgrade"):
+            raise ApiError(400, "Modo desconocido")
+        if not self.sudo_ok():
+            raise ApiError(400, "Falta el permiso para actualizar el sistema (mira las instrucciones en esta página)")
+
+        def fn():
+            self._ulog("Actualizando el sistema (" + ("solo seguridad" if mode == "security" else "todo") + ")…")
+            self._logged(["sudo", "-n", SYSTEM_SCRIPT, mode])
+            return "Sistema actualizado" + (" (seguridad)" if mode == "security" else "") + \
+                (": hace falta reiniciar el servidor" if self.reboot_info() else "")
+        return self._run_job("Sistema", fn)
+
+    def apply_service(self, sid, what):
+        svc = MANAGER.services.get(sid)
+        if not svc:
+            raise ApiError(404, "Servicio no encontrado")
+        if what == "image":
+            def fn():
+                self._ulog(f"«{svc['name']}»: imagen nueva → reiniciando")
+                if MANAGER.running(sid):
+                    MANAGER.restart(sid)
+                return f"«{svc['name']}» con la imagen nueva"
+        elif what == "git":
+            DEPLOYER.update(sid)  # el «Actualizar» de siempre: trae los cambios, instala y reinicia
+            (self.data.get("services") or {}).pop(sid, None)  # deja de salir como pendiente (la próxima comprobación lo confirma)
+            self.history(svc["name"], True, "Actualizando desde GitHub (progreso en su consola)")
+            return self.public()
+        elif what == "deps":
+            def fn():
+                root = service_root(svc)
+                self._ulog(f"«{svc['name']}»: actualizando dependencias…")
+                try:
+                    BACKUPS.snapshot(sid, "antes-de-actualizar")
+                    self._ulog("copia de seguridad del servicio hecha antes de actualizar")
+                except Exception as e:  # noqa: BLE001
+                    self._ulog(f"(sin copia previa: {e.msg if isinstance(e, ApiError) else e})")
+                items = (self.data.get("deps") or {}).get(sid, {}).get("items") or []
+                if any(i["tool"] == "npm" for i in items):
+                    self._logged(["npm", "update", "--no-audit", "--no-fund"], cwd=root, timeout=1800)  # dentro de los rangos de package.json
+                pips = [i["name"] for i in items if i["tool"] == "pip" and i["safe"] and re.fullmatch(r"[A-Za-z0-9._-]+", i["name"])]
+                venv = next((os.path.join(root, d) for d in (".venv", "venv") if os.path.isfile(os.path.join(root, d, "bin", "pip"))), None)
+                if pips and venv:
+                    self._logged([os.path.join(venv, "bin", "pip"), "install", "-U", *pips], cwd=root, timeout=1800)
+                if MANAGER.running(sid):
+                    MANAGER.restart(sid)
+                return f"«{svc['name']}»: dependencias actualizadas" + (" y reiniciado" if MANAGER.running(sid) else "")
+        else:
+            raise ApiError(400, "Tipo de actualización desconocido")
+        return self._run_job(svc["name"], fn)
+
+    def apply_novahub(self, port):
+        info = self.data.get("novahub") or {}
+        if not info.get("available"):
+            raise ApiError(400, "No hay ninguna versión nueva de NovaHub")
+        if not os.environ.get("NOTIFY_SOCKET"):
+            raise ApiError(400, "NovaHub no está funcionando como servicio de systemd: actualízalo a mano (git pull y reiniciar)")
+        if git(BASE_DIR, "status", "--porcelain", "--untracked-files=no").stdout.strip():
+            raise ApiError(400, "Hay cambios sin guardar en los archivos de NovaHub (git status): no se actualiza para no perderlos")
+        if info.get("channel") == "dev":
+            if info.get("ahead"):
+                raise ApiError(400, "Este NovaHub tiene commits propios que no están en GitHub: súbelos antes de actualizar")
+            target, branch, label = info["target"], info["branch"], info["latest"]
+        else:
+            res = git(BASE_DIR, "fetch", "-q", "--tags", "--force", "origin", timeout=120)
+            if res.returncode != 0:
+                raise ApiError(502, f"No se pudo descargar la versión: {git_output(res)}")
+            target = git(BASE_DIR, "rev-parse", f"{info['tag']}^{{commit}}").stdout.strip()
+            if not target:
+                raise ApiError(502, f"No se encuentra la versión {info['tag']} en el repositorio")
+            branch, label = "", info["tag"]
+        tmp = os.path.join(RUN_DIR, "updater.py")
+        shutil.copy2(os.path.join(BASE_DIR, "updater.py"), tmp)  # fuera del repositorio: git puede cambiar el original
+        self._ulog(f"Actualizando NovaHub a {label}: copia de datos, código nuevo, reinicio y comprobación (si falla, vuelve atrás)…")
+        with open(UPDATE_LOG, "ab") as f:
+            subprocess.Popen([sys.executable, tmp, "--base", BASE_DIR, "--data", DATA_DIR, "--target", target,
+                              "--branch", branch, "--label", label, "--port", str(port),
+                              "--unit", os.environ.get("NOVAHUB_UNIT", "novahub")],
+                             stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        self.job = "NovaHub"
+        return self.public()
+
+    # ── programación ──
+    def loop(self):
+        last_pull = self.data.get("last_pull") or 0
+        while True:
+            time.sleep(60)
+            SUPERVISOR.beat("actualizaciones")
+            try:
+                now = time.time()
+                cfg = self.config()
+                if now - (self.data.get("last_check") or 0) > UPDATE_CHECK_EVERY and not self.checking and not self.job:
+                    pull = now - last_pull > 7 * 86400  # imágenes de contenedores: una vez por semana
+                    if pull:
+                        last_pull = self.data["last_pull"] = now
+                    self.checking = True
+                    self.check_all(pull_images=pull)
+                today = datetime.now()
+                if (cfg["auto_security"] and today.hour == cfg["auto_hour"] and not self.job
+                        and self.data.get("auto_day") != today.strftime("%Y-%m-%d")
+                        and any(p.get("security") for p in (self.data.get("apt") or {}).get("packages") or [])):
+                    self.data["auto_day"] = today.strftime("%Y-%m-%d")
+                    self.save()
+                    self._ulog("Actualizaciones de seguridad automáticas")
+                    try:
+                        self.apply_system("security")
+                    except ApiError as e:
+                        self._ulog(f"✗ {e.msg}")
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+
+
+UPDATES = Updates()
 
 
 # ───────────────────────────── plantillas de servicio ─────────────────────────────
@@ -4917,7 +5366,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(AUTH.save_settings(self.read_body()))
             raise ApiError(405, "Método no permitido")
         if path == "/api/system":
-            return self.send_json({**system_info(), "android_apk": os.path.isfile(ANDROID_APK)})
+            info = {**system_info(), "android_apk": os.path.isfile(ANDROID_APK), "version": VERSION}
+            if self.can("admin"):
+                u = UPDATES.data
+                info["updates"] = {"novahub": bool((u.get("novahub") or {}).get("available")),
+                                   "security": sum(1 for p in (u.get("apt") or {}).get("packages") or [] if p.get("security")),
+                                   "system": len((u.get("apt") or {}).get("packages") or []), "reboot": bool(UPDATES.reboot_info())}
+            return self.send_json(info)
         if path == "/api/app/android" and method == "GET":
             return self.download_apk()
         if path == "/api/git-identity":
@@ -4926,6 +5381,25 @@ class Handler(BaseHTTPRequestHandler):
             if method == "PUT":
                 return self.send_json(set_git_identity(self.read_body()))
             raise ApiError(405, "Método no permitido")
+        if path == "/api/updates":
+            if method == "GET":
+                return self.send_json(UPDATES.public())
+            if method == "PUT":
+                return self.send_json(UPDATES.save_config(self.read_body()))
+            raise ApiError(405, "Método no permitido")
+        if path == "/api/updates/check" and method == "POST":
+            UPDATES.start_check()
+            return self.send_json(UPDATES.public(), 202)
+        if path == "/api/updates/novahub" and method == "POST":
+            return self.send_json(UPDATES.apply_novahub(self.server.server_address[1]), 202)
+        if path == "/api/updates/system" and method == "POST":
+            return self.send_json(UPDATES.apply_system(str(self.read_body().get("mode") or "")), 202)
+        if path == "/api/updates/service" and method == "POST":
+            body = self.read_body()
+            return self.send_json(UPDATES.apply_service(str(body.get("id") or ""), str(body.get("what") or "")), 202)
+        if path == "/api/updates/reboot" and method == "POST":
+            POWER.reboot()
+            return self.send_json({"ok": True}, 202)
         if path == "/api/network" and method == "GET":
             return self.send_json(NETWORK.public())
         if path == "/api/metrics" and method == "GET":
@@ -5353,6 +5827,8 @@ def main():
     SUPERVISOR.spawn("copias", BACKUPS.loop)
     SUPERVISOR.spawn("graficas", METRICS.loop)
     SUPERVISOR.spawn("tareas", SCHEDULER.loop)
+    SUPERVISOR.spawn("actualizaciones", UPDATES.loop)
+    write_json(RUNNING_FILE, {"version": VERSION, "commit": current_commit(), "pid": os.getpid(), "at": time.time()})
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
