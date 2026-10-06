@@ -101,6 +101,19 @@ fracción de la memoria del modo desarrollo (≈20 MB frente a ≈300 MB en una 
 aplica los cambios del código; «Actualizar» desde GitHub recompila solo; «Volver a desarrollo»
 recupera el comando original. El puerto llega por la variable `NOVAHUB_SERVICE_PORT`.
 
+## Vista de red
+
+Pestaña **Red** (tecla `4`):
+
+- **Túnel:** conexiones activas con Cloudflare, centros a los que está conectado (p. ej. `mad05 · mad07`),
+  peticiones y errores. Se leen del servidor de métricas de cloudflared, así que el comando del túnel debe
+  llevar `--metrics 127.0.0.1:PUERTO`.
+- **Servidor:** IP en la red local y dominio de publicación.
+- **Enchufe Tapo:** encendido o apagado, consumo en vatios en este momento (P110/P115), kWh de hoy y del
+  mes, desde cuándo está encendido y calidad del Wi-Fi. Se consulta como mucho una vez por minuto.
+- **Dominios publicados:** cada regla del `config.yml` del túnel con el servicio al que lleva, su estado
+  y si pasa por la pasarela de NovaHub.
+
 ## Gráficas de uso
 
 En **Resumen** (todo el servidor) y en la ficha de cada servicio hay dos gráficas, CPU y memoria, con

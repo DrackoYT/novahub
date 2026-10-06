@@ -215,6 +215,23 @@ main { max-width: 1260px; margin: 0 auto; padding: 30px 24px 64px; }
 .meter.hot i { background: #e8a200; }
 .meter.crit i { background: var(--err); }
 
+/* vista de red */
+.net-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.net-card { display: grid; gap: 8px; padding: 15px 16px 12px; min-width: 0; color: inherit; }
+a.net-card:hover { background: var(--hover); }
+.net-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.net-card .readout { margin-top: 4px; }
+.net-card p { margin: 4px 0; font-size: 14px; }
+.net-foot { font-size: 12px; }
+.mono-value { font-family: var(--f-mono); font-size: 24px; font-weight: 600; }
+.warn-text { color: var(--warn); }
+.net-host .row-name { color: var(--nova-text); }
+.net-host .row-name:hover { text-decoration: underline; text-underline-offset: 3px; }
+.net-svc { color: var(--ink); font-family: var(--f-ui); font-weight: 600; font-size: 13.5px; }
+.net-svc:hover { color: var(--nova-text); }
+@media (max-width: 900px) { .net-grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .net-host { flex-wrap: wrap; } .net-host .row-meta { margin-left: 0; width: 100%; white-space: normal; flex-wrap: wrap; gap: 6px 14px; } }
+
 /* gráficas de uso */
 .usage-head { margin-top: 22px; }
 .seg { display: flex; gap: 6px; }
@@ -231,6 +248,7 @@ main { max-width: 1260px; margin: 0 auto; padding: 30px 24px 64px; }
 .ch-line { fill: none; stroke: var(--chart); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .ch-dot { fill: var(--chart); }
 .ch-limit { stroke: var(--err); stroke-width: 1.5; stroke-dasharray: 4 4; opacity: .7; }
+.ch-limit-text { fill: var(--err); }
 .ch-cross { stroke: var(--soft); stroke-width: 1; stroke-dasharray: 3 3; }
 .ch-mark { fill: var(--chart); stroke: var(--module); stroke-width: 2; }
 .ch-tip {

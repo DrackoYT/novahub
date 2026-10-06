@@ -107,7 +107,16 @@ async def main(argv):
     try:
         cmd = argv[0]
         if cmd == "status":
-            print(json.dumps({"model": dev.model, "alias": dev.alias, "on": dev.is_on}, ensure_ascii=False))
+            out = {"model": dev.model, "alias": dev.alias, "on": dev.is_on, "host": dev.host,
+                   "rssi": getattr(dev, "rssi", None)}
+            since = getattr(dev, "on_since", None)
+            if since:
+                out["on_since"] = since.timestamp()
+            energy = dev.modules.get("Energy")  # P110/P115: medidor de consumo
+            if energy:
+                out.update(watts=energy.current_consumption, today_kwh=energy.consumption_today,
+                           month_kwh=energy.consumption_this_month)
+            print(json.dumps(out, ensure_ascii=False))
         elif cmd == "test":
             # «encender» con el enchufe ya encendido no hace nada: sirve para probar la API sin riesgo
             print(json.dumps(await countdown(dev, 30, True), ensure_ascii=False))

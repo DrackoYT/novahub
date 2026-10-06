@@ -231,6 +231,7 @@ const NAV = [
   ["overview", "#/", "Resumen", "1", ICON.home],
   ["services", "#/servicios", "Servicios", "2", ICON.grid],
   ["tasks", "#/procesos", "Procesos", "3", ICON.activity],
+  ["network", "#/red", "Red", "4", ICON.globe],
 ];
 
 function shell() {
@@ -374,7 +375,7 @@ function drawChart(plot, d, sp) {
   const hhmm = (t) => new Date(t * 1000).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
   const xAxis = ticks.map((t, k) => `<text x="${x(t)}" y="${H - 5}" class="ch-axis" text-anchor="${k === 0 ? "start" : k === 4 ? "end" : "middle"}">${k === 4 ? "ahora" : hhmm(t)}</text>`).join("");
   const limit = sp.limit ? `<line x1="${P.l}" x2="${W - P.r}" y1="${y(sp.limit)}" y2="${y(sp.limit)}" class="ch-limit"/>` +
-    `<text x="${W - P.r}" y="${y(sp.limit) - 5}" class="ch-axis" text-anchor="end">límite</text>` : "";
+    `<text x="${P.l + 6}" y="${y(sp.limit) - 5}" class="ch-axis ch-limit-text">límite</text>` : "";
   const vals = pts.map((p) => p[sp.i]);
   const summary = vals.length
     ? `mínimo ${sp.fmt(Math.min(...vals))}, media ${sp.fmt(vals.reduce((a, b) => a + b, 0) / vals.length)}, máximo ${sp.fmt(Math.max(...vals))}`
@@ -483,6 +484,115 @@ function drawOverview() {
     </a>`;
   }).join("") : `<div class="row-empty">Añade tu primer servicio con «Nuevo servicio».</div>`;
   if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+
+// ───────────────────────── vista: red ─────────────────────────
+
+function viewNetwork() {
+  $("#main").innerHTML = `
+    <section class="page-head">
+      <div>
+        <h1 class="page-title">Red</h1>
+        <p class="page-sub" id="net-sub">Túnel de Cloudflare, dominios publicados y enchufe</p>
+      </div>
+    </section>
+    <section class="net-grid" id="net-cards"></section>
+    <div class="section-title"><h2>Dominios publicados</h2></div>
+    <section class="module rows" id="net-hosts"></section>`;
+  refreshNetwork();
+  every(10000, refreshNetwork);
+}
+
+async function refreshNetwork() {
+  try {
+    const d = await api("GET", "/api/network");
+    drawNetwork(d);
+    if (d.tapo.loading) setTimeout(() => $("#net-cards") && refreshNetwork(), 4000);  // el enchufe tarda unos segundos
+  } catch { /* el 401 ya redirige */ }
+}
+
+const wifiText = (rssi) => (rssi == null ? null : rssi >= -50 ? "Excelente" : rssi >= -60 ? "Buena" : rssi >= -70 ? "Regular" : "Débil");
+const kwh = (v) => `${v.toLocaleString("es-ES", { maximumFractionDigits: v < 10 ? 2 : 1 })} kWh`;
+
+function drawNetwork(d) {
+  const cards = $("#net-cards"), hostsEl = $("#net-hosts");
+  if (!cards) return;
+  const cell = (k, v) => `<div><dt>${k}</dt><dd>${v}</dd></div>`;
+  const dash = '<span class="dim-text">—</span>';
+
+  const t = d.tunnel;
+  let tunnel;
+  if (!t) {
+    tunnel = `<div class="module net-card"><span class="label">Túnel</span><p class="dim-text">No hay ningún servicio con <code>cloudflared tunnel run</code>.</p></div>`;
+  } else {
+    const on = t.status === "running";
+    const conn = t.connections;
+    const state = !on ? t.status : conn == null ? "starting" : conn > 0 ? "running" : "crashed";
+    const big = !on ? STATUS_LABEL[t.status] : conn == null ? (t.metrics_error ? "Sin métricas" : "—") : `${conn}<small> de 4</small>`;
+    tunnel = `<a class="module net-card" href="#/s/${esc(t.sid)}" data-status="${state}">
+      <div class="net-top"><span class="label">Túnel · conexiones</span>${statusHTML({ status: state })}</div>
+      <span class="kpi-value">${big}</span>
+      <dl class="readout">
+        ${cell("Centros de Cloudflare", t.locations.length ? esc(t.locations.join(" · ")) : dash)}
+        ${cell("Peticiones", t.requests != null ? t.requests.toLocaleString("es-ES") : dash)}
+        ${cell("Errores", t.errors != null ? `<span class="${t.errors ? "warn-text" : ""}">${t.errors.toLocaleString("es-ES")}</span>` : dash)}
+      </dl>
+    </a>`;
+  }
+
+  const p = d.tapo;
+  let plug;
+  if (!p.configured) {
+    plug = `<div class="module net-card"><span class="label">Enchufe</span>
+      <p class="dim-text">Sin configurar. Ejecuta <code>.venv/bin/python tapo.py setup</code> (ver README).</p></div>`;
+  } else if (p.loading) {
+    plug = `<div class="module net-card"><span class="label">Enchufe</span><p class="dim-text">Consultando el enchufe…</p></div>`;
+  } else if (p.error) {
+    plug = `<div class="module net-card" data-status="crashed"><div class="net-top"><span class="label">Enchufe</span>${statusHTML({ status: "crashed" })}</div>
+      <p class="bad-text">${esc(p.error)}</p></div>`;
+  } else {
+    const wifi = wifiText(p.rssi);
+    plug = `<div class="module net-card" data-status="${p.on ? "running" : "stopped"}">
+      <div class="net-top"><span class="label">Enchufe · ${esc(p.alias || p.model)}</span><span class="status">${p.on ? "Encendido" : "Apagado"}</span></div>
+      <span class="kpi-value">${p.watts != null ? `${p.watts.toLocaleString("es-ES", { maximumFractionDigits: 1 })}<small> W</small>` : esc(p.model)}</span>
+      <dl class="readout">
+        ${p.today_kwh != null ? cell("Consumo hoy · este mes", `${kwh(p.today_kwh)} · ${kwh(p.month_kwh)}`) : ""}
+        ${cell("Encendido desde", p.on_since ? `${fmtTime(p.on_since)}` : dash)}
+        ${cell("Wi-Fi", wifi ? `${wifi} <span class="dim-text">· ${p.rssi} dBm</span>` : dash)}
+        ${cell("Modelo · IP", `${esc(p.model)} · <span class="mono">${esc(p.host || "")}</span>`)}
+      </dl>
+      <span class="net-foot dim-text">Leído ${fmtAgo(p.at)}</span>
+    </div>`;
+  }
+
+  const lan = `<div class="module net-card">
+      <span class="label">Servidor</span>
+      <span class="kpi-value mono-value">${esc(d.lan_ip || "—")}</span>
+      <dl class="readout">
+        ${cell("Dominio", d.domain ? esc(d.domain) : '<span class="dim-text">sin publicar (NOVAHUB_DOMAIN)</span>')}
+        ${cell("Dominios activos", d.hosts.length)}
+      </dl>
+    </div>`;
+
+  const html = tunnel + lan + plug;
+  if (cards._html !== html) { cards.innerHTML = html; cards._html = html; }
+
+  const sub = $("#net-sub");
+  if (sub && t) {
+    const ok = t.status === "running" && t.connections > 0;
+    sub.innerHTML = ok ? `Túnel <b>conectado</b> con ${t.connections} conexiones a Cloudflare` : '<span class="bad-text">El túnel no está conectado: las webs publicadas no se ven desde fuera</span>';
+  }
+
+  const rows = d.hosts.length ? d.hosts.map((h) => `
+    <div class="row net-host" data-status="${h.status || "stopped"}">
+      ${h.status ? statusHTML({ status: h.status }) : '<span class="status">Sin servicio</span>'}
+      <a class="row-name url" href="https://${esc(h.host)}" target="_blank" rel="noopener">${esc(h.host)} ↗</a>
+      <span class="row-meta">
+        ${h.sid ? `<a href="#/s/${esc(h.sid)}" class="net-svc">${esc(h.name)}</a>` : h.name ? `<span class="net-svc">${esc(h.name)}</span>` : ""}
+        <span class="opt" title="${h.gateway ? "Pasa por la pasarela de NovaHub (página de aviso si el servicio está caído)" : ""}">${esc(h.target)}${h.gateway ? " · pasarela" : ""}</span>
+      </span>
+    </div>`).join("") : `<div class="row-empty">Aún no hay nada publicado. Pon un subdominio al editar un servicio.</div>`;
+  if (hostsEl._html !== rows) { hostsEl.innerHTML = rows; hostsEl._html = rows; }
 }
 
 // ───────────────────────── vista: mejoras (oculta) ─────────────────────────
@@ -2227,6 +2337,7 @@ function route() {
   if (m) { viewDetail(m[1]); section = "services"; }
   else if (hash === "#/servicios") { viewList(); section = "services"; }
   else if (hash === "#/procesos") { viewTasks(); section = "tasks"; }
+  else if (hash === "#/red") { viewNetwork(); section = "network"; }
   else if (hash === "#/mejoras") { viewRoadmap(); section = "roadmap"; }
   else viewOverview();
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));

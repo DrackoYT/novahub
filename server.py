@@ -1681,6 +1681,109 @@ class Health:
 HEALTH = Health()
 
 
+# ───────────────────────────── vista de red ─────────────────────────────
+
+class Network:
+    """Túnel (conexiones con Cloudflare), dominios publicados y enchufe Tapo, para la vista «Red».
+    El enchufe tarda unos segundos en responder: se consulta en segundo plano como mucho cada minuto."""
+
+    TAPO_TTL = 60
+    METRIC = re.compile(r"^(cloudflared_tunnel_\w+)(\{[^}]*\})?\s+([\d.e+-]+)$", re.M)
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.tapo_data, self.tapo_at, self.tapo_busy = None, 0, False
+
+    @staticmethod
+    def tunnel_sid():
+        return next((sid for sid, s in MANAGER.services.items() if TUNNEL_CMD.search(s.get("command", ""))), None)
+
+    def tunnel(self):
+        sid = self.tunnel_sid()
+        if not sid:
+            return None
+        svc = MANAGER.services[sid]
+        out = {"sid": sid, "name": svc["name"], "status": MANAGER.status(sid), "connections": None,
+               "locations": [], "requests": None, "errors": None}
+        m = re.search(r"--metrics[=\s]+(\S+)", svc.get("command", ""))
+        if not m or not MANAGER.running(sid):
+            return out
+        import urllib.request
+        try:  # el servidor de métricas de cloudflared (solo escucha en 127.0.0.1)
+            with urllib.request.urlopen(f"http://{m.group(1)}/metrics", timeout=2) as r:
+                text = r.read(2_000_000).decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            out["metrics_error"] = True
+            return out
+        locs = set()
+        for name, labels, val in self.METRIC.findall(text):
+            if name == "cloudflared_tunnel_ha_connections":
+                out["connections"] = int(float(val))
+            elif name == "cloudflared_tunnel_total_requests":
+                out["requests"] = int(float(val))
+            elif name == "cloudflared_tunnel_request_errors":
+                out["errors"] = int(float(val))
+            elif name == "cloudflared_tunnel_server_locations" and float(val) > 0:
+                loc = re.search(r'edge_location="([^"]+)"', labels or "")
+                if loc:
+                    locs.add(loc.group(1))
+        out["locations"] = sorted(locs)
+        return out
+
+    def hosts(self):
+        """Reglas del config.yml del túnel con el servicio de NovaHub al que llevan."""
+        if not PUBLISHER.enabled:
+            return []
+        try:
+            entries = PUBLISHER.entries(PUBLISHER.read())[0]
+        except (OSError, ApiError):
+            return []
+        panel = SUPERVISOR.url[1] if SUPERVISOR.url else None
+        out = []
+        for _, _, host, target in entries:
+            if not host:
+                continue
+            port = re.search(r":(\d+)/?$", target or "")
+            port = int(port.group(1)) if port else None
+            row = {"host": host, "target": target, "sid": None, "name": None, "status": None, "gateway": False}
+            if port and port == panel:
+                row["name"] = "NovaHub (este panel)"
+                row["status"] = "running"
+            for sid, s in MANAGER.services.items():
+                if port and s.get("port") and port in (s["port"], gateway_port(s["port"])):
+                    row.update(sid=sid, name=s["name"], status=MANAGER.status(sid),
+                               gateway=port != s["port"])
+            out.append(row)
+        return out
+
+    def tapo(self):
+        if not Power.tapo_configured():
+            return {"configured": False}
+        with self.lock:
+            stale = time.time() - self.tapo_at > self.TAPO_TTL
+            if stale and not self.tapo_busy:
+                self.tapo_busy = True
+                threading.Thread(target=self._read_tapo, name="tapo", daemon=True).start()
+            return {"configured": True, "at": self.tapo_at or None, "loading": self.tapo_busy and not self.tapo_data,
+                    **(self.tapo_data or {})}
+
+    def _read_tapo(self):
+        ok, msg = Power.tapo("status")
+        try:
+            data = json.loads(msg) if ok else {"error": msg or "el enchufe no responde"}
+        except ValueError:
+            data = {"error": "respuesta del enchufe no válida"}
+        with self.lock:
+            self.tapo_data, self.tapo_at, self.tapo_busy = data, time.time(), False
+
+    def public(self):
+        return {"tunnel": self.tunnel(), "hosts": self.hosts(), "tapo": self.tapo(),
+                "lan_ip": lan_ip(), "domain": PUBLISHER.domain if PUBLISHER.enabled else None}
+
+
+NETWORK = Network()
+
+
 # ───────────────────────────── pasarela de los servicios publicados ─────────────────────────────
 
 def gateway_port(port):
@@ -3688,6 +3791,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(405, "Método no permitido")
         if path == "/api/system":
             return self.send_json(system_info())
+        if path == "/api/network" and method == "GET":
+            return self.send_json(NETWORK.public())
         if path == "/api/metrics" and method == "GET":
             rng, key = self.query("range") or "1h", self.query("service") or "system"
             if rng not in METRICS_RANGES:
