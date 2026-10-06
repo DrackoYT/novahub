@@ -1249,6 +1249,7 @@ async function openSettings() {
     </form>`);
   const body = $("#nt-body", dlg);
   let sess = { lock_on_reload: true, idle_minutes: 15, max_hours: 12 };
+  let gid = { name: "", email: "" };
   const draw = (n) => {
     const status = n.last_error ? `<p class="git-note bad">Último error: ${esc(n.last_error)}</p>`
       : n.last_sent ? `<p class="nt-ok">Último correo enviado ${fmtAgo(n.last_sent)}.</p>`
@@ -1284,6 +1285,12 @@ async function openSettings() {
           <small>Sin clics ni teclas en el panel. Las actualizaciones automáticas de la pantalla no cuentan.</small></label>
         <label class="field"><span>Máximo (horas)</span><input id="ss-max" inputmode="numeric" value="${sess.max_hours}"></label>
       </div>
+      <p class="label">Git</p>
+      <p>Con este nombre y correo se firman los commits que hagas desde el panel (pestaña Git de cada servicio).</p>
+      <div class="row2">
+        <label class="field"><span>Nombre</span><input id="gi-name" autocomplete="off" spellcheck="false" placeholder="tu usuario de GitHub" value="${esc(gid.name)}"></label>
+        <label class="field"><span>Correo</span><input id="gi-email" type="email" autocomplete="off" spellcheck="false" placeholder="el de tu cuenta de GitHub" value="${esc(gid.email)}"></label>
+      </div>
       <p class="label">App para el móvil</p>
       ${appInstallHTML()}`;
   };
@@ -1302,6 +1309,8 @@ async function openSettings() {
   const busy = (on) => dlg.querySelectorAll("footer .btn").forEach((b) => { b.disabled = on; });
   const save = async () => {
     $("#nt-error", dlg).textContent = "";
+    const gname = $("#gi-name", dlg).value.trim(), gemail = $("#gi-email", dlg).value.trim();
+    if ((gname || gemail) && (gname !== gid.name || gemail !== gid.email)) gid = await api("PUT", "/api/git-identity", { name: gname, email: gemail });
     sess = await api("PUT", "/api/session-settings", {
       lock_on_reload: $("#ss-reload", dlg).checked, idle_minutes: $("#ss-idle", dlg).value.trim(), max_hours: $("#ss-max", dlg).value.trim(),
     });
@@ -1310,7 +1319,7 @@ async function openSettings() {
   $("#nt-form", dlg).addEventListener("submit", async (e) => {
     e.preventDefault();
     busy(true);
-    try { await save(); dlg.close(); toast("Avisos guardados", "ok"); }
+    try { await save(); dlg.close(); toast("Ajustes guardados", "ok"); }
     catch (err) { $("#nt-error", dlg).textContent = err.message; busy(false); }
   });
   $("#nt-test", dlg).addEventListener("click", async () => {
@@ -1325,7 +1334,10 @@ async function openSettings() {
     }
     busy(false);
   });
-  try { sess = await api("GET", "/api/session-settings"); draw(await api("GET", "/api/notify")); }
+  try {
+    [sess, gid] = await Promise.all([api("GET", "/api/session-settings"), api("GET", "/api/git-identity")]);
+    draw(await api("GET", "/api/notify"));
+  }
   catch (err) { body.innerHTML = `<div class="pane-msg bad-text">${esc(err.message)}</div>`; }
 }
 

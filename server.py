@@ -1554,20 +1554,39 @@ def git_commit(svc, message):
     res = git(root, "add", "-A")
     if res.returncode != 0:
         raise ApiError(500, f"No se pudieron preparar los cambios: {git_output(res)}")
-    # Sin identidad configurada, se firma como el autor del último commit del repositorio.
-    ident = []
     if not git(root, "config", "user.name").stdout.strip() or not git(root, "config", "user.email").stdout.strip():
-        last = git(root, "log", "-1", "--format=%an%x00%ae").stdout.strip()
-        if "\0" not in last:
-            raise ApiError(400, "git no sabe quién eres: ejecuta git config --global user.name/user.email en el servidor")
-        name, email = last.split("\0")
-        ident = ["-c", f"user.name={name}", "-c", f"user.email={email}"]
-    res = git(root, *ident, "commit", "-m", message)
+        raise ApiError(400, "git no sabe quién eres: pon tu nombre y correo en Ajustes → Git")
+    res = git(root, "commit", "-m", message)
     if res.returncode != 0:
         if "nothing to commit" in res.stdout:
             raise ApiError(400, "No hay cambios que guardar")
         raise ApiError(500, f"El commit ha fallado: {git_output(res)}")
     return git_output(res)
+
+
+GIT_EMAIL = re.compile(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+")
+
+
+def git_identity():
+    """Nombre y correo con los que firma git en el servidor (configuración global del usuario)."""
+    def get(key):
+        res = subprocess.run(["git", "config", "--global", "--get", key], capture_output=True, text=True, timeout=10, env=GIT_ENV)
+        return res.stdout.strip()
+    return {"name": get("user.name"), "email": get("user.email")}
+
+
+def set_git_identity(data):
+    name = re.sub(r"[\x00-\x1f\x7f]", "", str(data.get("name") or "")).strip()
+    email = str(data.get("email") or "").strip()
+    if not 1 <= len(name) <= 100:
+        raise ApiError(400, "Escribe tu nombre para los commits (p. ej. tu usuario de GitHub)")
+    if not GIT_EMAIL.fullmatch(email) or len(email) > 200:
+        raise ApiError(400, "El correo no es válido")
+    for key, val in (("user.name", name), ("user.email", email)):
+        res = subprocess.run(["git", "config", "--global", key, val], capture_output=True, text=True, timeout=10, env=GIT_ENV)
+        if res.returncode != 0:
+            raise ApiError(500, f"No se pudo guardar en git: {res.stderr.strip()}")
+    return git_identity()
 
 
 def git_push(svc):
@@ -4219,6 +4238,12 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(405, "Método no permitido")
         if path == "/api/system":
             return self.send_json(system_info())
+        if path == "/api/git-identity":
+            if method == "GET":
+                return self.send_json(git_identity())
+            if method == "PUT":
+                return self.send_json(set_git_identity(self.read_body()))
+            raise ApiError(405, "Método no permitido")
         if path == "/api/network" and method == "GET":
             return self.send_json(NETWORK.public())
         if path == "/api/metrics" and method == "GET":

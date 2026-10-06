@@ -140,6 +140,12 @@ selector **1 h / 24 h**. Al pasar el ratón (o el dedo) se ve el valor de cada m
   núcleos llenos). En la memoria de un servicio con límite se dibuja el límite como línea roja.
 - Los huecos son ratos en que el servicio estaba parado (o NovaHub apagado).
 
+## Identidad de git
+
+Los commits que se hacen desde el panel (pestaña Git) se firman con el nombre y el correo de
+**Ajustes → Git**, que es la configuración global de git del usuario (`git config --global user.name/user.email`).
+Si no están puestos, el commit avisa en vez de inventarse un autor.
+
 ## Variables (.env)
 
 Pestaña **Variables** en la ficha: el `.env` del proyecto como tabla nombre → valor, con los valores ocultos
