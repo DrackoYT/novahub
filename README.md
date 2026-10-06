@@ -108,7 +108,7 @@ recompila, o si la compilación falla, la web publicada sigue funcionando con la
 Pestaña **Red** (tecla `4`):
 
 - **Túnel:** conexiones activas con Cloudflare, centros a los que está conectado (p. ej. `mad05 · mad07`),
-  peticiones y errores. Se leen del servidor de métricas de cloudflared, así que el comando del túnel debe
+  peticiones y errores del servidor (respuestas 5xx). Se leen del servidor de métricas de cloudflared, así que el comando del túnel debe
   llevar `--metrics 127.0.0.1:PUERTO`.
 - **Servidor:** IP en la red local y dominio de publicación.
 - **Enchufe Tapo:** encendido o apagado, consumo en vatios en este momento (P110/P115), kWh de hoy y del

@@ -536,7 +536,7 @@ function drawNetwork(d) {
       <dl class="readout">
         ${cell("Centros de Cloudflare", t.locations.length ? esc(t.locations.join(" · ")) : dash)}
         ${cell("Peticiones", t.requests != null ? t.requests.toLocaleString("es-ES") : dash)}
-        ${cell("Errores", t.errors != null ? `<span class="${t.errors ? "warn-text" : ""}">${t.errors.toLocaleString("es-ES")}</span>` : dash)}
+        ${cell('<span title="Respuestas 5xx: un servicio publicado caído o que falla. Cerrar una consola en directo no cuenta.">Errores del servidor (5xx)</span>', t.errors != null ? `<span class="${t.errors ? "warn-text" : ""}">${t.errors.toLocaleString("es-ES")}</span>` : dash)}
       </dl>
     </a>`;
   }

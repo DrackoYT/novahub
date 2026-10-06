@@ -1720,13 +1720,18 @@ class Network:
             out["metrics_error"] = True
             return out
         locs = set()
+        out["errors"] = 0
         for name, labels, val in self.METRIC.findall(text):
             if name == "cloudflared_tunnel_ha_connections":
                 out["connections"] = int(float(val))
             elif name == "cloudflared_tunnel_total_requests":
                 out["requests"] = int(float(val))
-            elif name == "cloudflared_tunnel_request_errors":
-                out["errors"] = int(float(val))
+            elif name == "cloudflared_tunnel_response_by_code":
+                # errores de verdad: respuestas 5xx (servicio caído o roto). No se usa request_errors porque
+                # cuenta como fallo cada consola en directo que se cierra al salir de una ficha.
+                code = re.search(r'status_code="(\d+)"', labels or "")
+                if code and code.group(1).startswith("5"):
+                    out["errors"] = (out["errors"] or 0) + int(float(val))
             elif name == "cloudflared_tunnel_server_locations" and float(val) > 0:
                 loc = re.search(r'edge_location="([^"]+)"', labels or "")
                 if loc:
