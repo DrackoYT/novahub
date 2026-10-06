@@ -1,7 +1,8 @@
 # Cambios
 
-Versiones con [versionado semántico](https://semver.org/lang/es/): **MAYOR.MENOR.PARCHE**. Los parches solo arreglan
-errores; las versiones menores añaden funciones sin romper nada; las mayores pueden necesitar pasos a mano.
+Versiones con [versionado semántico](https://semver.org/lang/es/): **MAYOR.MENOR.PARCHE**. Cada mejora o arreglo
+terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su revisión de código, es una versión menor
+(1.1.0); una mayor (2.0.0) solo si al actualizar hay que hacer algo a mano.
 
 ## Sin publicar
 
