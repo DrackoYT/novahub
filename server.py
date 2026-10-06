@@ -219,6 +219,8 @@ ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 def normalize_service(data: dict) -> dict:
     def text(key, maxlen, required=False):
         val = str(data.get(key) or "").strip()
+        if key not in ("command", "description"):
+            val = re.sub(r"[\x00-\x1f\x7f]+", " ", val)  # campos de una línea: sin saltos ni controles
         if required and not val:
             raise ApiError(400, f"El campo «{key}» es obligatorio")
         if len(val) > maxlen:
@@ -363,6 +365,7 @@ class Manager:
 
     # ── arranque ──
     def boot(self):
+        died = []
         with self.lock:
             for sid in list(self.state):
                 if sid not in self.services:
@@ -371,13 +374,24 @@ class Manager:
                 st = self.state[sid]
                 st.pop("restart_at", None)
                 if st.get("pid") and not self.running(sid):
+                    died_while_away = st.get("desired") == "running"
                     st["pid"] = None
                     st["desired"] = "stopped"
+                    if died_while_away and self.services[sid].get("restart_on_crash"):
+                        st["desired"] = "running"  # lo relanza el autoarranque de abajo
+                        died.append(sid)
             server_booted = uptime() < BOOT_WINDOW
+            if not server_booted:  # con el servidor recién encendido es lo normal, no un fallo
+                for sid in died:
+                    name = self.services[sid]["name"]
+                    self.log(sid, "\x1b[33mse paró mientras NovaHub no estaba en marcha: se relanza\x1b[0m")
+                    NOTIFIER.notify("crash", sid, f"{name} se paró mientras NovaHub estaba caído",
+                                    f"«{name}» dejó de funcionar mientras NovaHub no estaba en marcha. "
+                                    "Como tiene «Reiniciar si se cae», NovaHub lo ha vuelto a arrancar.", log=True)
             # Autoarranque = al encender el servidor. Si solo se reinicia NovaHub, se respeta
             # lo que se apagó a propósito (desired «stopped»).
             todo = [sid for sid, svc in self.services.items()
-                    if svc.get("autostart") and not self.running(sid)
+                    if (svc.get("autostart") or sid in died) and not self.running(sid)
                     and (server_booted or (self.state.get(sid) or {}).get("desired") != "stopped")]
             self.save_state()
         self.autostart_done = False
@@ -1116,13 +1130,14 @@ class Power:
             limit = time.time() + max([MANAGER.services[s].get("stop_timeout", 15) for s in sids] + [0]) + 30
             while time.time() < limit and any(MANAGER.running(s) or s in MANAGER.transition for s in sids):
                 time.sleep(0.5)
+            # el correo va antes de programar el corte: si Gmail tarda, no se come el margen del enchufe
+            NOTIFIER.send_now("power", "El servidor se está apagando",
+                              "Se ha pedido apagar el servidor desde el panel. Los servicios se han parado"
+                              + (f" y el enchufe Tapo cortará la corriente {TAPO_DELAY} s después." if tapo else "."))
             if tapo:
                 ok, msg = self.tapo("off-in", str(TAPO_DELAY))
                 say(f"enchufe Tapo: corte en {TAPO_DELAY} s" if ok else f"enchufe Tapo: no se pudo programar el corte ({msg})")
             self.phase = "poweroff"
-            NOTIFIER.send_now("power", "El servidor se está apagando",
-                              "Se ha pedido apagar el servidor desde el panel. Los servicios se han parado"
-                              + (" y el enchufe Tapo cortará la corriente en 90 s." if tapo else "."))
             say("systemctl poweroff")
             res = subprocess.run(POWEROFF_CMD, capture_output=True, text=True, timeout=30)
             if res.returncode != 0:
@@ -1493,6 +1508,7 @@ class Health:
                     self.next[sid] = mono + HEALTH_EVERY
                     due.append((sid, mode, svc["port"], svc.get("health_path") or "/", st.get("pid")))
         for sid, mode, port, path, pid in due:
+            SUPERVISOR.beat("salud")  # cada comprobación puede tardar 8 s: con varias, no parecer colgado
             ok, ms, detail = probe(mode, port, path)
             with MANAGER.lock:
                 st = MANAGER.state.get(sid)
@@ -1971,7 +1987,7 @@ class Notifier:
         lines.append(f"— NovaHub en {host}, {stamp}")
 
         msg = EmailMessage()
-        msg["Subject"] = f"[NovaHub] {subject}"
+        msg["Subject"] = "[NovaHub] " + re.sub(r"[\r\n]+", " ", subject)
         msg["From"] = f"NovaHub <{cfg['user']}>"
         msg["To"] = cfg.get("to") or cfg["user"]
         msg.set_content("\n".join(lines))
@@ -1989,8 +2005,14 @@ class Notifier:
                 raise smtplib.SMTPAuthenticationError(535, b"Gmail ha cerrado la conexion al identificarse") from e
             smtp.send_message(msg)
 
-    def notify(self, event, sid, subject, text, log=False, key="", level=None):
-        """Encola un aviso si está activado y no se ha mandado uno igual hace poco. No bloquea."""
+    def notify(self, *args, **kwargs):
+        """Encola un aviso. Nunca lanza excepciones: se llama desde la vigilancia y no debe romperla."""
+        try:
+            self._notify(*args, **kwargs)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+
+    def _notify(self, event, sid, subject, text, log=False, key="", level=None):
         level = level or ("danger" if key == "gaveup" or event == "novahub" else "info" if event == "power" else "warning")
         cfg = self.config()
         if not self.configured(cfg) or not (cfg.get("events") or {}).get(event, True):
