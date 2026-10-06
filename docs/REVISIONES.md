@@ -5,11 +5,11 @@ Sirve para que cada revisión nueva cubra solo lo que ha cambiado desde la anter
 
 ## Cómo saber qué hay que revisar
 
-**Revisado hasta el commit: `0d96648`** (se actualiza al cerrar cada revisión; editar este documento
+**Revisado hasta el commit: `aae4582`** (versión **1.0**, etiqueta `v1.0`) (se actualiza al cerrar cada revisión; editar este documento
 por otros motivos no cambia este valor). Para ver lo que ha cambiado desde entonces:
 
 ```bash
-BASE=0d96648
+BASE=aae4582
 git diff --stat "$BASE"..HEAD        # qué archivos han cambiado
 git diff "$BASE"..HEAD -- server.py  # el detalle de un archivo
 ```
@@ -25,26 +25,30 @@ pieza marcada como *invariante de seguridad*, hay que revisar esa pieza entera, 
 | 2 | 2026-10-06 | **Incremental**: solo lo cambiado | `cad7b13..92ee43d` | 5 corregidos |
 | 3 | 2026-10-06 | **Incremental**: modo producción, sesiones, editor, copias, gráficas y vista de red | `92ee43d..72eae4a` | 7 corregidos |
 | 4 | 2026-10-06 | **Incremental**: PWA, tareas programadas, búsqueda en logs, `.env`, identidad de git, ajustes como página | `72eae4a..0d96648` | 5 corregidos |
+| 5 | 2026-10-06 | **v1.0**: contenedores, páginas de servicio, usuarios y permisos, varios servidores; todos los invariantes repetidos; historial de git revisado para publicarlo | `0d96648..aae4582` | 2 corregidos |
 
 ---
 
 ## Inventario: qué está revisado
 
-Estado de cada pieza tras la revisión 4. «R1» = revisada entera en la revisión 1 y sin cambios
-desde entonces; «R2» / «R3» / «R4» = cambiada o añadida después y revisada en esa revisión.
+Estado de cada pieza tras la revisión 5 (v1.0). «R1» = revisada entera en la revisión 1 y sin cambios
+desde entonces; «R2»…«R5» = cambiada o añadida después y revisada en esa revisión.
 
-### `server.py` (backend, ~4.600 líneas)
+### `server.py` (backend, ~5.300 líneas)
 
 | Pieza | Estado | Notas |
 |---|---|---|
 | Utilidades (`read_json`, `write_json`, `proc_*`, `group_usage`, `listening_ports`, `lan_ip`, `system_info`, `slugify`) | R1 + R3 | `write_json` escribe con permisos 600; R3: opción compacta (`indent=None`) |
 | `uptime`, `wait_for_network` | R2 | |
-| `normalize_service` | R1 + R2 | R2: campos de una línea sin caracteres de control (salvo `command` y `description`) |
+| `normalize_service` | R1 + R2 + R5 | R2: campos de una línea sin caracteres de control (salvo `command` y `description`) |
 | `Manager`: `spawn`, `start`, `stop`, `_do_stop`, `restart`, stdin, `_rotate_live`, CRUD, `public` | R1 + R3 | R3: `NOVAHUB_SERVICE_PORT`, `mode`/`can_build`/`backup` en `public`, `delete` borra `data/builds/<id>` |
 | `Manager.boot`, `_autostart` | R2 | Autoarranque solo al encender el servidor; espera red; relanza los servicios que murieron con NovaHub caído |
 | `Manager.monitor`, `_check_all`, `_check_memory` | R2 | Reintentos rápidos y luego lentos (nunca se abandona), avisos, aviso de recuperación |
 | `Manager.status` | R2 | Estado nuevo `retrying` |
-| `Auth` | R1 + R3 | Invariante de seguridad. R3: tokens `emitido:caduca.firma`, inactividad y máximo absoluto (`data/session.json`), revocación por sesión |
+| `Auth` | R1 + R3 + R5 | Invariante de seguridad. R5: reescrita con usuarios (`data/users.json`) y roles; tokens `emitido:caduca:usuario:versión.firma`; la versión cambia con contraseña/rol/servicios; migración desde la contraseña única; `users.json` se relee si cambia por fuera |
+| Permisos: `ROLES`, `route_permission`, `Handler.can/need/svc_out` | R5 | Invariante de seguridad (9): denegado por defecto |
+| Varios servidores: `ApiTokens`, `Remotes`, `Handler.proxy`, `remote_listener` | R5 | Invariante de seguridad (10): llaves con huella SHA-256, puerta solo de API, reenvío sin HTML |
+| Contenedores: `container_command`, `prepare_container`, `stop_containers`, `Containers`, `Deployer._update_container` | R5 | Podman sin root; variables sin valor en la orden; CPU/memoria por cgroup |
 | `Publisher` (túnel, DNS, ingress) | R1 | |
 | `Power` | R1 + R2 | R2: correo de apagado antes de programar el corte del enchufe |
 | Archivos: `service_root`, `safe_path`, `list_dir`, `read_file` | R1 | Invariante de seguridad |
@@ -71,8 +75,8 @@ desde entonces; «R2» / «R3» / «R4» = cambiada o añadida después y revisa
 
 | Archivo | Estado | Notas |
 |---|---|---|
-| `static/app.js` | R1 + R2 + R3 + R4 | R3: sesión y bloqueo, editor con resaltado, modo producción, pestaña Copias, gráficas SVG, vista Red. R4: PWA (registro, instalar, sin conexión), Tareas, búsqueda en la consola, Variables, Ajustes como página |
-| `static/style.css` | R1 + R2 + R3 + R4 | R3: editor, copias, gráficas (`--chart`) y vista de red. R4: tareas, búsqueda, variables, ajustes, aviso sin conexión |
+| `static/app.js` | R1 + R2 + R3 + R4 + R5 | R3: sesión y bloqueo, editor con resaltado, modo producción, pestaña Copias, gráficas SVG, vista Red. R4: PWA (registro, instalar, sin conexión), Tareas, búsqueda en la consola, Variables, Ajustes como página |
+| `static/style.css` | R1 + R2 + R3 + R4 + R5 | R3: editor, copias, gráficas (`--chart`) y vista de red. R4: tareas, búsqueda, variables, ajustes, aviso sin conexión |
 | `static/sw.js`, `static/manifest.webmanifest`, `static/icons/*` | R4 | El service worker nunca guarda `/api/` ni respuestas redirigidas (login de Access); primero la red |
 | `logsearch.py` | R4 | Búsqueda en logs; se ejecuta como proceso aparte para las expresiones regulares |
 | `tools/make_icons.py` | R4 | Genera los iconos; no se ejecuta en el servidor |
@@ -94,7 +98,9 @@ a comprobarlas.
 1. **Autenticación**: sin cookie, con token falsificado, caducado o de una sesión cerrada, toda la API responde 401. Los tokens se
    firman con HMAC-SHA256 y un secreto de `data/auth.json`. Caducan tras la inactividad (15 min) y como mucho a las 12 h; solo
    los renuevan peticiones con actividad real del usuario. Cerrar sesión invalida **todos** los tokens de esa sesión. La contraseña usa PBKDF2 con 600.000
-   iteraciones. Máximo 5 intentos de login por IP cada 5 minutos.
+   iteraciones. Máximo 5 intentos de login (o de llave de acceso) por IP cada 5 minutos. Con un usuario que no existe
+   el login tarda lo mismo (no se puede averiguar qué usuarios hay). Las sesiones de un usuario caen si cambia su
+   contraseña, su rol o sus servicios, o si se borra.
 2. **CSRF**: toda petición que no sea GET exige la cabecera `X-NovaHub: 1`, y la cookie es
    `HttpOnly` y `SameSite=Strict`. Ningún GET modifica estado.
 3. **Rutas de archivos**: `safe_path` resuelve con `realpath` y rechaza todo lo que quede fuera de
@@ -114,6 +120,14 @@ a comprobarlas.
    esperar más datos. El cuerpo admite como máximo 1 MB.
 8. **Procesos**: desde el panel solo se pueden cerrar procesos del propio usuario. Los de un servicio
    se paran desde su ficha.
+9. **Permisos**: cada petición pasa por `route_permission` antes de hacer nada; lo que no está permitido
+   expresamente a operador o lector es solo para administradores, y operador/lector solo llegan a sus servicios.
+   A quien no es administrador no se le envían comandos, rutas, variables ni comandos de tareas. Comprobado con
+   28 rutas × 2 roles.
+10. **Varios servidores**: la puerta remota (`NOVAHUB_REMOTE_LISTEN`) solo acepta llaves (`Bearer nh_…`, guardadas
+    como huella SHA-256): ni interfaz, ni login, ni cookies. El reenvío solo deja pasar JSON y la consola en
+    directo; cualquier otra respuesta sale como descarga con `CSP: sandbox`, así un servidor remoto comprometido
+    no puede ejecutar código en este panel. Solo los administradores pueden usar otros servidores.
 
 ## Riesgos aceptados (decisiones conscientes)
 
@@ -141,10 +155,31 @@ a comprobarlas.
   frente a miradas por encima del hombro: la API los devuelve a quien tenga sesión.
 - **La app del móvil guarda la interfaz** (HTML, CSS, JS, fuentes) en el teléfono, nunca datos ni respuestas
   de la API.
+- **Las llaves de otros servidores se guardan en claro** en `data/servers.json` (permisos 600) del panel principal:
+  tiene que poder enviarlas. En el servidor remoto solo se guarda su huella.
+- **Una llave actúa con los permisos de quien la creó** (administrador) y puede crear otras llaves o usuarios en
+  ese servidor. Se revoca desde allí.
+- **Los contenedores aceptan opciones de podman arbitrarias** («Opciones de podman»), como el comando de un
+  programa: solo los administradores pueden ponerlas. Sin root, no dan acceso de root al servidor.
+- **El correo del autor está en el historial de git** (44 commits). Al hacer público el repositorio será visible.
 - **Clonar repositorios o usar plantillas ejecuta sus scripts de instalación** (`npm ci` y
   similares). Solo se clonan repositorios propios.
 
 ## Hallazgos y correcciones
+
+### Revisión 5 — versión 1.0 (2026-10-06)
+
+Además de lo cambiado, se repitieron en el panel real todas las comprobaciones de los invariantes (autenticación,
+CSRF, rutas, secretos, red, peticiones malformadas, procesos), la matriz de permisos con los tres roles en el entorno
+aislado, todas las pruebas de navegador (gráficas, búsqueda, tareas, ajustes, formulario, usuarios, app sin conexión)
+y se revisó el historial completo de git en busca de llaves, contraseñas, IPs o direcciones privadas (ninguna).
+
+| # | Problema | Riesgo | Corrección |
+|---|---|---|---|
+| 1 | El reenvío a otros servidores devolvía el `Content-Type` del remoto: uno comprometido podía servir HTML o JavaScript con el origen de este panel (XSS, y con `script-src 'self'` la CSP no lo frenaba) | Medio | Solo pasan JSON y `text/event-stream`; el resto sale como `application/octet-stream` + `attachment` + `CSP: sandbox` (probado con un servidor remoto malicioso falso) |
+| 2 | Los números del estado de otros servidores se pasaban tal cual | Bajo | Se fuerzan a número; el nombre de máquina se recorta y la interfaz lo escapa |
+
+También se quitaron del README el dominio y la carpeta personal.
 
 ### Revisión 4 (incremental, 2026-10-06)
 
