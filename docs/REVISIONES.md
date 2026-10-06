@@ -5,11 +5,11 @@ Sirve para que cada revisión nueva cubra solo lo que ha cambiado desde la anter
 
 ## Cómo saber qué hay que revisar
 
-**Revisado hasta el commit: `72eae4a`** (se actualiza al cerrar cada revisión; editar este documento
+**Revisado hasta el commit: `0d96648`** (se actualiza al cerrar cada revisión; editar este documento
 por otros motivos no cambia este valor). Para ver lo que ha cambiado desde entonces:
 
 ```bash
-BASE=72eae4a
+BASE=0d96648
 git diff --stat "$BASE"..HEAD        # qué archivos han cambiado
 git diff "$BASE"..HEAD -- server.py  # el detalle de un archivo
 ```
@@ -24,15 +24,16 @@ pieza marcada como *invariante de seguridad*, hay que revisar esa pieza entera, 
 | 1 | 2026-10-05 | **Completa**: todo el código | hasta `cad7b13` (incluido) | 9 corregidos |
 | 2 | 2026-10-06 | **Incremental**: solo lo cambiado | `cad7b13..92ee43d` | 5 corregidos |
 | 3 | 2026-10-06 | **Incremental**: modo producción, sesiones, editor, copias, gráficas y vista de red | `92ee43d..72eae4a` | 7 corregidos |
+| 4 | 2026-10-06 | **Incremental**: PWA, tareas programadas, búsqueda en logs, `.env`, identidad de git, ajustes como página | `72eae4a..0d96648` | 5 corregidos |
 
 ---
 
 ## Inventario: qué está revisado
 
-Estado de cada pieza tras la revisión 3. «R1» = revisada entera en la revisión 1 y sin cambios
-desde entonces; «R2» / «R3» = cambiada o añadida después y revisada en esa revisión.
+Estado de cada pieza tras la revisión 4. «R1» = revisada entera en la revisión 1 y sin cambios
+desde entonces; «R2» / «R3» / «R4» = cambiada o añadida después y revisada en esa revisión.
 
-### `server.py` (backend, ~4.200 líneas)
+### `server.py` (backend, ~4.600 líneas)
 
 | Pieza | Estado | Notas |
 |---|---|---|
@@ -48,33 +49,39 @@ desde entonces; «R2» / «R3» = cambiada o añadida después y revisada en esa
 | `Power` | R1 + R2 | R2: correo de apagado antes de programar el corte del enchufe |
 | Archivos: `service_root`, `safe_path`, `list_dir`, `read_file` | R1 | Invariante de seguridad |
 | Edición: `write_file`, `backup_file`, `_check_writable` | R3 | Escritura atómica, conflicto por `mtime`, bloquea `.git`, versión anterior en `data/backups/` |
-| Git: `git_*` | R1 | |
+| Variables: `read_env`, `write_env`, `_env_*`, `env_files` | R4 | Ruta por `safe_path`; conserva comentarios y formato; `.env` nuevo con 600; aviso si iría a git |
+| Git: `git_*` | R1 + R4 | R4: `git_commit` exige identidad (ya no copia el autor del último commit); `git_identity`/`set_git_identity` | |
 | `Tasks` (procesos) | R1 | |
 | `Health` | R1 + R2 | R2: latido del supervisor en cada comprobación; avisos por correo |
-| `Network` (vista de red) | R3 | Métricas de cloudflared (2 s de límite), reglas del túnel, enchufe en segundo plano cada ≥60 s |
+| `Network` (vista de red) | R3 + R4 | Métricas de cloudflared (2 s de límite), reglas del túnel, enchufe en segundo plano cada ≥60 s. R4: errores = respuestas 5xx |
 | `Metrics` (gráficas), `cpu_times` | R3 | Hilo propio que late; `data/metrics.json` cada 5 min y al cerrar |
 | `Backups` y ayudantes (`backup_disk`, `disk_kind`, `snapshot_time`, `_own_rels`, `_excluded`) | R3 | Copias en el HDD, no escribe si no está montado; restauración con filtro `data` |
+| `Scheduler` (tareas programadas) | R4 | Hilo propio que late; margen de 3 min, nunca dos veces; comandos con límite de 10 min en su propio grupo de procesos |
+| Búsqueda en logs: `search_log` + `logsearch.py` | R4 | Texto en el propio proceso; expresiones regulares en un proceso aparte con límite de 5 s |
 | `Gateway` (pasarela y página 503) | R1 + R2 | R2: su hilo lo lanza el supervisor |
 | `Roadmap` | R1 | |
 | Correo: `Notifier`, `email_html`, `make_orb_png`, `log_tail`, `strip_ansi` | R2 | |
 | Vigilancia: `Supervisor`, `sd_notify`, `previous_run`/`mark_run`, `journal_tail`, `startup_notice`, `_boot_report` | R2 | |
 | Despliegue: `gh_repos`, `detect_project`, `project_dir`, `install_steps`, `Deployer` | R1 + R3 | R3: modo producción (`set_mode`, `_to_prod`, `_build`, `_publish_build`, `prod_command`, `build_info`) |
 | Plantillas (`TEMPLATES`, `template_create`, `_template_job`, `download_paper`) | R1 | |
-| `Handler` (rutas, cabeceras, cookies, estáticos, SSE) | R1 + R2 + R3 | R3: renovación de sesión, `/api/session-settings`, `/api/network`, `/api/metrics`, `mode`, `file` (PUT), `backups*` |
-| `main`, `panel_url` | R2 + R3 | R3: hilos `copias` y `graficas`; guarda las métricas al cerrar |
+| `Handler` (rutas, cabeceras, cookies, estáticos, SSE) | R1 + R2 + R3 + R4 | R3: renovación de sesión, `/api/session-settings`, `/api/network`, `/api/metrics`, `mode`, `file` (PUT), `backups*`. R4: `/api/git-identity`, `tasks*`, `logs/search`, `env`; MIME del manifiesto |
+| `main`, `panel_url` | R2 + R3 + R4 | R3: hilos `copias` y `graficas`; guarda las métricas al cerrar. R4: hilo `tareas` |
 
 ### Otros archivos
 
 | Archivo | Estado | Notas |
 |---|---|---|
-| `static/app.js` | R1 + R2 + R3 | R3: sesión y bloqueo, editor con resaltado, modo producción, pestaña Copias, gráficas SVG, vista Red |
-| `static/style.css` | R1 + R2 + R3 | R3: editor, copias, gráficas (`--chart`) y vista de red |
+| `static/app.js` | R1 + R2 + R3 + R4 | R3: sesión y bloqueo, editor con resaltado, modo producción, pestaña Copias, gráficas SVG, vista Red. R4: PWA (registro, instalar, sin conexión), Tareas, búsqueda en la consola, Variables, Ajustes como página |
+| `static/style.css` | R1 + R2 + R3 + R4 | R3: editor, copias, gráficas (`--chart`) y vista de red. R4: tareas, búsqueda, variables, ajustes, aviso sin conexión |
+| `static/sw.js`, `static/manifest.webmanifest`, `static/icons/*` | R4 | El service worker nunca guarda `/api/` ni respuestas redirigidas (login de Access); primero la red |
+| `logsearch.py` | R4 | Búsqueda en logs; se ejecuta como proceso aparte para las expresiones regulares |
+| `tools/make_icons.py` | R4 | Genera los iconos; no se ejecuta en el servidor |
 | `serve.py` | R3 | Servidor estático de producción: solo 127.0.0.1, sin salir de la carpeta, gzip y caché |
-| `static/index.html`, `static/theme.js` | R1 | |
+| `static/index.html`, `static/theme.js` | R1 + R4 | R4: manifiesto con credenciales y etiquetas de iOS | |
 | `static/favicon.svg`, `static/fonts/*` | — | Recursos estáticos, sin lógica |
 | `tapo.py` | R1 + R2 + R3 | R3: `status` devuelve consumo (W, kWh), señal, IP y encendido desde |
 | `novahub.service` | R2 | `Type=notify`, `NotifyAccess=main`, `WatchdogSec=30`, `KillMode=process` |
-| `README.md` | R2 + R3 | Comprobado que describe lo que hace el código |
+| `README.md` | R2 + R3 + R4 | Comprobado que describe lo que hace el código |
 | `demo/` | — | Página de ejemplo, sin lógica |
 
 ---
@@ -94,7 +101,7 @@ a comprobarlas.
    la carpeta del servicio, incluidos `../` y enlaces simbólicos. Los estáticos solo se sirven
    desde `static/`. Editar no puede tocar `.git/`. Los nombres de copia se validan con una expresión
    exacta, y restaurar usa el filtro `data` de `tarfile` (nada fuera de la carpeta). `serve.py` no sale
-   de la carpeta compilada.
+   de la carpeta compilada. El editor de `.env` también pasa por `safe_path` (un `.env` enlazado fuera no se toca).
 4. **XSS**: en `app.js`, todo dato del servidor pasa por `esc()` o se asigna con `textContent`. Las
    URL de servicio solo pueden ser `http(s)://`. En los correos, todo texto dinámico pasa por
    `html.escape`.
@@ -128,10 +135,29 @@ a comprobarlas.
   siempre se guarda una copia del estado actual.
 - **Se puede encender a mano un servicio durante su restauración**: la interfaz no lo impide.
 - **El modo producción y las actualizaciones ejecutan `npm run build`** del propio proyecto.
+- **Las tareas programadas de tipo «comando» ejecutan lo que se escriba**, como el comando del propio
+  servicio: es su función.
+- **El `.env` se ve en texto normal en la pestaña Archivos.** En Variables los valores van ocultos, pero solo
+  frente a miradas por encima del hombro: la API los devuelve a quien tenga sesión.
+- **La app del móvil guarda la interfaz** (HTML, CSS, JS, fuentes) en el teléfono, nunca datos ni respuestas
+  de la API.
 - **Clonar repositorios o usar plantillas ejecuta sus scripts de instalación** (`npm ci` y
   similares). Solo se clonan repositorios propios.
 
 ## Hallazgos y correcciones
+
+### Revisión 4 (incremental, 2026-10-06)
+
+| # | Problema | Riesgo | Corrección |
+|---|---|---|---|
+| 1 | Una expresión regular catastrófica en «Buscar en los logs» (p. ej. `(a+)+$`) dejaba un hilo del panel al 100 % de CPU sin fin, y la interfaz la repetía cada 5 s | Medio | Las expresiones regulares se buscan en un proceso aparte (`logsearch.py`) que se mata a los 5 s; el panel sigue respondiendo |
+| 2 | El editor de `.env` no pasaba por `safe_path`: un `.env` enlazado a un archivo de fuera de la carpeta se leía, y guardar reemplazaba el enlace por un archivo | Bajo | La ruta se resuelve con `safe_path`: fuera de la carpeta → rechazado; enlazado dentro → se edita el destino y el enlace se conserva |
+| 3 | `KEY='valor' # nota` se leía con las comillas y el comentario dentro del valor | Bajo | Se reconocen las comillas seguidas de un comentario |
+| 4 | Si se borraba un servicio mientras una de sus tareas se ejecutaba, quedaba un estado huérfano | Bajo | Al acabar, si el servicio ya no existe, no se guarda nada |
+| 5 | «Enviar correo de prueba» esperaba 600 ms a ciegas a que se guardara lo escrito; si tardaba más, la prueba usaba la configuración anterior | Bajo | Espera a que el guardado termine |
+
+El «1 error» de la vista Red al cerrar la revisión era un 503 de cloudflared en el segundo exacto en que se
+reinició NovaHub para aplicar un cambio (`connection reset by peer` en `/api/system`): no es un fallo.
 
 ### Revisión 3 (incremental, 2026-10-06)
 
@@ -203,7 +229,7 @@ Los anoto para no buscarlos otra vez: ya están corregidos.
 5. **Prueba de memoria** (revisión 3): un servicio que crece hasta 500 MB con límite de 300 MB se
    reinició 3 veces (a los ~30 s por encima del límite cada vez) y a la cuarta NovaHub dejó de reiniciarlo
    y lo anotó, como está previsto. La gráfica de memoria muestra la línea del límite.
-6. **Regresión en el panel real**: las 18 rutas de lectura responden 200; se comprueban las
+6. **Regresión en el panel real**: las rutas de lectura (23 en la revisión 4, incluidos manifiesto, `sw.js` e iconos) responden 200; se comprueban las
    protecciones (401 sin sesión, 403 sin cabecera, 403 con `../`); y un navegador headless recorre
    24 pasos en claro, oscuro, escritorio y móvil sin errores de JavaScript ni desbordamientos.
 
