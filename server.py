@@ -2459,50 +2459,8 @@ class Gateway:
 
 # Orden de prioridad inicial (de más a menos importante). Solo se usa la primera vez:
 # después manda data/roadmap.json, donde se marcan las hechas y se añaden ideas nuevas.
-ROADMAP_DEFAULT = [
-    ("Seguridad", "Proteger el panel con Cloudflare Access",
-     "Exigir tu cuenta de Google antes de llegar al login: quien entra al panel puede ejecutar comandos en el servidor."),
-    ("Desplegar", "Desplegar desde GitHub",
-     "Crear un servicio clonando un repositorio y un botón «Actualizar» que haga pull, npm install y reinicio."),
-    ("Desplegar", "Plantillas de servicio",
-     "Web Vite, Bot de Node, App Python, Minecraft… con comando, puerto y subdominio ya rellenos."),
-    ("Fiabilidad", "Comprobación de salud",
-     "Visitar la web de cada servicio cada minuto y reiniciarla o avisar si no responde aunque el proceso siga vivo."),
-    ("Avisos", "Avisos por Gmail",
-     "Correo cuando un servicio se cae, se agotan los reintentos o el servidor se apaga o se enciende."),
-    ("Configuración", "Terminar el apagado con el enchufe Tapo",
-     "Regla de sudoers, data/tapo.json con la IP y la cuenta, prueba con tapo.py test y «Restore on AC Power Loss» en la BIOS."),
-    ("Desplegar", "Modo producción para webs",
-     "Compilar con npm run build y servir dist/: menos memoria y más estable que el modo desarrollo (LlunaTasks)."),
-    ("Comodidad", "Editar archivos desde la web",
-     "Guardar cambios desde el explorador, con resaltado de código y confirmación antes de sobrescribir."),
-    ("Fiabilidad", "Copias de seguridad",
-     "Copia diaria de la carpeta de un servicio (mundos de juegos, bases de datos) y restauración con un clic."),
-    ("Panel", "Gráficas de uso",
-     "Historial de CPU y RAM del servidor y de cada servicio, en 1 h y 24 h."),
-    ("Panel", "Vista de red y Tapo",
-     "Estado del túnel (conexiones), dominios publicados y estado del enchufe en una sola vista."),
-    ("Panel", "App para el móvil (PWA)",
-     "Instalable en la pantalla de inicio, sin barra del navegador y con aviso si no hay conexión."),
-    ("Fiabilidad", "Tareas programadas",
-     "Reiniciar un servicio a una hora fija, encenderlo solo en ciertos horarios o lanzar copias de seguridad."),
-    ("Comodidad", "Buscar en los logs",
-     "Filtrar la consola por texto o mostrar solo errores, con resaltado de coincidencias."),
-    ("Comodidad", "Editor de variables (.env)",
-     "Editar el archivo .env de cada proyecto desde el panel, con los valores ocultos por defecto."),
-    ("Mantenimiento", "Corregir la ruta de novahub.service en el repo",
-     "La unidad del repo apunta a ~/novahub; la instalada se corrigió a mano a ~/projectes/novahub."),
-    ("Mantenimiento", "Configurar git user.name y user.email en el servidor",
-     "Para que los commits no dependan de copiar el autor del último commit."),
-    ("Escalar", "Servicios con Docker",
-     "Un tipo de servicio que arranca y vigila contenedores para apps ya empaquetadas."),
-    ("Escalar", "Usuarios y permisos",
-     "Dar acceso a otra persona solo a ciertos servicios, o solo para ver."),
-    ("Escalar", "Varios servidores en un panel",
-     "Un agente en cada máquina (otro PC, una Raspberry) y NovaHub como centro de control."),
-    ("Escalar", "Publicar NovaHub como open source",
-     "Instalador de una línea, documentación, capturas y versión en inglés."),
-]
+# Lista de mejoras de la página oculta (#/mejoras). Las instalaciones nuevas empiezan vacías: cada uno apunta las suyas.
+ROADMAP_DEFAULT = []
 
 
 class Roadmap:
@@ -3066,7 +3024,7 @@ def _boot_report(prev):
 
 # ───────────────────────────── desplegar desde GitHub ─────────────────────────────
 
-PROJECTS_DIR = os.path.expanduser(os.environ.get("NOVAHUB_PROJECTS", "~/projectes"))
+PROJECTS_DIR = os.path.expanduser(os.environ.get("NOVAHUB_PROJECTS", "~/proyectos"))
 REPO_REF = re.compile(r"^(?:https://github\.com/|git@github\.com:)?([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 NPM_FLAGS = ["--no-audit", "--no-fund"]
 
@@ -3576,7 +3534,9 @@ METRICS = Metrics()
 # ───────────────────────────── copias de seguridad ─────────────────────────────
 
 # Las copias van al disco duro de datos (HDD), no al SSD del sistema: si el SSD muere, las copias siguen ahí.
-BACKUP_MOUNT = os.environ.get("NOVAHUB_BACKUP_MOUNT", "/mnt/dades")   # "" = no exigir disco montado (pruebas)
+# Punto de montaje de un disco aparte para las copias (p. ej. /mnt/datos). Si está puesto y el disco no está montado,
+# no se hacen copias (no se escriben por error en el disco del sistema). Vacío = se guardan en data/novahub-copias.
+BACKUP_MOUNT = os.environ.get("NOVAHUB_BACKUP_MOUNT", "")
 SNAPSHOT_DIR = os.path.abspath(os.environ.get("NOVAHUB_BACKUP_DIR", os.path.join(BACKUP_MOUNT or DATA_DIR, "novahub-copias")))
 # bk_DDMMAA_HHMMSS_tipo.tar.gz → bk_061026_040000_auto.tar.gz (fecha de la copia; la hora evita choques el mismo día)
 SNAPSHOT_NAME = re.compile(r"bk_\d{6}_\d{6}_(auto|manual|antes-de-restaurar)\.tar\.gz")

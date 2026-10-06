@@ -1,44 +1,99 @@
-# NovaHub
+<p align="center"><img src="static/icons/icon-192.png" width="96" alt=""></p>
 
-Panel web para encender, apagar y vigilar los servicios de tu servidor con un clic.
+<h1 align="center">NovaHub</h1>
 
-- Tarjetas con estado en vivo, etiquetas, filtro y buscador.
-- Ficha de cada servicio: PID, tiempo activo, CPU, RAM, puerto (comprueba si está escuchando), última salida…
-- Consola en directo con colores, y caja para **enviar comandos** al proceso (stdin).
-- Reinicio automático si se cae, autoarranque al iniciar el panel y comando de parada suave (p. ej. `stop` en Minecraft).
-- Los servicios **siguen funcionando aunque reinicies o actualices el panel**: al volver los recupera.
-- **Vigilancia**: comprobación de salud (HTTP o puerto) y límite de memoria con reinicio automático.
-- **Publicar en internet** con un subdominio a través de Cloudflare Tunnel, con página «Reiniciando…»
-  (503) mientras el servicio no responde.
-- **Desplegar desde GitHub** (clonar, instalar dependencias, «Actualizar» con un botón) y **plantillas**
-  para empezar proyectos nuevos (web, React + Vite, API, bot de Discord, Flask, Minecraft).
-- Por servicio: **explorador y editor de archivos** (resaltado de código, Ctrl+S, aviso de conflictos y
-  copia de seguridad automática en `data/backups/`) y **Git** (commit, subir y traer cambios).
-- **Procesos**: qué usa la memoria y la CPU del servidor, agrupado por aplicación.
-- Tema claro y oscuro. Sin dependencias: solo Python 3.9+.
+<p align="center"><b>Panel web para encender, apagar y vigilar los servicios de tu servidor casero.</b><br>
+Un solo archivo de Python, sin dependencias ni base de datos.</p>
 
-## Puesta en marcha
+<p align="center">
+  <img alt="Licencia MIT" src="https://img.shields.io/badge/licencia-MIT-7b4dff">
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-7b4dff">
+  <img alt="Sin dependencias" src="https://img.shields.io/badge/dependencias-0-7b4dff">
+</p>
+
+> **English:** NovaHub is a self-hosted web panel to start, stop and monitor the services of a home server
+> (bots, websites, game servers, containers): live console, health checks, usage charts, backups, scheduled tasks,
+> users and roles, multi-server, Cloudflare Tunnel publishing and a mobile app. Single Python file, no dependencies.
+> The interface is in Spanish.
+
+![Resumen](docs/img/resumen.png)
+
+| Ficha de un servicio (tema oscuro) | Nuevo servicio con resumen en vivo |
+|---|---|
+| ![Ficha](docs/img/ficha-oscuro.png) | ![Nuevo servicio](docs/img/nuevo-servicio.png) |
+
+## Qué hace
+
+- **Servicios**: programas (cualquier comando), **contenedores** (imágenes de Docker Hub con Podman sin root) y
+  proyectos **docker-compose**. Encender, apagar, reiniciar, autoarranque y reinicio si se caen. Siguen funcionando
+  aunque reinicies o actualices el panel.
+- **Consola en directo** con colores, entrada para escribir al proceso y **búsqueda en todo el log**.
+- **Vigilancia**: comprobación de salud (web o puerto), límite de memoria, **gráficas** de CPU y RAM (1 h / 24 h),
+  avisos por **correo** (Gmail) y vigilante externo (healthchecks.io). Watchdog de systemd para el propio panel.
+- **Por servicio**: explorador y **editor de archivos**, **Git** (commit, push, pull), editor del **.env** con los valores
+  ocultos, **copias de seguridad** programadas (a otro disco si quieres) y **tareas programadas**.
+- **Publicar en internet** con un subdominio a través de **Cloudflare Tunnel**, sin abrir puertos.
+- **Desplegar desde GitHub** y **plantillas** (web, React + Vite, API, bot de Discord, Flask, Minecraft); **modo
+  producción** para webs con `npm run build`.
+- **Usuarios y roles** (administrador, operador, lector), por servicio.
+- **Varios servidores** en un mismo panel, por Tailscale.
+- **Procesos** del servidor, **red** (túnel, dominios, enchufe Tapo con consumo) y **apagado ordenado** del servidor.
+- **App para el móvil**: instalable (PWA) o APK de Android para móviles sin navegador.
+- Tema claro y oscuro, adaptado al móvil.
+
+![Móvil](docs/img/movil.png)
+
+## Instalación
+
+Necesitas Linux con **systemd** y **Python 3.11.4 o superior** (Debian 12/13, Ubuntu 24.04, Raspberry Pi OS…).
 
 ```bash
-cd ~/projectes/novahub            # o donde lo hayas clonado (ajusta también novahub.service)
-python3 server.py set-password     # crea el usuario administrador (o cambia su contraseña)
-python3 server.py                  # http://127.0.0.1:8686
+git clone https://github.com/DrackoYT/novahub ~/novahub
+cd ~/novahub
+python3 server.py set-password     # crea el usuario administrador
+python3 server.py                  # → http://127.0.0.1:8686
 ```
 
-Opciones: `--host` y `--port` (o las variables `NOVAHUB_HOST` / `NOVAHUB_PORT`).
-Los datos se guardan en `data/` (servicios, estado, logs y contraseña cifrada).
-
-### Dejarlo siempre encendido (systemd)
+Para que arranque solo con el servidor (como servicio de usuario, sin root):
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp novahub.service ~/.config/systemd/user/
+cp novahub.service ~/.config/systemd/user/     # revisa las rutas si no lo clonaste en ~/novahub
 systemctl --user daemon-reload
 systemctl --user enable --now novahub
-sudo loginctl enable-linger $USER    # que arranque con el servidor sin iniciar sesión
+sudo loginctl enable-linger $USER             # que arranque aunque no inicies sesión
+journalctl --user -u novahub -f               # logs del panel
 ```
 
-Logs del propio panel: `journalctl --user -u novahub -f`.
+El panel escucha solo en `127.0.0.1`. Para entrar desde otros equipos, publícalo con Cloudflare Tunnel (abajo) o
+pon `NOVAHUB_HOST` a la IP de la red local. Los datos (servicios, usuarios, logs, métricas) quedan en `data/`, con
+permisos 600.
+
+### Configuración
+
+Todo se configura desde el panel salvo estas variables (en `novahub.service`):
+
+| Variable | Para qué |
+|---|---|
+| `NOVAHUB_HOST`, `NOVAHUB_PORT` | Dónde escucha el panel (por defecto `127.0.0.1:8686`) |
+| `NOVAHUB_DATA` | Carpeta de datos (por defecto `data/` junto a `server.py`) |
+| `NOVAHUB_DOMAIN` | Dominio para «Publicar en internet» con Cloudflare Tunnel |
+| `NOVAHUB_BACKUP_MOUNT` | Disco aparte para las copias (p. ej. `/mnt/datos`); si no está montado, no se copia |
+| `NOVAHUB_BACKUP_DIR` | Carpeta de las copias (por defecto `<disco o data>/novahub-copias`) |
+| `NOVAHUB_REMOTE_LISTEN` | Puerta para que otro panel maneje este servidor, p. ej. `100.x.y.z:8687` (Tailscale) |
+| `NOVAHUB_PROJECTS` | Dónde se clonan los repositorios y las plantillas (por defecto `~/proyectos`) |
+
+### Seguridad
+
+El panel puede ejecutar comandos en el servidor, así que está pensado para estar detrás de algo más que una
+contraseña: lo recomendado es **Cloudflare Access** (tu cuenta de Google) delante del túnel. Además: contraseñas con
+PBKDF2, sesiones firmadas que caducan por inactividad, protección CSRF, permisos por rol comprobados en el servidor
+y nada escuchando fuera de `127.0.0.1`. El modelo completo y las revisiones de código están en
+[`SECURITY.md`](SECURITY.md) y [`docs/REVISIONES.md`](docs/REVISIONES.md).
+
+---
+
+# Guía de funciones
 
 ## Publicarlo con Cloudflare Tunnel
 
@@ -357,7 +412,7 @@ Se habla con el enchufe por la red local: no hace falta Alexa ni la nube.
 - **Puerto**: si lo indicas, la tarjeta muestra en verde si realmente está escuchando.
   Es la forma más fiable de saber si el servicio "ha arrancado de verdad".
 
-## Estructura
+## Estructura del código
 
 ```
 server.py          backend (API + gestor de procesos + consola por SSE)
@@ -369,3 +424,8 @@ tools/             utilidades (generar los iconos de la app)
 novahub.service    unidad de systemd
 data/              se crea al arrancar (no subir a git)
 ```
+
+## Licencia
+
+[MIT](LICENSE) © DrackoYT. Las fuentes incluidas (Bricolage Grotesque, Unbounded, IBM Plex Mono) tienen licencia
+SIL Open Font License.

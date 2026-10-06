@@ -13,12 +13,16 @@ Type=notify
 NotifyAccess=main
 WatchdogSec=30
 # Ajusta la ruta si clonaste NovaHub en otra carpeta.
-WorkingDirectory=%h/projectes/novahub
-ExecStart=/usr/bin/python3 %h/projectes/novahub/server.py
+WorkingDirectory=%h/novahub
+ExecStart=/usr/bin/python3 %h/novahub/server.py
 Environment=NOVAHUB_HOST=127.0.0.1
 Environment=NOVAHUB_PORT=8686
 # Activa «Publicar en internet» en el panel (ver README):
 #Environment=NOVAHUB_DOMAIN=tudominio.com
+# Copias de seguridad en otro disco (si no está montado, no se hacen copias):
+#Environment=NOVAHUB_BACKUP_MOUNT=/mnt/datos
+# Puerta para que otro panel NovaHub maneje este servidor (solo con llave; mejor en la IP de Tailscale):
+#Environment=NOVAHUB_REMOTE_LISTEN=100.x.y.z:8687
 Restart=on-failure
 RestartSec=3
 # Solo se mata al panel al pararlo/reiniciarlo: los servicios que gestiona siguen vivos.
