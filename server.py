@@ -1363,10 +1363,12 @@ ENV_MAX_VARS = 300
 
 def _env_unquote(raw):
     raw = raw.strip()
-    if len(raw) >= 2 and raw[0] == raw[-1] == "'":
-        return raw[1:-1]
-    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
-        return re.sub(r'\\(["\\n])', lambda m: "\n" if m.group(1) == "n" else m.group(1), raw[1:-1])
+    m = re.fullmatch(r"'([^']*)'(\s+#.*)?", raw)
+    if m:
+        return m.group(1)
+    m = re.fullmatch(r'"((?:\\.|[^"\\])*)"(\s+#.*)?', raw)
+    if m:
+        return re.sub(r'\\(["\\n])', lambda x: "\n" if x.group(1) == "n" else x.group(1), m.group(1))
     return re.sub(r"\s+#.*$", "", raw)  # sin comillas: « # …» es un comentario
 
 
@@ -1388,7 +1390,7 @@ def _env_path(svc, name):
     if not ENV_FILE_NAME.fullmatch(name):
         raise ApiError(400, "Nombre de archivo no válido: debe ser .env o .env.algo")
     root = service_root(svc)
-    return root, name, os.path.join(root, name)
+    return root, name, safe_path(root, name)
 
 
 def _env_git_warning(root, name):
@@ -1476,7 +1478,7 @@ def write_env(sid, svc, name, data):
     body = "\n".join(out) + "\n"
     if crlf:
         body = body.replace("\n", "\r\n")
-    tmp = os.path.join(root, f".{name}.novahub-tmp")
+    tmp = os.path.join(os.path.dirname(full), f".{os.path.basename(full)}.novahub-tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
@@ -2207,48 +2209,32 @@ def strip_ansi(text):
 
 # ───────────────────────────── buscar en los logs ─────────────────────────────
 
-LOG_ERROR_WORDS = re.compile(
-    r"\b(errors?|err|fail(?:ed|s|ure)?|fallo|fallad[oa]|ha fallado|rechazad[oa]|denegad[oa]|no se pudo|"
-    r"fatal|exception|traceback|panic|critical|"
-    r"denied|refused|crash(?:ed)?|unhandled|uncaught|segfault|killed|timeout|timed out)\b", re.I)
-LOG_RED = re.compile(r"\x1b\[(?:[0-9;]*;)?(?:31|91|1;31)m")   # lo que NovaHub (y muchos programas) pintan en rojo
-LOG_SEARCH_MAX = 500
+LOGSEARCH_PY = os.path.join(BASE_DIR, "logsearch.py")
+LOG_REGEX_TIMEOUT = 5   # s: una expresión regular que tarde más se corta (se ejecuta en otro proceso)
 
 
 def search_log(sid, q="", errors=False, regex=False, case=False):
-    """Busca en el log del servicio (el actual y el anterior rotado). Devuelve las últimas coincidencias,
-    con el número de línea y dónde resaltar cada una."""
+    """Busca en el log del servicio (el actual y el anterior rotado): ver logsearch.py."""
+    import logsearch
     q = q[:200]
     if not q and not errors:
         raise ApiError(400, "Escribe qué buscar o activa «Solo errores»")
-    flags = 0 if case else re.I
+    paths = [(log_path(sid) + ".1", "anterior"), (log_path(sid), "actual")]
+    if not (regex and q):  # texto normal: tiempo lineal, se busca aquí mismo
+        return logsearch.scan(paths, q, errors, False, case)
+    args = json.dumps({"paths": paths, "q": q, "errors": errors, "regex": True, "case": case})
     try:
-        pattern = re.compile(q if regex else re.escape(q), flags) if q else None
-    except re.error as e:
-        raise ApiError(400, f"Expresión regular no válida: {e}")
-    lines = []
-    for path, label in ((log_path(sid) + ".1", "anterior"), (log_path(sid), "actual")):
-        try:
-            with open(path, "rb") as f:
-                for n, raw in enumerate(f.read().decode("utf-8", "replace").splitlines(), 1):
-                    lines.append((label, n, raw))
-        except FileNotFoundError:
-            pass
-    matches, total = [], 0
-    for label, n, raw in lines:
-        text = strip_ansi(raw).replace("\r", "")
-        if errors and not (LOG_RED.search(raw) or LOG_ERROR_WORDS.search(text)):
-            continue
-        spans = [m.span() for m in pattern.finditer(text) if m.end() > m.start()] if pattern else []
-        if pattern and not spans:
-            continue
-        if not pattern:
-            spans = [m.span() for m in LOG_ERROR_WORDS.finditer(text)]
-        total += 1
-        matches.append({"file": label, "n": n, "text": text[:2000], "spans": [s for s in spans if s[1] <= 2000][:20]})
-        if len(matches) > LOG_SEARCH_MAX:
-            matches.pop(0)  # se quedan las más recientes
-    return {"matches": matches, "total": total, "shown": len(matches), "lines": len(lines)}
+        res = subprocess.run([sys.executable, LOGSEARCH_PY], input=args, capture_output=True, text=True,
+                             timeout=LOG_REGEX_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise ApiError(400, f"La expresión regular tarda demasiado (más de {LOG_REGEX_TIMEOUT} s): simplifícala")
+    try:
+        out = json.loads(res.stdout)
+    except ValueError:
+        raise ApiError(500, f"La búsqueda ha fallado: {res.stderr.strip()[-300:]}")
+    if "error" in out:
+        raise ApiError(400, out["error"])
+    return out
 
 
 def log_tail(sid, lines=20):
@@ -3659,13 +3645,15 @@ class Scheduler:
                             f"La tarea «{label}» de las {t['at']} de «{name}» ha fallado: {msg}", log=True)
         finally:
             with MANAGER.lock:
+                self.running.discard((sid, t["id"]))
+                if sid not in MANAGER.services:
+                    return  # el servicio se ha borrado mientras tanto
                 st = MANAGER.st(sid)
                 done = st.setdefault("tasks", {})
                 if key == "manual":  # «Probar» no cuenta como la ejecución programada de hoy
                     key = (done.get(t["id"]) or {}).get("key")
                 done[t["id"]] = {"key": key, "at": time.time(), "ok": ok, "msg": msg}
                 MANAGER.save_state()
-                self.running.discard((sid, t["id"]))
 
     @staticmethod
     def do(sid, t):

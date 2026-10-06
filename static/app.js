@@ -1269,18 +1269,21 @@ function viewSettings(cat) {
 const setFoot = (extra = "") => `<div class="form-error" id="set-error"></div>
   <footer class="set-foot">${extra}<span class="grow"></span><button type="submit" class="btn primary" id="set-save">Guardar</button></footer>`;
 
+// Devuelve una función que guarda (y lanza el error si falla), para quien necesite guardar antes de otra cosa
 function setForm(body, html, save, extra) {
   body.innerHTML = `<form id="set-form" novalidate>${html}${setFoot(extra)}</form>`;
   const form = $("#set-form", body);
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
+  const submit = async () => {
     $("#set-error", body).textContent = "";
     const btn = $("#set-save", body);
     btn.disabled = true;
-    try { await save(form); toast("Guardado", "ok"); } catch (err) { $("#set-error", body).textContent = err.message; }
-    btn.disabled = false;
+    try { await save(form); } finally { btn.disabled = false; }
+  };
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try { await submit(); toast("Guardado", "ok"); } catch (err) { $("#set-error", body).textContent = err.message; }
   });
-  return form;
+  return submit;
 }
 
 async function setNotify(body) {
@@ -1288,7 +1291,7 @@ async function setNotify(body) {
   const status = n.last_error ? `<p class="git-note bad">Último error: ${esc(n.last_error)}</p>`
     : n.last_sent ? `<p class="nt-ok">Último correo enviado ${fmtAgo(n.last_sent)}.</p>`
     : n.configured ? '<p class="nt-ok">Configurado. Pulsa «Enviar correo de prueba» para comprobarlo.</p>' : "";
-  const form = setForm(body, `
+  const submit = setForm(body, `
     <h2 class="set-title">Avisos por correo</h2>
     <p class="set-sub">NovaHub te escribe cuando algo va mal. Como mucho un correo por servicio y tipo de aviso cada 10 minutos.</p>
     ${status}
@@ -1309,13 +1312,11 @@ async function setNotify(body) {
     const events = {};
     f.querySelectorAll("[data-event]").forEach((c) => { events[c.dataset.event] = c.checked; });
     await api("PUT", "/api/notify", { user: f.user.value.trim(), to: f.to.value.trim(), app_password: f.app_password.value, events });
-    setNotify(body);
   }, '<button type="button" class="btn" id="set-test">Enviar correo de prueba</button>');
   $("#set-test", body).addEventListener("click", async (e) => {
     e.target.disabled = true;
     try {
-      form.requestSubmit();
-      await new Promise((r) => setTimeout(r, 600));  // primero se guarda lo escrito
+      await submit();  // primero se guarda lo escrito
       await api("POST", "/api/notify/test");
       toast("Correo de prueba enviado: mira tu bandeja de entrada", "ok");
       setNotify(body);
@@ -1379,6 +1380,8 @@ function setApp(body) {
     <p class="set-sub">NovaHub se instala como app: icono en la pantalla de inicio y se abre a pantalla completa, sin la barra del navegador.
       Sigue pasando por el túnel, con tu cuenta de Google y la contraseña.</p>
     ${appInstallHTML()}`;
+  if (body.dataset.bound) return;
+  body.dataset.bound = "1";
   body.addEventListener("click", async (e) => {
     if (!e.target.closest("#app-install") || !ui.installPrompt) return;
     ui.installPrompt.prompt();

@@ -273,6 +273,7 @@ Se habla con el enchufe por la red local: no hace falta Alexa ni la nube.
 server.py          backend (API + gestor de procesos + consola por SSE)
 static/            interfaz web (HTML/CSS/JS sin frameworks) y app para el móvil (manifiesto, sw.js, iconos)
 serve.py           servidor estático del modo producción
+logsearch.py       búsqueda en los logs (las expresiones regulares van en un proceso aparte con límite de tiempo)
 tapo.py            control del enchufe Tapo
 tools/             utilidades (generar los iconos de la app)
 novahub.service    unidad de systemd
