@@ -2515,6 +2515,21 @@ class Roadmap:
             write_json(ROADMAP_FILE, items)
             return items
 
+    def close_version(self, version):
+        """Guarda las mejoras hechas (y aún sin versión) bajo una versión, p. ej. «1.0»: dejan de verse en la lista."""
+        version = re.sub(r"[^0-9A-Za-z.\- ]", "", str(version or "")).strip()[:20]
+        if not version:
+            raise ApiError(400, "Pon un nombre de versión, p. ej. 1.1")
+        with self.lock:
+            items = self.load()
+            pending = [i for i in items if i["done"] and not i.get("version")]
+            if not pending:
+                raise ApiError(400, "No hay mejoras hechas que guardar en una versión")
+            for i in pending:
+                i["version"] = version
+            write_json(ROADMAP_FILE, items)
+            return items
+
     def delete(self, iid):
         with self.lock:
             items = self.load()
@@ -4947,6 +4962,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST":
                 return self.send_json({"items": ROADMAP.add(self.read_body())}, 201)
             raise ApiError(405, "Método no permitido")
+        if path == "/api/roadmap/version" and method == "POST":
+            return self.send_json({"items": ROADMAP.close_version(self.read_body().get("version"))})
         m = ROADMAP_ROUTE.fullmatch(path)
         if m:
             if method == "PUT":

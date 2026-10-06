@@ -296,7 +296,7 @@ function shell() {
       </div>
     </header>
     <main id="main"></main>`;
-  $(".topbar .brand").addEventListener("dblclick", (e) => { e.preventDefault(); if (ui.roadmap) location.hash = "#/mejoras"; });
+  $(".topbar .brand").addEventListener("dblclick", (e) => { e.preventDefault(); if (ui.hasRoadmap) location.hash = "#/mejoras"; });
 }
 
 async function refreshSystem() {
@@ -730,7 +730,8 @@ function viewRoadmap() {
         <h1 class="page-title">Mejoras</h1>
         <p class="page-sub">Lista de lo que queda por hacer en NovaHub, de más a menos importante. Marca cada una al terminarla.</p>
       </div>
-      <div id="rm-progress"></div>
+      <div class="rm-head-actions"><div id="rm-progress"></div>
+        <button type="button" class="btn sm" id="rm-close" hidden title="Guardar las hechas bajo una versión para que no se vean">Cerrar versión…</button></div>
     </section>
     <section class="module rm-list" id="rm-todo"></section>
     <form class="module rm-add" id="rm-add">
@@ -739,14 +740,15 @@ function viewRoadmap() {
       <button class="btn primary" type="submit">${ICON.plus}Añadir</button>
     </form>
     <div class="section-title" id="rm-done-title"></div>
-    <section class="module rm-list done" id="rm-done"></section>`;
+    <section class="module rm-list done" id="rm-done"></section>
+    <div id="rm-versions"></div>`;
   const handler = async (e) => {
     const box = e.target.closest("[data-done]");
     const del = e.target.closest("[data-del]");
     try {
-      if (box) ui.roadmap = (await api("PUT", `/api/roadmap/${box.dataset.done}`, { done: box.checked })).items;
+      if (box) ui.roadmapItems = (await api("PUT", `/api/roadmap/${box.dataset.done}`, { done: box.checked })).items;
       else if (del && await confirmDialog("Borrar mejora", "Se quitará de la lista.", "Borrar")) {
-        ui.roadmap = (await api("DELETE", `/api/roadmap/${del.dataset.del}`)).items;
+        ui.roadmapItems = (await api("DELETE", `/api/roadmap/${del.dataset.del}`)).items;
       } else return;
       drawRoadmap();
     } catch (err) { toast(err.message, "error"); }
@@ -755,23 +757,39 @@ function viewRoadmap() {
   $("#rm-done").addEventListener("change", handler);
   $("#rm-todo").addEventListener("click", (e) => { if (e.target.closest("[data-del]")) handler(e); });
   $("#rm-done").addEventListener("click", (e) => { if (e.target.closest("[data-del]")) handler(e); });
+  $("#rm-versions").addEventListener("change", handler);
+  $("#rm-close").addEventListener("click", async () => {
+    const dlg = modal(`<form method="dialog" id="rmv-form"><header><h2>Cerrar versión</h2></header>
+      <div class="body"><p>Las mejoras hechas se guardan bajo esta versión, en un desplegable cerrado, y dejan de verse en la lista.</p>
+        <label class="field"><span>Versión</span><input id="rmv-name" placeholder="1.1" autocomplete="off"></label></div>
+      <footer><button class="btn ghost" value="no">Cancelar</button><button class="btn primary" value="yes">Guardar</button></footer></form>`, "small");
+    $("#rmv-name", dlg).focus();
+    dlg.addEventListener("close", async () => {
+      if (dlg.returnValue !== "yes") return;
+      try { ui.roadmapItems = (await api("POST", "/api/roadmap/version", { version: $("#rmv-name", dlg).value })).items; drawRoadmap(); toast("Versión cerrada", "ok"); }
+      catch (err) { toast(err.message, "error"); }
+    });
+  });
   $("#rm-add").addEventListener("submit", async (e) => {
     e.preventDefault();
     const input = $("#rm-title");
     try {
-      ui.roadmap = (await api("POST", "/api/roadmap", { title: input.value })).items;
+      ui.roadmapItems = (await api("POST", "/api/roadmap", { title: input.value })).items;
       input.value = "";
       drawRoadmap();
       toast("Mejora apuntada al final de la lista", "ok");
     } catch (err) { toast(err.message, "error"); }
   });
-  api("GET", "/api/roadmap").then((d) => { ui.roadmap = d.items; drawRoadmap(); }).catch((e) => toast(e.message, "error"));
+  api("GET", "/api/roadmap").then((d) => { ui.roadmapItems = d.items; drawRoadmap(); }).catch((e) => toast(e.message, "error"));
 }
 
 function drawRoadmap() {
-  const items = ui.roadmap || [];
+  const all = ui.roadmapItems || [];
+  const items = all.filter((i) => !i.version);  // lo de versiones cerradas va aparte, en desplegables
   const todo = items.filter((i) => !i.done);
   const done = items.filter((i) => i.done).sort((a, b) => (b.done_at || 0) - (a.done_at || 0));
+  const versions = [...new Set(all.filter((i) => i.version).map((i) => i.version))]
+    .sort((a, b) => b.localeCompare(a, "es", { numeric: true }));
   const row = (i, n) => `
     <label class="rm-item" data-tag="${esc(i.tag)}">
       <input type="checkbox" data-done="${esc(i.id)}" ${i.done ? "checked" : ""} aria-label="Marcar «${esc(i.title)}» como hecha">
@@ -790,6 +808,12 @@ function drawRoadmap() {
   $("#rm-done-title").innerHTML = done.length ? `<h2>Hechas · ${done.length}</h2>` : "";
   $("#rm-done").hidden = !done.length;
   $("#rm-done").innerHTML = done.map((i) => row(i, null)).join("");
+  $("#rm-close").hidden = !done.length;
+  $("#rm-versions").innerHTML = versions.map((v) => {
+    const list = all.filter((i) => i.version === v).sort((a, b) => (b.done_at || 0) - (a.done_at || 0));
+    return `<details class="module rm-version"><summary><b>${esc(v)}v</b> <span class="dim-text">· ${list.length} mejora${list.length === 1 ? "" : "s"} hecha${list.length === 1 ? "" : "s"}</span></summary>
+      <div class="rm-list done">${list.map((i) => row(i, null)).join("")}</div></details>`;
+  }).join("");
 }
 
 // ───────────────────────── vista: procesos ─────────────────────────
@@ -3214,7 +3238,7 @@ function route() {
   const nm = hash.match(/^#\/nuevo(?:\/(programa|contenedor|compose))?$/);
   let section = "overview";
   const adminOnly = (m && m[2]) || nm || ["#/procesos", "#/red", "#/mejoras"].includes(hash);
-  if ((adminOnly && !can("admin")) || (hash === "#/mejoras" && !ui.roadmap)) { viewNoAccess(); section = ""; }
+  if ((adminOnly && !can("admin")) || (hash === "#/mejoras" && !ui.hasRoadmap)) { viewNoAccess(); section = ""; }
   else if (m && m[2]) { viewServiceForm({ id: m[1] }); section = "services"; }
   else if (m) { viewDetail(m[1]); section = "services"; }
   else if (nm && nm[1]) { viewServiceForm({ kind: KIND_SLUG[nm[1]] }); section = "services"; }
@@ -3240,7 +3264,7 @@ async function start() {
     return; // si no, es un 401 y showLogin ya se ha mostrado
   }
   ui.me = me.user;
-  ui.roadmap = !!me.roadmap;  // página oculta de mejoras: solo administradores y solo si existe la lista
+  ui.hasRoadmap = !!me.roadmap;  // página oculta de mejoras: solo administradores y solo si existe la lista
   applyPerms();
   try { ui.server = localStorage.getItem("nh-server") || "local"; } catch { ui.server = "local"; }
   if (me.lock_on_reload && !ui.unlocked) {
@@ -3265,7 +3289,7 @@ document.addEventListener("keydown", (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, textarea, select, dialog") || !$("#main")) return;
   const nav = NAV.find(([, , , k, , perm]) => k === e.key && (!perm || can(perm)));
   if (nav) location.hash = nav[1];
-  else if (e.key === "m" && ui.roadmap) location.hash = "#/mejoras";
+  else if (e.key === "m" && ui.hasRoadmap) location.hash = "#/mejoras";
 });
 let currentHash = location.hash;
 window.addEventListener("hashchange", async () => {

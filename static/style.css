@@ -582,6 +582,15 @@ body.remote-mode .srv-btn { background: var(--nova); color: #fff; border-color: 
   .srv-menu button, .srv-menu a { padding: 12px; font-size: 15px; }
 }
 
+/* mejoras: versiones cerradas */
+.rm-head-actions { display: flex; align-items: center; gap: 10px; }
+.rm-version { margin-top: 14px; overflow: hidden; }
+.rm-version > summary { padding: 14px 18px; cursor: pointer; font-size: 15px; list-style: none; display: flex; align-items: center; gap: 8px; }
+.rm-version > summary::before { content: "▸"; color: var(--soft); transition: transform .15s; }
+.rm-version[open] > summary::before { transform: rotate(90deg); }
+.rm-version > summary::-webkit-details-marker { display: none; }
+.rm-version .rm-list { border-top: 1px solid var(--line); }
+
 /* ajustes */
 .user-list { display: flex; flex-direction: column; gap: 6px; }
 .user-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--sunk); }
