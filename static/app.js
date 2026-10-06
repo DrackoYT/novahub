@@ -27,6 +27,7 @@ const ICON = {
   upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9M7 14l5-5 5 5M5 3h14"/></svg>',
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/></svg>',
   moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>',
 };
 
@@ -585,6 +586,10 @@ function cardHTML(s) {
   }
   if (!foot.length) foot.push(`<span class="dim-text">Detenido</span>`);
   if (s.mode === "prod") foot.push(`<span><span class="k">Modo</span><span class="v">producción</span></span>`);
+  if (s.backup?.last_name) {
+    foot.push(`<span title="Última copia de seguridad · ${esc(fmtTime(s.backup.last_ok_at))}"><span class="k">Copia</span>` +
+      `<span class="v">${esc(s.backup.last_name.split("_").slice(0, 2).join("_"))}</span></span>`);
+  }
   if (s.status === "running" && s.health?.state === "failing") foot.unshift(`<span class="bad-text"><b>No responde</b></span>`);
   const url = s.status === "running" ? openUrl(s) : null;
   const link = url
@@ -1104,6 +1109,7 @@ function viewDetail(id) {
             <button type="button" role="tab" class="tab term-title" id="live" data-tab="console" aria-selected="true">Consola <span class="live">en directo</span></button>
             <button type="button" role="tab" class="tab" data-tab="files" aria-selected="false">${ICON.folder}Archivos</button>
             <button type="button" role="tab" class="tab" data-tab="git" aria-selected="false">${ICON.git}Git<span class="count" id="git-count" hidden></span></button>
+            <button type="button" role="tab" class="tab" data-tab="backups" aria-selected="false">${ICON.archive}Copias</button>
           </div>
           <div class="term-tools" data-for="console">
             <label class="chk" title="Auto-scroll"><input type="checkbox" id="autoscroll" checked><span>Auto-scroll</span></label>
@@ -1122,6 +1128,7 @@ function viewDetail(id) {
         </div>
         <div class="pane" data-pane="files" id="files" hidden></div>
         <div class="pane" data-pane="git" id="git" hidden></div>
+        <div class="pane" data-pane="backups" id="backups" hidden></div>
       </section>
       <aside class="side" id="d-info"></aside>
     </div>`;
@@ -1157,6 +1164,7 @@ function setupTabs(id) {
       loaded.add(tab);
       if (tab === "files") loadFiles(id, "");
       if (tab === "git") loadGit(id);
+      if (tab === "backups") loadBackups(id);
     }
   });
   $("#files").addEventListener("click", async (e) => {
@@ -1171,6 +1179,11 @@ function setupTabs(id) {
     if (el.dataset.kind === "file") openFile(id, el.dataset.path);
     else loadFiles(id, el.dataset.path);
   });
+  $("#backups").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-bk]");
+    if (b) backupAction(id, b.dataset.bk, b.dataset.name);
+  });
+  $("#backups").addEventListener("submit", (e) => { e.preventDefault(); saveBackupConfig(id, e.target); });
   $("#git").addEventListener("click", (e) => {
     const act = e.target.closest("[data-git]")?.dataset.git;
     if (act) gitAction(id, act);
@@ -1428,6 +1441,135 @@ async function leaveEditor() {
   const ok = await confirmDialog("Cambios sin guardar", "Si sales del editor, perderás los cambios que no has guardado.", "Salir sin guardar");
   if (ok) ui.editing = false;
   return ok;
+}
+
+// ───────────────────────── ficha: copias de seguridad ─────────────────────────
+
+const BACKUP_KIND = { auto: "Automática", manual: "Manual", "antes-de-restaurar": "Antes de restaurar" };
+
+async function loadBackups(id) {
+  const pane = $("#backups");
+  if (!pane.innerHTML) pane.innerHTML = `<div class="pane-msg">Cargando…</div>`;
+  try {
+    drawBackups(id, await api("GET", `/api/services/${id}/backups`));
+  } catch (e) {
+    pane.innerHTML = `<div class="pane-msg bad-text">${esc(e.message)}</div>`;
+  }
+}
+
+function drawBackups(id, b) {
+  const pane = $("#backups");
+  const c = b.config;
+  const newest = b.copies[0];
+  const last = b.last?.at && !b.last.ok
+    ? `<span class="bad-text">${esc(b.last.msg)}</span> · ${fmtAgo(b.last.at)}`
+    : newest ? `Última copia <b class="mono">${esc(newest.label)}</b> · ${fmtAgo(newest.created)}` : "Todavía no hay copias";
+  const d = b.disk;
+  const where = d.mounted
+    ? `<span class="bk-disk">${ICON.archive}<span>Se guardan en el <b>disco ${esc(d.kind || "de datos")}</b> · <code>${esc(d.path)}</code>` +
+      (d.free != null ? ` · ${fmtBytes(d.free)} libres de ${fmtBytes(d.total)}` : "") + "</span></span>"
+    : `<span class="bk-disk bad-text">${ICON.archive}<span>El disco de copias no está montado (<code>${esc(d.path)}</code>): no se pueden hacer copias hasta que vuelva.</span></span>`;
+  const next = b.next ? `Próxima: ${new Date(b.next * 1000).toLocaleString("es-ES", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : "Sin copias programadas";
+  const editing = pane.querySelector("#bk-form") && pane.contains(document.activeElement) && document.activeElement.closest("#bk-form");
+  if (editing) {  // no pisar el formulario mientras se escribe: solo se refresca la lista y el estado
+    pane.querySelector("#bk-status").innerHTML = `${last} · ${next}`;
+    pane.querySelector("#bk-list").innerHTML = backupRows(id, b);
+    return;
+  }
+  pane.innerHTML = `
+    <div class="pane-bar">
+      <span class="bk-status" id="bk-status">${last} · ${next}</span>
+      <span class="grow"></span>
+      <button type="button" class="btn sm primary" data-bk="run" ${b.running ? "disabled" : ""}>${ICON.archive}${b.running ? "Copiando…" : "Hacer copia ahora"}</button>
+    </div>
+    <div class="git-body">
+      <form class="git-commit" id="bk-form" novalidate>
+        <label class="chk bk-auto"><input type="checkbox" name="enabled" ${c.enabled ? "checked" : ""}><span><strong>Copias automáticas</strong></span></label>
+        <div class="bk-grid">
+          <label class="field"><span>Frecuencia</span>
+            <select name="every"><option value="daily" ${c.every === "daily" ? "selected" : ""}>Cada día a una hora</option>
+              <option value="hours" ${c.every === "hours" ? "selected" : ""}>Cada X horas</option></select></label>
+          <label class="field" data-show="daily"><span>Hora</span><input name="at" value="${esc(c.at)}" placeholder="04:00" inputmode="numeric"></label>
+          <label class="field" data-show="hours"><span>Cada (horas)</span><input name="hours" value="${c.hours}" inputmode="numeric"></label>
+          <label class="field"><span>Conservar</span><input name="keep" value="${c.keep}" inputmode="numeric"><small>copias automáticas</small></label>
+        </div>
+        <label class="field"><span>Qué copiar</span><input name="paths" class="mono" value="${esc(c.paths.join(", "))}" placeholder="toda la carpeta del servicio" spellcheck="false">
+          <small>Vacío = toda la carpeta. O subcarpetas separadas por comas, p. ej. <code>world, config</code>.</small></label>
+        <label class="field"><span>Excluir</span><input name="exclude" class="mono" value="${esc(c.exclude.join(", "))}" spellcheck="false">
+          <small>Nombres de carpetas o archivos que no se copian (se pueden regenerar). Admite comodines: <code>*.log</code>.</small></label>
+        <label class="chk"><input type="checkbox" name="stop" ${c.stop ? "checked" : ""}><span>Parar el servicio durante la copia (juegos y bases de datos: así no se copia nada a medio escribir)</span></label>
+        <button type="submit" class="btn">Guardar ajustes</button>
+      </form>
+      <p class="label">Copias guardadas · ${b.copies.length}</p>
+      ${where}
+      <div class="bk-list" id="bk-list">${backupRows(id, b)}</div>
+    </div>`;
+  const form = pane.querySelector("#bk-form");
+  const toggle = () => form.querySelectorAll("[data-show]").forEach((el) => { el.hidden = el.dataset.show !== form.every.value; });
+  form.every.addEventListener("change", toggle);
+  toggle();
+  if (b.running && !ui.backupPoll) {  // mientras copia o restaura, se refresca solo
+    ui.backupPoll = setInterval(async () => {
+      if (!$("#backups") || $("#backups").hidden) return;
+      const fresh = await api("GET", `/api/services/${id}/backups`).catch(() => null);
+      if (!fresh) return;
+      drawBackups(id, fresh);
+      if (!fresh.running) { clearInterval(ui.backupPoll); ui.backupPoll = null; drawBackups(id, fresh); }
+    }, 2000);
+    ui.timers.push(ui.backupPoll);
+  }
+}
+
+function backupRows(id, b) {
+  if (!b.copies.length) return '<p class="dim-text">Aún no hay copias. Pulsa «Hacer copia ahora» o activa las automáticas.</p>';
+  return b.copies.map((x) => `
+    <div class="bk-row">
+      <span class="status ${x.kind === "manual" ? "svc" : ""}">${BACKUP_KIND[x.kind]}</span>
+      <span class="bk-name mono" title="${esc(x.name)}">${esc(x.label)}</span>
+      <span class="bk-date">${esc(fmtTime(x.created))}</span>
+      <span class="bk-size num">${fmtBytes(x.size)}</span>
+      <span class="bk-actions">
+        <a class="btn sm icon" href="/api/services/${encodeURIComponent(id)}/backups/download?name=${encodeURIComponent(x.name)}" download title="Descargar" aria-label="Descargar">${ICON.download}</a>
+        <button type="button" class="btn sm" data-bk="restore" data-name="${esc(x.name)}" ${b.running ? "disabled" : ""}>Restaurar</button>
+        <button type="button" class="btn sm icon ghost" data-bk="delete" data-name="${esc(x.name)}" title="Borrar" aria-label="Borrar">${ICON.trash}</button>
+      </span>
+    </div>`).join("");
+}
+
+async function backupAction(id, act, name) {
+  try {
+    if (act === "run") {
+      drawBackups(id, await api("POST", `/api/services/${id}/backups/run`));
+      toast("Haciendo la copia: el progreso sale en la consola", "ok");
+    } else if (act === "restore") {
+      const svc = ui.current;
+      const ok = await confirmDialog("Restaurar copia",
+        `La carpeta de «${svc?.name || id}» quedará exactamente como en esta copia (lo que se haya creado después se borra; lo excluido, como node_modules, no se toca). ` +
+        "Antes se guarda una copia del estado actual por si te arrepientes." + (isOn(svc || {}) ? " El servicio se parará y volverá a arrancar." : ""),
+        "Restaurar");
+      if (!ok) return;
+      drawBackups(id, await api("POST", `/api/services/${id}/backups/restore`, { name }));
+      toast("Restaurando: el progreso sale en la consola", "ok");
+      $('[data-tab="console"]')?.click();
+    } else if (act === "delete") {
+      if (!(await confirmDialog("Borrar copia", "Esta copia se borrará del disco. No se puede deshacer.", "Borrar"))) return;
+      drawBackups(id, await api("POST", `/api/services/${id}/backups/delete`, { name }));
+      toast("Copia borrada", "ok");
+    }
+  } catch (e) { toast(e.message, "error"); }
+}
+
+async function saveBackupConfig(id, form) {
+  const f = form.elements;
+  try {
+    const b = await api("PUT", `/api/services/${id}/backups`, {
+      enabled: f.enabled.checked, every: f.every.value, at: f.at.value.trim(), hours: f.hours.value.trim(),
+      keep: f.keep.value.trim(), paths: f.paths.value, exclude: f.exclude.value, stop: f.stop.checked,
+    });
+    document.activeElement?.blur();
+    drawBackups(id, b);
+    toast("Ajustes de copias guardados", "ok");
+  } catch (e) { toast(e.message, "error"); }
 }
 
 // ───────────────────────── ficha: git ─────────────────────────

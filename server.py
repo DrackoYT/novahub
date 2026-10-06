@@ -35,7 +35,7 @@ import threading
 import time
 import traceback
 from functools import partial
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.message import EmailMessage
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -779,6 +779,7 @@ class Manager:
             health_mode=health_mode(svc), health=st.get("health"),
             mode=svc.get("mode", "dev"), can_build=build_info(svc) is not None,
             listening=(svc["port"] in ports) if svc.get("port") else None,
+            backup={k: (st.get("backup") or {}).get(k) for k in ("last_name", "last_ok_at")},
             cpu=None, memory=None, processes=None,
         )
         if running:
@@ -1915,6 +1916,7 @@ NOTIFY_EVENTS = {
     "power": "El servidor se enciende o se apaga",
     "update": "Falla una actualización desde GitHub",
     "novahub": "NovaHub se reinicia tras un fallo o tiene un problema interno",
+    "backup": "Falla una copia de seguridad o una restauración",
 }
 NOTIFY_COOLDOWN = 600   # como mucho un correo por servicio y tipo de aviso cada 10 min
 NOTIFY_MAX_HOUR = 30    # y nunca más de 30 por hora en total
@@ -2701,6 +2703,352 @@ def build_info(svc):
 DEPLOYER = Deployer()
 
 
+# ───────────────────────────── copias de seguridad ─────────────────────────────
+
+# Las copias van al disco duro de datos (HDD), no al SSD del sistema: si el SSD muere, las copias siguen ahí.
+BACKUP_MOUNT = os.environ.get("NOVAHUB_BACKUP_MOUNT", "/mnt/dades")   # "" = no exigir disco montado (pruebas)
+SNAPSHOT_DIR = os.path.abspath(os.environ.get("NOVAHUB_BACKUP_DIR", os.path.join(BACKUP_MOUNT or DATA_DIR, "novahub-copias")))
+# bk_DDMMAA_HHMMSS_tipo.tar.gz → bk_061026_040000_auto.tar.gz (fecha de la copia; la hora evita choques el mismo día)
+SNAPSHOT_NAME = re.compile(r"bk_\d{6}_\d{6}_(auto|manual|antes-de-restaurar)\.tar\.gz")
+BACKUP_DEFAULTS = {"enabled": False, "every": "daily", "at": "04:00", "hours": 6, "paths": [],
+                   "exclude": ["node_modules", ".git", ".venv", "venv", "__pycache__", "dist", "build", ".cache", ".next"],
+                   "keep": 7, "stop": False}
+BACKUP_MIN_FREE = 1024 ** 3  # no se empieza una copia con menos de 1 GB libre
+
+
+def backup_config(svc):
+    return {**BACKUP_DEFAULTS, **(svc.get("backup") or {})}
+
+
+def _own_rels(root):
+    """Rutas relativas de data/ de NovaHub y de la carpeta de copias si están dentro de la del servicio
+    (nunca se copian ni se borran)."""
+    out = []
+    for d in (DATA_DIR, SNAPSHOT_DIR):
+        real = os.path.realpath(d)
+        if real == root or real.startswith(root + os.sep):
+            out.append(os.path.relpath(real, root))
+    return out
+
+
+def disk_kind(path):
+    """«HDD» o «SSD» según el disco donde está la ruta (/sys/.../queue/rotational); None si no se sabe."""
+    try:
+        st = os.stat(path)
+        dev = os.path.realpath(f"/sys/dev/block/{os.major(st.st_dev)}:{os.minor(st.st_dev)}")
+        for d in (dev, os.path.dirname(dev)):  # partición → disco
+            f = os.path.join(d, "queue", "rotational")
+            if os.path.exists(f):
+                with open(f) as fh:
+                    return "HDD" if fh.read().strip() == "1" else "SSD"
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def backup_disk():
+    """Dónde se guardan las copias y si el disco está disponible."""
+    mounted = not BACKUP_MOUNT or os.path.ismount(BACKUP_MOUNT)
+    probe = SNAPSHOT_DIR if os.path.isdir(SNAPSHOT_DIR) else (BACKUP_MOUNT or DATA_DIR)
+    try:
+        du = shutil.disk_usage(probe)
+        free, total = du.free, du.total
+    except OSError:
+        free = total = None
+    return {"path": SNAPSHOT_DIR, "mounted": mounted, "kind": disk_kind(probe) if mounted else None,
+            "free": free, "total": total}
+
+
+def snapshot_time(name, path=None):
+    """Fecha de una copia a partir de su nombre (bk_DDMMAA_HHMMSS…); si no, la del archivo."""
+    try:
+        return datetime.strptime(name[3:16], "%d%m%y_%H%M%S").timestamp()
+    except ValueError:
+        return os.path.getmtime(path) if path else 0
+
+
+def _excluded(name, patterns):
+    import fnmatch
+    return any(fnmatch.fnmatch(name, p) for p in patterns)
+
+
+class Backups:
+    """Copias .tar.gz de la carpeta de un servicio (o de algunas subcarpetas), programadas o a mano,
+    y restauración con copia previa del estado actual. Todo en segundo plano, con el progreso en la consola."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.busy = set()   # servicios con una copia o restauración en curso
+
+    # ── configuración ──
+    def save_config(self, sid, data):
+        cfg = backup_config(MANAGER.services[sid])
+        root = service_root(MANAGER.services[sid])
+        every = data.get("every", cfg["every"])
+        if every not in ("daily", "hours"):
+            raise ApiError(400, "Frecuencia desconocida")
+        at = str(data.get("at", cfg["at"])).strip()
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", at):
+            raise ApiError(400, "La hora debe tener el formato HH:MM (p. ej. 04:00)")
+        try:
+            hours, keep = int(data.get("hours", cfg["hours"])), int(data.get("keep", cfg["keep"]))
+        except (TypeError, ValueError):
+            raise ApiError(400, "Las horas y el número de copias deben ser números")
+        if not 1 <= hours <= 168 or not 1 <= keep <= 100:
+            raise ApiError(400, "Cada 1–168 horas y entre 1 y 100 copias")
+        paths = data.get("paths", cfg["paths"])
+        if isinstance(paths, str):
+            paths = [p.strip() for p in paths.replace("\n", ",").split(",") if p.strip()]
+        clean = []
+        for p in paths:
+            full = safe_path(root, p)  # dentro de la carpeta del servicio
+            if not os.path.exists(full):
+                raise ApiError(400, f"No existe «{p}» dentro de la carpeta del servicio")
+            clean.append(os.path.relpath(full, root))
+        exclude = data.get("exclude", cfg["exclude"])
+        if isinstance(exclude, str):
+            exclude = [e.strip() for e in exclude.replace("\n", ",").split(",") if e.strip()]
+        new = {"enabled": bool(data.get("enabled", cfg["enabled"])), "every": every, "at": at, "hours": hours,
+               "paths": clean, "exclude": [str(e)[:100] for e in exclude][:50], "keep": keep,
+               "stop": bool(data.get("stop", cfg["stop"]))}
+        with MANAGER.lock:
+            MANAGER.services[sid]["backup"] = new
+            MANAGER.save_services()
+        return self.public(sid)
+
+    def folder(self, sid):
+        return os.path.join(SNAPSHOT_DIR, sid)
+
+    def list(self, sid, kind=None):
+        """Copias de un servicio, de la más nueva a la más antigua."""
+        folder = self.folder(sid)
+        copies = []
+        if os.path.isdir(folder):
+            for name in os.listdir(folder):
+                m = SNAPSHOT_NAME.fullmatch(name)
+                if m and (kind is None or m.group(1) == kind):
+                    full = os.path.join(folder, name)
+                    copies.append({"name": name, "label": name.split("_")[0] + "_" + name.split("_")[1],
+                                   "size": os.path.getsize(full), "created": snapshot_time(name, full),
+                                   "kind": m.group(1)})
+        return sorted(copies, key=lambda c: c["created"], reverse=True)
+
+    def public(self, sid):
+        state = (MANAGER.state.get(sid) or {}).get("backup") or {}
+        return {"config": backup_config(MANAGER.services[sid]), "copies": self.list(sid), "running": sid in self.busy,
+                "last": state, "next": self.next_run(sid), "disk": backup_disk()}
+
+    def path_of(self, sid, name):
+        if not SNAPSHOT_NAME.fullmatch(str(name or "")):
+            raise ApiError(400, "Nombre de copia inválido")
+        full = os.path.join(self.folder(sid), name)
+        if not os.path.isfile(full):
+            raise ApiError(404, "Esa copia no existe")
+        return full
+
+    def delete(self, sid, name):
+        os.remove(self.path_of(sid, name))
+        return self.public(sid)
+
+    # ── hacer una copia ──
+    def start(self, sid, kind="manual"):
+        with self.lock:
+            if sid in self.busy:
+                raise ApiError(409, "Ya hay una copia o restauración en curso")
+            self.busy.add(sid)
+        threading.Thread(target=self._run, args=(sid, kind), name="copia", daemon=True).start()
+
+    def _run(self, sid, kind):
+        svc = MANAGER.services[sid]
+        cfg = backup_config(svc)
+        restart = False
+        try:
+            if cfg["stop"] and MANAGER.running(sid):
+                MANAGER.log(sid, "copia de seguridad: se para el servicio para copiar sus datos sin cambios a medias")
+                restart = self._stop_and_wait(sid)
+            name = self.snapshot(sid, kind)
+            self._record(sid, True, f"Copia {name}", name)
+        except Exception as e:  # noqa: BLE001
+            msg = e.msg if isinstance(e, ApiError) else str(e)
+            MANAGER.log(sid, f"\x1b[31mla copia de seguridad ha fallado: {msg}\x1b[0m")
+            self._record(sid, False, msg)
+            NOTIFIER.notify("backup", sid, f"Ha fallado la copia de seguridad de {svc['name']}",
+                            f"La copia de seguridad de «{svc['name']}» ha fallado: {msg}", level="danger")
+        finally:
+            if restart:
+                try:
+                    MANAGER.start(sid)
+                except ApiError as e:
+                    MANAGER.log(sid, f"\x1b[31mno se pudo volver a arrancar: {e.msg}\x1b[0m")
+            with self.lock:
+                self.busy.discard(sid)
+
+    def snapshot(self, sid, kind):
+        """Crea la copia (en un temporal que se renombra al acabar) y aplica la retención."""
+        import tarfile
+        svc = MANAGER.services[sid]
+        cfg, root = backup_config(svc), service_root(svc)
+        disk = backup_disk()
+        if not disk["mounted"]:
+            # Sin el disco montado, /mnt/dades es una carpeta vacía del SSD: no se escribe ahí.
+            raise ApiError(503, f"El disco duro de copias ({BACKUP_MOUNT}) no está montado")
+        if (disk["free"] or 0) < BACKUP_MIN_FREE:
+            raise ApiError(507, "Queda menos de 1 GB libre en el disco de copias: no se hace la copia")
+        folder = self.folder(sid)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        now = datetime.now()
+        while True:  # dos copias en el mismo segundo (p. ej. la previa a restaurar justo tras otra)
+            name = f"bk_{now:%d%m%y_%H%M%S}_{kind}.tar.gz"
+            if not os.path.exists(os.path.join(folder, name)):
+                break
+            now += timedelta(seconds=1)
+        final, tmp = os.path.join(folder, name), os.path.join(folder, f".{name}.tmp")
+        scope = cfg["paths"] or ["."]
+        MANAGER.log(sid, f"\x1b[35mcopia de seguridad ({', '.join(scope)})…\x1b[0m")
+        t0, count = time.time(), [0]
+
+        own = _own_rels(root)
+
+        def keep(info):
+            if any((os.path.normpath(info.name) + "/").startswith(o + "/") for o in own):
+                return None  # la carpeta de datos de NovaHub y la de copias nunca entran
+            parts = info.name.split("/")
+            if any(_excluded(p, cfg["exclude"]) for p in parts if p not in (".", "")):
+                return None
+            count[0] += info.isfile()
+            return info
+
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz", compresslevel=6) as tar:
+                for rel in scope:
+                    tar.add(os.path.join(root, rel), arcname=os.path.normpath(rel), filter=keep)
+            os.replace(tmp, final)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+        size = os.path.getsize(final)
+        MANAGER.log(sid, f"\x1b[32mcopia lista: {count[0]} archivos, {size / 2**20:.1f} MB en {time.time() - t0:.0f} s → {name}\x1b[0m")
+        self.prune(sid, cfg["keep"])
+        return name
+
+    def prune(self, sid, keep):
+        """Retención: las automáticas según «conservar»; de las previas a restaurar, las 3 últimas.
+        Las manuales solo se borran a mano."""
+        folder = self.folder(sid)
+        for kind, limit in (("auto", keep), ("antes-de-restaurar", 3)):
+            for c in self.list(sid, kind)[limit:]:  # por fecha: el nombre DDMMAA no se ordena solo
+                os.remove(os.path.join(folder, c["name"]))
+
+    def _stop_and_wait(self, sid):
+        """Para el servicio y espera a que termine. True si estaba en marcha (hay que volver a arrancarlo)."""
+        if not MANAGER.running(sid):
+            return False
+        MANAGER.stop(sid)
+        end = time.time() + MANAGER.services[sid].get("stop_timeout", 15) + 20
+        while time.time() < end and (MANAGER.running(sid) or sid in MANAGER.transition):
+            time.sleep(0.5)
+        if MANAGER.running(sid):
+            raise ApiError(500, "el servicio no se ha detenido a tiempo")
+        return True
+
+    def _record(self, sid, ok, msg, name=None):
+        with MANAGER.lock:
+            st = MANAGER.st(sid)
+            prev = st.get("backup") or {}
+            st["backup"] = {**prev, "at": time.time(), "ok": ok, "msg": msg,
+                            **({"last_name": name, "last_ok_at": time.time()} if name else {}),
+                            **({"last_auto": time.time()} if name and name.endswith("_auto.tar.gz") else {})}
+            MANAGER.save_state()
+
+    # ── restaurar ──
+    def restore(self, sid, name):
+        self.path_of(sid, name)
+        with self.lock:
+            if sid in self.busy:
+                raise ApiError(409, "Ya hay una copia o restauración en curso")
+            self.busy.add(sid)
+        threading.Thread(target=self._restore, args=(sid, name), name="restaurar", daemon=True).start()
+
+    def _restore(self, sid, name):
+        import tarfile
+        svc = MANAGER.services[sid]
+        cfg, root = backup_config(svc), service_root(svc)
+        restart = False
+        try:
+            MANAGER.log(sid, f"\x1b[35mrestaurando la copia {name}…\x1b[0m")
+            restart = self._stop_and_wait(sid)
+            safety = self.snapshot(sid, "antes-de-restaurar")
+            MANAGER.log(sid, f"el estado actual queda guardado en {safety}")
+            with tarfile.open(self.path_of(sid, name), "r:gz") as tar:
+                members = tar.getmembers()
+                tops = {m.name.split("/")[0] for m in members}
+                in_archive = {os.path.normpath(m.name) for m in members}
+                # Deja cada carpeta copiada exactamente como en la copia: borra lo que no estaba en ella
+                # (salvo lo excluido, que nunca se copió: node_modules, .git…).
+                for top in tops:
+                    base = root if top == "." else safe_path(root, top)
+                    if os.path.isfile(base) or os.path.islink(base):
+                        continue
+                    own = {os.path.realpath(DATA_DIR), os.path.realpath(SNAPSHOT_DIR)}
+                    for dirpath, dirnames, filenames in os.walk(base, topdown=True):
+                        dirnames[:] = [d for d in dirnames if not _excluded(d, cfg["exclude"])
+                                       and os.path.realpath(os.path.join(dirpath, d)) not in own]
+                        for fname in filenames:
+                            full = os.path.join(dirpath, fname)
+                            rel = os.path.normpath(os.path.join(top, os.path.relpath(full, base)))
+                            if rel not in in_archive and not _excluded(fname, cfg["exclude"]):
+                                os.remove(full)
+                tar.extractall(root, filter="data")  # filtro «data»: nada fuera de la carpeta ni enlaces peligrosos
+            MANAGER.log(sid, f"\x1b[32mrestaurada la copia {name}\x1b[0m")
+            self._record(sid, True, f"Restaurada {name}")
+        except Exception as e:  # noqa: BLE001
+            msg = e.msg if isinstance(e, ApiError) else str(e)
+            MANAGER.log(sid, f"\x1b[31mno se pudo restaurar: {msg}\x1b[0m")
+            self._record(sid, False, f"Restauración fallida: {msg}")
+            NOTIFIER.notify("backup", sid, f"Ha fallado la restauración de {svc['name']}",
+                            f"No se pudo restaurar la copia {name} de «{svc['name']}»: {msg}", level="danger", log=True)
+        finally:
+            if restart:
+                try:
+                    MANAGER.start(sid)
+                except ApiError as e:
+                    MANAGER.log(sid, f"\x1b[31mno se pudo volver a arrancar: {e.msg}\x1b[0m")
+            with self.lock:
+                self.busy.discard(sid)
+
+    # ── programación ──
+    def next_run(self, sid):
+        cfg = backup_config(MANAGER.services[sid])
+        if not cfg["enabled"]:
+            return None
+        last = ((MANAGER.state.get(sid) or {}).get("backup") or {}).get("last_auto") or 0
+        if cfg["every"] == "hours":
+            return max(time.time(), last + cfg["hours"] * 3600) if last else time.time()
+        h, m = map(int, cfg["at"].split(":"))
+        today = datetime.now().replace(hour=h, minute=m, second=0, microsecond=0).timestamp()
+        return today if last < today else today + 86400
+
+    def loop(self):
+        while True:
+            time.sleep(30)
+            SUPERVISOR.beat("copias")
+            try:
+                for sid in list(MANAGER.services):
+                    nxt = self.next_run(sid)
+                    if nxt and nxt <= time.time() and sid not in self.busy:
+                        MANAGER.log(sid, "copia de seguridad programada")
+                        self.start(sid, "auto")
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+
+
+BACKUPS = Backups()
+
+
 # ───────────────────────────── plantillas de servicio ─────────────────────────────
 
 def _has_venv():
@@ -3057,7 +3405,8 @@ def _template_job(job, t, dest, values, service, start):
 JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
-                           r"|files|file|file/download|git|git/commit|git/push|git/pull|update|mode))?")
+                           r"|files|file|file/download|git|git/commit|git/push|git/pull|update|mode"
+                           r"|backups|backups/run|backups/restore|backups/delete|backups/download))?")
 KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
 
 
@@ -3313,6 +3662,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(read_file(svc, self.query("path")))
         if method == "GET" and action == "file/download":
             return self.download_file(svc, self.query("path"))
+        if action == "backups" and method == "GET":
+            return self.send_json(BACKUPS.public(sid))
+        if action == "backups" and method == "PUT":
+            return self.send_json(BACKUPS.save_config(sid, self.read_body()))
+        if action == "backups/run" and method == "POST":
+            BACKUPS.start(sid, "manual")
+            return self.send_json(BACKUPS.public(sid), 202)
+        if action == "backups/restore" and method == "POST":
+            BACKUPS.restore(sid, self.read_body().get("name"))
+            return self.send_json(BACKUPS.public(sid), 202)
+        if action == "backups/delete" and method == "POST":
+            return self.send_json(BACKUPS.delete(sid, self.read_body().get("name")))
+        if action == "backups/download" and method == "GET":
+            return self.download_snapshot(sid, self.query("name"))
         if method == "PUT" and action == "file":
             return self.send_json(write_file(sid, svc, self.query("path"), self.read_body()))
         if method == "GET" and action == "git":
@@ -3358,6 +3721,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+        self.send_header("Content-Length", str(os.path.getsize(full)))
+        self.common_headers()
+        self.end_headers()
+        with open(full, "rb") as f:
+            shutil.copyfileobj(f, self.wfile, 64 * 1024)
+
+    def download_snapshot(self, sid, name):
+        full = BACKUPS.path_of(sid, name)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/gzip")
+        self.send_header("Content-Disposition", f'attachment; filename="{sid}-{name}"')
         self.send_header("Content-Length", str(os.path.getsize(full)))
         self.common_headers()
         self.end_headers()
@@ -3514,6 +3888,7 @@ def main():
     failed = [s["name"] for sid, s in MANAGER.services.items() if s.get("autostart") and not MANAGER.running(sid)]
     startup_notice(prev, failed)
     SUPERVISOR.spawn("vigilancia", MANAGER.monitor)
+    SUPERVISOR.spawn("copias", BACKUPS.loop)
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
