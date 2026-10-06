@@ -27,6 +27,9 @@ const ICON = {
   upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9M7 14l5-5 5 5M5 3h14"/></svg>',
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  key: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 8.7-8.7M17 6l2.5 2.5M14.5 8.5 17 11"/></svg>',
+  eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.6 5.1A9.6 9.6 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3 3.9M6.6 6.6A17 17 0 0 0 2 12s3.6 7 10 7a9.4 9.4 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/></svg>',
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/></svg>',
   moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>',
@@ -1431,6 +1434,7 @@ function viewDetail(id) {
             <button type="button" role="tab" class="tab" data-tab="git" aria-selected="false">${ICON.git}Git<span class="count" id="git-count" hidden></span></button>
             <button type="button" role="tab" class="tab" data-tab="backups" aria-selected="false">${ICON.archive}Copias</button>
             <button type="button" role="tab" class="tab" data-tab="tasks" aria-selected="false">${ICON.clock}Tareas</button>
+            <button type="button" role="tab" class="tab" data-tab="env" aria-selected="false">${ICON.key}Variables</button>
           </div>
           <div class="term-tools" data-for="console">
             <label class="chk" title="Auto-scroll"><input type="checkbox" id="autoscroll" checked><span>Auto-scroll</span></label>
@@ -1460,6 +1464,7 @@ function viewDetail(id) {
         <div class="pane" data-pane="git" id="git" hidden></div>
         <div class="pane" data-pane="backups" id="backups" hidden></div>
         <div class="pane" data-pane="tasks" id="tasks" hidden></div>
+        <div class="pane" data-pane="env" id="envpane" hidden></div>
       </section>
       <aside class="side" id="d-info"></aside>
     </div>`;
@@ -1499,6 +1504,7 @@ function setupTabs(id) {
       if (tab === "git") loadGit(id);
       if (tab === "backups") loadBackups(id);
       if (tab === "tasks") loadTasks(id);
+      if (tab === "env") loadEnv(id);
     }
   });
   $("#files").addEventListener("click", async (e) => {
@@ -1522,6 +1528,21 @@ function setupTabs(id) {
   $("#tasks").addEventListener("input", (e) => taskField(id, e));
   $("#tasks").addEventListener("change", (e) => taskField(id, e));
   every(5000, () => refreshTaskStatus(id));
+  $("#envpane").addEventListener("click", (e) => envClick(id, e));
+  $("#envpane").addEventListener("input", (e) => {
+    const row = e.target.closest(".env-row");
+    if (!row || !e.target.dataset.f) return;
+    ui.envDraft[+row.dataset.i][e.target.dataset.f] = e.target.value;
+    envMark();
+  });
+  $("#envpane").addEventListener("change", async (e) => {
+    if (e.target.id !== "env-file") return;
+    if (ui.envDirty && !(await confirmDialog("Cambios sin guardar", `Hay cambios sin guardar en ${ui.envFile}. ¿Descartarlos y abrir ${e.target.value}?`, "Descartar"))) {
+      e.target.value = ui.envFile;
+      return;
+    }
+    loadEnv(id, e.target.value);
+  });
   $("#git").addEventListener("click", (e) => {
     const act = e.target.closest("[data-git]")?.dataset.git;
     if (act) gitAction(id, act);
@@ -2028,6 +2049,121 @@ async function saveTasks(id) {
     drawTasksPane(id);
     toast("Tareas guardadas", "ok");
   } catch (err) { toast(err.message, "error"); }
+}
+
+// ───────────────────────── ficha: variables (.env) ─────────────────────────
+
+async function loadEnv(id, file = ui.envFile || ".env") {
+  const pane = $("#envpane");
+  if (!pane.innerHTML) pane.innerHTML = `<div class="pane-msg">Cargando…</div>`;
+  try {
+    const d = await api("GET", `/api/services/${id}/env?file=${encodeURIComponent(file)}`);
+    ui.envFile = d.file;
+    ui.env = d;
+    ui.envDraft = d.vars.map((v) => ({ ...v }));
+    ui.envDirty = false;
+    ui.envShow = new Set();
+    drawEnv();
+  } catch (e) {
+    pane.innerHTML = `<div class="pane-msg bad-text">${esc(e.message)}</div>`;
+  }
+}
+
+function drawEnv(saved = false) {
+  const pane = $("#envpane"), d = ui.env;
+  const files = [...new Set([...d.files, ".env", d.file])].sort();
+  const warn = {
+    "not-ignored": `<b>Este archivo no está en .gitignore.</b> Si haces commit, tus claves acabarían en GitHub.
+      Añade <code>${esc(d.file)}</code> (o <code>.env*</code>) al archivo <code>.gitignore</code>.`,
+    tracked: `<b>Este archivo ya está en el repositorio de git</b>, así que sus valores están (o estarán) en GitHub.
+      Quítalo con <code>git rm --cached ${esc(d.file)}</code>, añádelo a <code>.gitignore</code> y cambia las claves que tuviera.`,
+  }[d.git];
+  const rows = ui.envDraft.map((v, i) => {
+    const show = ui.envShow.has(i);
+    return `<div class="env-row" data-i="${i}">
+      <input class="mono env-key" data-f="key" value="${esc(v.key)}" placeholder="NOMBRE" spellcheck="false" autocomplete="off" aria-label="Nombre">
+      <span class="env-eq">=</span>
+      <input class="mono env-val" data-f="value" type="${show ? "text" : "password"}" value="${esc(v.value)}" placeholder="valor"
+        spellcheck="false" autocomplete="new-password" aria-label="Valor de ${esc(v.key)}">
+      <button type="button" class="btn sm icon ghost" data-env="eye" title="${show ? "Ocultar" : "Mostrar"} el valor" aria-label="${show ? "Ocultar" : "Mostrar"} el valor">${show ? ICON.eyeOff : ICON.eye}</button>
+      <button type="button" class="btn sm icon ghost" data-env="del" title="Borrar variable" aria-label="Borrar variable">${ICON.trash}</button>
+    </div>`;
+  }).join("");
+  const running = ui.current?.status === "running";
+  pane.innerHTML = `
+    <div class="pane-bar">
+      <select id="env-file" aria-label="Archivo">${files.map((f) => `<option ${f === d.file ? "selected" : ""}>${esc(f)}</option>`).join("")}</select>
+      <span class="bk-status" id="env-status">${ui.envDirty ? '<b class="warn-text">Cambios sin guardar</b>'
+        : d.exists ? `${d.vars.length} variable${d.vars.length === 1 ? "" : "s"}` : "El archivo no existe: se creará al guardar"}</span>
+      <span class="grow"></span>
+      ${saved && running ? `<button type="button" class="btn sm" data-env="restart">${ICON.restart}Reiniciar para aplicar</button>` : ""}
+      <button type="button" class="btn sm" data-env="toggle">${ui.envShow.size ? ICON.eyeOff : ICON.eye}${ui.envShow.size ? "Ocultar" : "Mostrar"} valores</button>
+      <button type="button" class="btn sm" data-env="add">${ICON.plus}Añadir</button>
+      <button type="button" class="btn sm primary" data-env="save" ${ui.envDirty ? "" : "disabled"}>Guardar</button>
+    </div>
+    <div class="git-body">
+      ${warn ? `<p class="git-note bad">${warn}</p>` : ""}
+      ${d.dupes?.length ? `<p class="git-note">Repetidas en el archivo: <code>${d.dupes.map(esc).join(", ")}</code>. Se muestra el valor que cuenta (el último); al guardar queda una sola.</p>` : ""}
+      <div class="env-list">${rows || '<p class="dim-text">No hay variables. Pulsa «Añadir».</p>'}</div>
+      <p class="dim-text task-help">Los valores van ocultos para que no se vean por encima del hombro. Los comentarios y el orden del
+        archivo se conservan, y la versión anterior se guarda por si acaso. Casi todos los programas leen el .env solo al arrancar:
+        reinicia el servicio para aplicar los cambios.</p>
+    </div>`;
+}
+
+function envMark() {
+  ui.envDirty = true;
+  $("#env-status").innerHTML = '<b class="warn-text">Cambios sin guardar</b>';
+  $('#envpane [data-env="save"]').disabled = false;
+}
+
+async function envClick(id, e) {
+  const act = e.target.closest("[data-env]")?.dataset.env;
+  if (!act) return;
+  const row = e.target.closest(".env-row"), i = row ? +row.dataset.i : -1;
+  if (act === "eye") { ui.envShow.has(i) ? ui.envShow.delete(i) : ui.envShow.add(i); return drawEnv(); }
+  if (act === "toggle") { ui.envShow = ui.envShow.size ? new Set() : new Set(ui.envDraft.map((_, k) => k)); return drawEnv(); }
+  if (act === "add") {
+    ui.envDraft.push({ key: "", value: "" });
+    ui.envShow.add(ui.envDraft.length - 1);  // al escribir un valor nuevo, mejor verlo
+    ui.envDirty = true;
+    drawEnv();
+    return $("#envpane .env-row:last-child .env-key")?.focus();
+  }
+  if (act === "del") {
+    ui.envDraft.splice(i, 1);
+    ui.envShow = new Set([...ui.envShow].filter((k) => k !== i).map((k) => (k > i ? k - 1 : k)));
+    ui.envDirty = true;
+    return drawEnv();
+  }
+  if (act === "restart") {
+    try { await api("POST", `/api/services/${id}/restart`); toast("Reiniciando con las variables nuevas", "ok"); $('[data-tab="console"]')?.click(); }
+    catch (err) { toast(err.message, "error"); }
+    return;
+  }
+  if (act === "save") return saveEnv(id);
+}
+
+async function saveEnv(id, force = false) {
+  const vars = ui.envDraft.filter((v) => v.key.trim() || v.value);  // las filas vacías del todo no cuentan
+  try {
+    const d = await api("PUT", `/api/services/${id}/env?file=${encodeURIComponent(ui.envFile)}`,
+      { vars: vars.map((v) => ({ key: v.key.trim(), value: v.value })), mtime: ui.env.mtime, force });
+    ui.env = d;
+    ui.envDraft = d.vars.map((v) => ({ ...v }));
+    ui.envDirty = false;
+    ui.envShow = new Set();
+    drawEnv(true);
+    toast(`${d.file} guardado`, "ok");
+  } catch (err) {
+    if (err.message.startsWith("El archivo ha cambiado")) {
+      if (await confirmDialog("El archivo ha cambiado", `${ui.envFile} se ha modificado fuera del panel desde que lo abriste. ¿Guardar igualmente y sustituir esos cambios?`, "Guardar igualmente")) {
+        return saveEnv(id, true);
+      }
+      return;
+    }
+    toast(err.message, "error");
+  }
 }
 
 // ───────────────────────── ficha: git ─────────────────────────

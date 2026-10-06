@@ -140,6 +140,23 @@ selector **1 h / 24 h**. Al pasar el ratón (o el dedo) se ve el valor de cada m
   núcleos llenos). En la memoria de un servicio con límite se dibuja el límite como línea roja.
 - Los huecos son ratos en que el servicio estaba parado (o NovaHub apagado).
 
+## Variables (.env)
+
+Pestaña **Variables** en la ficha: el `.env` del proyecto como tabla nombre → valor, con los valores ocultos
+(el ojo muestra cada uno). Se puede elegir otro archivo (`.env.local`, `.env.production`…) y crear el `.env` si
+no existe.
+
+- Conserva comentarios, líneas en blanco y el formato de lo que no cambia; lo nuevo va al final. Pone comillas
+  cuando hace falta (espacios, `#`, comillas…).
+- Guarda la versión anterior (como el editor) y avisa si el archivo cambió desde que lo abriste.
+- Un `.env` nuevo se crea con permisos 600 (solo tu usuario).
+- **Aviso si el archivo iría a GitHub**: si no está en `.gitignore` o ya está en el repositorio.
+- Si una variable está repetida, cuenta la última (como en dotenv y en el shell) y al guardar queda una.
+- Casi todos los programas leen el `.env` al arrancar: tras guardar sale «Reiniciar para aplicar».
+
+Las variables que se ponen en «Editar» del servicio son otra cosa: las pasa NovaHub al arrancarlo y se guardan
+en `data/services.json`.
+
 ## Buscar en los logs
 
 En la consola de cada servicio, el campo **Buscar en todo el log** (o la tecla `/`) busca en el log entero,

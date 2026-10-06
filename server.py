@@ -1354,6 +1354,145 @@ def write_file(sid, svc, rel, data):
     return read_file(svc, rel)
 
 
+# ───────────────────────────── editor de variables (.env) ─────────────────────────────
+
+ENV_FILE_NAME = re.compile(r"\.env(\.[A-Za-z0-9_-]{1,30})?")   # .env, .env.local, .env.production…
+ENV_LINE = re.compile(r"^\s*(export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(.*)$")
+ENV_MAX_VARS = 300
+
+
+def _env_unquote(raw):
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] == "'":
+        return raw[1:-1]
+    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
+        return re.sub(r'\\(["\\n])', lambda m: "\n" if m.group(1) == "n" else m.group(1), raw[1:-1])
+    return re.sub(r"\s+#.*$", "", raw)  # sin comillas: « # …» es un comentario
+
+
+def _env_quote(value):
+    if value == "" or re.fullmatch(r"[A-Za-z0-9_./:@+,%=-]+", value):
+        return value
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+
+
+def env_files(root):
+    try:
+        return sorted(n for n in os.listdir(root) if ENV_FILE_NAME.fullmatch(n) and os.path.isfile(os.path.join(root, n)))
+    except OSError:
+        return []
+
+
+def _env_path(svc, name):
+    name = name or ".env"
+    if not ENV_FILE_NAME.fullmatch(name):
+        raise ApiError(400, "Nombre de archivo no válido: debe ser .env o .env.algo")
+    root = service_root(svc)
+    return root, name, os.path.join(root, name)
+
+
+def _env_git_warning(root, name):
+    """Aviso si el .env iría a GitHub con el siguiente commit (ni ignorado ni ya fuera de git)."""
+    if not os.path.isdir(os.path.join(root, ".git")) and git(root, "rev-parse", "--git-dir").returncode != 0:
+        return None
+    if name.endswith(".example") or name.endswith(".sample"):
+        return None  # las plantillas sí se suben, sin valores reales
+    if git(root, "ls-files", "--error-unmatch", name).returncode == 0:
+        return "tracked"   # ya está en el repositorio: sus valores están (o estarán) en GitHub
+    if git(root, "check-ignore", "-q", name).returncode != 0:
+        return "not-ignored"
+    return None
+
+
+def read_env(svc, name):
+    root, name, full = _env_path(svc, name)
+    out = {"file": name, "files": env_files(root), "exists": os.path.isfile(full), "vars": [], "mtime": None,
+           "git": _env_git_warning(root, name) if os.path.isfile(full) else None}
+    if not out["exists"]:
+        return out
+    if os.path.getsize(full) > FILE_VIEW_MAX:
+        raise ApiError(413, "Este archivo es demasiado grande para un .env")
+    found, dupes = {}, []
+    with open(full, encoding="utf-8", errors="replace") as f:
+        for line in f.read().splitlines():
+            m = ENV_LINE.match(line)
+            if m and not line.lstrip().startswith("#"):
+                if m.group(2) in found:
+                    dupes.append(m.group(2))
+                found[m.group(2)] = _env_unquote(m.group(3))  # repetida: vale la última, como en dotenv y en el shell
+    out["vars"] = [{"key": k, "value": v} for k, v in found.items()]
+    out["dupes"] = sorted(set(dupes))
+    out["mtime"] = os.path.getmtime(full)
+    return out
+
+
+def write_env(sid, svc, name, data):
+    """Guarda las variables conservando comentarios, líneas en blanco, orden y formato de lo que no cambia.
+    Las nuevas van al final; las que ya no están se quitan."""
+    root, name, full = _env_path(svc, name)
+    items = data.get("vars")
+    if not isinstance(items, list) or len(items) > ENV_MAX_VARS:
+        raise ApiError(400, "Lista de variables no válida")
+    wanted = {}
+    for it in items:
+        key = str((it or {}).get("key") or "").strip()
+        value = str((it or {}).get("value") or "")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", key) or len(key) > 120:
+            raise ApiError(400, f"Nombre de variable no válido: «{key[:40]}» (letras, números y _; sin empezar por número)")
+        if key in wanted:
+            raise ApiError(400, f"La variable {key} está repetida")
+        if len(value) > 8000:
+            raise ApiError(400, f"El valor de {key} es demasiado largo")
+        wanted[key] = value
+    exists = os.path.isfile(full)
+    lines, mode, crlf = [], 0o600, False   # un .env nuevo, solo legible por ti: suele llevar claves
+    if exists:
+        expected = data.get("mtime")
+        if expected is not None and not data.get("force") and abs(os.path.getmtime(full) - float(expected)) > 0.001:
+            raise ApiError(409, "El archivo ha cambiado desde que lo abriste (quizá desde otro editor)")
+        with open(full, encoding="utf-8", errors="replace", newline="") as f:
+            text = f.read()
+        crlf = "\r\n" in text
+        lines = text.replace("\r\n", "\n").split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        mode = stat.S_IMODE(os.stat(full).st_mode)
+        backup_file(sid, name, full)
+    out, done = [], set()
+    for line in lines:
+        m = ENV_LINE.match(line)
+        if not m or line.lstrip().startswith("#"):
+            out.append(line)
+            continue
+        key = m.group(2)
+        if key not in wanted or key in done:
+            continue  # borrada (o repetida en el archivo: se queda la primera)
+        done.add(key)
+        if _env_unquote(m.group(3)) == wanted[key]:
+            out.append(line)  # sin cambios: se respeta tal cual estaba escrita
+        else:
+            out.append(f"{m.group(1) or ''}{key}={_env_quote(wanted[key])}")
+    out += [f"{k}={_env_quote(v)}" for k, v in wanted.items() if k not in done]
+    body = "\n".join(out) + "\n"
+    if crlf:
+        body = body.replace("\n", "\r\n")
+    tmp = os.path.join(root, f".{name}.novahub-tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(body)
+        os.chmod(tmp, mode)
+        os.replace(tmp, full)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    MANAGER.log(sid, f"variables guardadas en {name} ({len(wanted)}){'' if exists else ' · archivo nuevo'}")
+    return read_env(svc, name)
+
+
 # ───────────────────────────── git de un servicio ─────────────────────────────
 
 GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}  # sin preguntas: falla en vez de colgarse
@@ -3909,7 +4048,7 @@ JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
                            r"|files|file|file/download|git|git/commit|git/push|git/pull|update|mode"
-                           r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run|logs/search))?")
+                           r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run|logs/search|env))?")
 KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
 
 
@@ -4179,6 +4318,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(read_file(svc, self.query("path")))
         if method == "GET" and action == "file/download":
             return self.download_file(svc, self.query("path"))
+        if action == "env" and method == "GET":
+            return self.send_json(read_env(svc, self.query("file")))
+        if action == "env" and method == "PUT":
+            return self.send_json(write_env(sid, svc, self.query("file"), self.read_body()))
         if action == "tasks" and method == "GET":
             return self.send_json(SCHEDULER.public(sid))
         if action == "tasks" and method == "PUT":

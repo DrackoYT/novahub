@@ -493,6 +493,16 @@ kbd { font: 500 10.5px var(--f-mono); padding: 1px 5px; border-radius: 4px; back
 .git-last { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-weight: 600; }
 .git-out { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--screen); color: var(--screen-ink); font: 12px/1.55 var(--f-mono); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
 
+/* variables (.env) */
+#env-file { height: 32px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--line-hi); background: var(--module); color: var(--ink); font: 600 13px var(--f-mono); }
+.env-list { display: flex; flex-direction: column; gap: 6px; }
+.env-row { display: flex; align-items: center; gap: 6px; }
+.env-row input { height: 34px; padding: 0 10px; border-radius: var(--r-sm); border: 1px solid var(--line-hi); background: var(--sunk); color: var(--ink); font-size: 13px; min-width: 0; }
+.env-key { flex: 0 1 240px; font-weight: 600; }
+.env-val { flex: 1; }
+.env-eq { color: var(--faint); font-family: var(--f-mono); }
+@media (max-width: 640px) { .env-row { flex-wrap: wrap; } .env-key { flex: 1 1 100%; } .env-eq { display: none; } }
+
 /* tareas programadas */
 .task { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 12px; background: var(--module);
   box-shadow: inset 0 1px 0 var(--module-hi), 0 2px 0 var(--edge); }
