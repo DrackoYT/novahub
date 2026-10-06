@@ -33,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import tempfile
 import traceback
 from collections import deque
 from functools import partial
@@ -4303,6 +4304,365 @@ class Remotes:
 REMOTES = Remotes()
 
 
+# ───────────────────────────── copias fuera de casa ─────────────────────────────
+# Las copias locales (novahub-copias) y la configuración de NovaHub (data/) van cifradas con restic a un disco USB o a
+# otro servidor tuyo por SSH (p. ej. por Tailscale). Sin servicios de terceros ni suscripciones. Copia diaria con
+# retención, y una vez al mes se comprueba el repositorio y se restaura de verdad un archivo de prueba.
+
+OFFSITE_FILE = os.path.join(DATA_DIR, "offsite.json")
+OFFSITE_LOG = os.path.join(LOG_DIR, "_fuera-de-casa.log")
+SSH_DIR = os.path.join(DATA_DIR, "ssh")
+SSH_KEY = os.path.join(SSH_DIR, "id_ed25519")
+RESTORE_DIR = os.path.expanduser(os.environ.get("NOVAHUB_RESTORE_DIR", "~/novahub-recuperado"))
+OFFSITE_DEFAULTS = {"enabled": True, "hour": 5, "keep_daily": 7, "keep_weekly": 4, "keep_monthly": 6, "verify_days": 30}
+OFFSITE_EXCLUDE = ("logs", "metrics.json", "update-backups", "builds", "app", "running.json", "update-result.json")
+
+
+def restic_bin():
+    return os.environ.get("NOVAHUB_RESTIC") or shutil.which("restic")
+
+
+class Offsite:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.data = read_json(OFFSITE_FILE, {})
+        self.data.setdefault("destinations", [])
+        self.job = None
+
+    def save(self):
+        with self.lock:
+            write_json(OFFSITE_FILE, self.data, mode=0o600)
+
+    def config(self):
+        return {**OFFSITE_DEFAULTS, **self.data.get("config", {})}
+
+    def dest(self, did):
+        d = next((x for x in self.data["destinations"] if x["id"] == did), None)
+        if not d:
+            raise ApiError(404, "Ese destino no existe")
+        return d
+
+    # ── restic ──
+    @staticmethod
+    def _log(msg):
+        with open(OFFSITE_LOG, "ab") as f:
+            f.write(f"[{datetime.now():%d/%m %H:%M:%S}] {msg}\n".encode())
+
+    @staticmethod
+    def repo(d):
+        if d["type"] == "local":
+            return d["path"]
+        return f"sftp:{d['user']}@{d['host']}:{d['rpath']}"
+
+    @staticmethod
+    def _env(d):
+        return {**os.environ, "RESTIC_PASSWORD": d["password"], "RESTIC_PROGRESS_FPS": "0.2"}
+
+    def _args(self, d):
+        if d["type"] != "sftp":
+            return []
+        ssh = (f"ssh -p {int(d.get('port') or 22)} -i {shlex.quote(SSH_KEY)} -o BatchMode=yes -o ConnectTimeout=20 "
+               f"-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={shlex.quote(os.path.join(SSH_DIR, 'known_hosts'))} "
+               f"{d['user']}@{d['host']} -s sftp")
+        return ["-o", f"sftp.command={ssh}"]
+
+    def restic(self, d, *args, timeout=6 * 3600, log=True, capture=False):
+        rb = restic_bin()
+        if not rb:
+            raise ApiError(400, "restic no está instalado: sudo apt install restic")
+        cmd = [rb, "-r", self.repo(d), *self._args(d), *args]
+        if capture:
+            res = subprocess.run(cmd, env=self._env(d), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        else:
+            with open(OFFSITE_LOG, "ab") as f:
+                if log:
+                    f.write(f"$ restic {' '.join(args)}\n".encode())
+                    f.flush()
+                res = subprocess.run(cmd, env=self._env(d), stdout=f, stderr=subprocess.STDOUT, timeout=timeout, stdin=subprocess.DEVNULL)
+        if res.returncode not in (0, 3):  # 3 = copia hecha pero algún archivo no se pudo leer
+            err = (res.stderr or "").strip().splitlines()[-1:] if capture else []
+            raise RuntimeError(f"restic {args[0]} ha fallado (código {res.returncode}){': ' + err[0] if err else ''}")
+        return res
+
+    def available(self, d):
+        """(sí/no, motivo): un disco USB desconectado no es un error, se espera a la próxima vez."""
+        if d["type"] == "local":
+            if not os.path.isdir(d["path"]):
+                return False, "el disco no está conectado (o la carpeta no existe)"
+            return True, ""
+        return True, ""
+
+    # ── destinos ──
+    def ssh_key(self, create=False):
+        if not os.path.isfile(SSH_KEY + ".pub"):
+            if not create:
+                return None
+            os.makedirs(SSH_DIR, mode=0o700, exist_ok=True)
+            res = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"novahub@{socket.gethostname()}", "-f", SSH_KEY],
+                                 capture_output=True, text=True, timeout=30)
+            if res.returncode != 0:
+                raise ApiError(500, f"No se pudo crear la llave SSH: {res.stderr.strip()}")
+        with open(SSH_KEY + ".pub") as f:
+            return f.read().strip()
+
+    def add(self, data):
+        name = re.sub(r"[\x00-\x1f\x7f]", "", str(data.get("name") or "")).strip()[:40]
+        kind = data.get("type")
+        if not name:
+            raise ApiError(400, "Ponle un nombre al destino (p. ej. «Disco USB» o «Casa de mis padres»)")
+        d = {"id": slugify(name), "name": name, "type": kind, "created": time.time()}
+        while any(x["id"] == d["id"] for x in self.data["destinations"]):
+            d["id"] = f"{slugify(name)[:26]}-{secrets.token_hex(2)}"
+        if kind == "local":
+            path = os.path.realpath(os.path.expanduser(str(data.get("path") or "").strip()))
+            if not str(data.get("path") or "").strip() or path == "/":
+                raise ApiError(400, "Indica la carpeta del disco, p. ej. /media/usb/novahub")
+            for own in (DATA_DIR, SNAPSHOT_DIR):
+                o = os.path.realpath(own)
+                if path == o or path.startswith(o + os.sep):
+                    raise ApiError(400, "El destino no puede estar dentro de lo que se copia (data/ o novahub-copias)")
+            if not os.path.isdir(os.path.dirname(path)):
+                raise ApiError(400, "No existe esa carpeta: conecta el disco y comprueba la ruta")
+            os.makedirs(path, mode=0o700, exist_ok=True)
+            d["path"] = path
+            # en el mismo disco que el sistema o que las copias locales no protege si falla ese disco
+            d["same_disk"] = os.stat(path).st_dev in {os.stat(p).st_dev for p in ("/", DATA_DIR, SNAPSHOT_DIR) if os.path.exists(p)}
+        elif kind == "sftp":
+            user, host, rpath = (str(data.get(k) or "").strip() for k in ("user", "host", "rpath"))
+            if not re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", user):
+                raise ApiError(400, "Usuario SSH no válido")
+            if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}|\[?[0-9a-fA-F:]+\]?", host):
+                raise ApiError(400, "Servidor no válido (nombre o IP, p. ej. 100.64.0.5)")
+            if not re.fullmatch(r"[A-Za-z0-9_./~-]{1,200}", rpath) or ".." in rpath:
+                raise ApiError(400, "Carpeta remota no válida (p. ej. /srv/copias/novahub)")
+            try:
+                port = int(data.get("port") or 22)
+            except (TypeError, ValueError):
+                raise ApiError(400, "Puerto no válido")
+            if not 1 <= port <= 65535:
+                raise ApiError(400, "Puerto no válido")
+            self.ssh_key(create=True)
+            d.update(user=user, host=host, rpath=rpath, port=port)
+        else:
+            raise ApiError(400, "Tipo de destino desconocido")
+        generated = not data.get("password")
+        password = str(data.get("password") or "") or secrets.token_urlsafe(24)
+        if len(password) < 12:
+            raise ApiError(400, "La contraseña de cifrado debe tener al menos 12 caracteres")
+        d["password"] = password
+        # si ya hay un repositorio de restic ahí (otra instalación, o este mismo de antes) se usa; si no, se crea
+        try:
+            self.restic(d, "cat", "config", timeout=120, capture=True)
+            self._log(f"«{name}»: repositorio existente, se usa")
+        except (RuntimeError, subprocess.TimeoutExpired):
+            try:
+                res = self.restic(d, "init", timeout=300, capture=True)
+            except subprocess.TimeoutExpired:
+                raise ApiError(504, "El destino no responde")
+            except RuntimeError as e:
+                raise ApiError(400, f"No se pudo preparar el destino: {e}" + (" (¿has añadido la llave SSH de NovaHub en el otro servidor?)" if kind == "sftp" else ""))
+            self._log(f"«{name}»: repositorio cifrado creado en {self.repo(d)} {res.stdout.strip()[:0]}")
+        with self.lock:
+            self.data["destinations"].append(d)
+            write_json(OFFSITE_FILE, self.data, mode=0o600)
+        return {**self.public(), "password": password if generated else None, "dest": d["id"]}
+
+    def delete(self, did):
+        self.dest(did)
+        with self.lock:
+            self.data["destinations"] = [x for x in self.data["destinations"] if x["id"] != did]
+            write_json(OFFSITE_FILE, self.data, mode=0o600)
+        return self.public()
+
+    def save_config(self, data):
+        cfg = self.config()
+        try:
+            new = {"enabled": bool(data.get("enabled", cfg["enabled"])), "hour": int(data.get("hour", cfg["hour"])),
+                   "keep_daily": int(data.get("keep_daily", cfg["keep_daily"])), "keep_weekly": int(data.get("keep_weekly", cfg["keep_weekly"])),
+                   "keep_monthly": int(data.get("keep_monthly", cfg["keep_monthly"])), "verify_days": cfg["verify_days"]}
+        except (TypeError, ValueError):
+            raise ApiError(400, "Los números no son válidos")
+        if not 0 <= new["hour"] <= 23 or not all(0 <= new[k] <= 400 for k in ("keep_daily", "keep_weekly", "keep_monthly")) \
+                or not (new["keep_daily"] or new["keep_weekly"] or new["keep_monthly"]):
+            raise ApiError(400, "Hora entre 0 y 23 y al menos una copia que conservar")
+        self.data["config"] = new
+        self.save()
+        return self.public()
+
+    def public(self):
+        log_tail = ""
+        try:
+            with open(OFFSITE_LOG, "rb") as f:
+                f.seek(max(0, os.path.getsize(OFFSITE_LOG) - 6000))
+                log_tail = f.read().decode("utf-8", "replace")
+        except OSError:
+            pass
+        rb = restic_bin()
+        version = None
+        if rb:
+            try:
+                version = subprocess.run([rb, "version"], capture_output=True, text=True, timeout=10).stdout.split()[1]
+            except (OSError, IndexError, subprocess.TimeoutExpired):
+                version = "?"
+        dests = []
+        for d in self.data["destinations"]:
+            ok, why = self.available(d)
+            dests.append({k: d.get(k) for k in ("id", "name", "type", "path", "user", "host", "port", "rpath", "created",
+                                                 "last_backup", "last_check", "same_disk")} | {"repo": self.repo(d), "available": ok, "why": why})
+        return {"restic": version, "pubkey": self.ssh_key(), "config": self.config(), "destinations": dests,
+                "job": self.job, "log": log_tail, "restore_dir": RESTORE_DIR,
+                "sources": self.sources()}
+
+    @staticmethod
+    def sources():
+        paths = [os.path.realpath(DATA_DIR)]
+        snap = os.path.realpath(SNAPSHOT_DIR)
+        if os.path.isdir(snap) and not snap.startswith(paths[0] + os.sep):
+            paths.append(snap)
+        return paths
+
+    # ── trabajos ──
+    def _job(self, label, fn):
+        with self.lock:
+            if self.job:
+                raise ApiError(409, f"Ya hay un trabajo en curso ({self.job})")
+            self.job = label
+
+        def go():
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001
+                msg = e.msg if isinstance(e, ApiError) else str(e)
+                self._log(f"✗ {msg}")
+                NOTIFIER.notify("backup", None, f"Ha fallado la copia fuera de casa ({label})", f"{label}: {msg}", key=f"offsite-{label}", level="danger")
+            finally:
+                self.job = None
+        threading.Thread(target=go, name="fuera-de-casa", daemon=True).start()
+        return self.public()
+
+    def run(self, did, verify=False):
+        d = self.dest(did)
+        return self._job(f"Copia a «{d['name']}»", lambda: self._backup(d, verify))
+
+    def check(self, did):
+        d = self.dest(did)
+        return self._job(f"Comprobación de «{d['name']}»", lambda: self._verify(d))
+
+    def _record(self, d, key, ok, msg, **extra):
+        with self.lock:
+            d[key] = {"at": time.time(), "ok": ok, "msg": msg, **extra}
+            write_json(OFFSITE_FILE, self.data, mode=0o600)
+
+    def _backup(self, d, verify=False):
+        ok, why = self.available(d)
+        if not ok:
+            self._log(f"«{d['name']}»: {why}; se intentará en la próxima copia")
+            self._record(d, "last_backup", None, why.capitalize() + ": se intentará en la próxima copia")  # no es un fallo
+            return
+        cfg = self.config()
+        self._log(f"Copia cifrada a «{d['name']}» ({self.repo(d)})…")
+        t0 = time.time()
+        excludes = [a for x in OFFSITE_EXCLUDE for a in ("--exclude", os.path.join(os.path.realpath(DATA_DIR), x))]
+        try:
+            res = self.restic(d, "backup", "--tag", "novahub", "--host", socket.gethostname(), "--json", *excludes, *self.sources(), capture=True)
+            summary = next((json.loads(l) for l in res.stdout.splitlines()[::-1] if '"message_type":"summary"' in l.replace(" ", "")), {})
+            self.restic(d, "forget", "--tag", "novahub", "--prune", "--keep-daily", str(cfg["keep_daily"]),
+                        "--keep-weekly", str(cfg["keep_weekly"]), "--keep-monthly", str(cfg["keep_monthly"]))
+        except Exception as e:  # noqa: BLE001
+            self._record(d, "last_backup", False, str(e))
+            raise
+        added = summary.get("data_added", 0)
+        msg = (f"Copia {summary.get('snapshot_id', '')[:8]}: {summary.get('files_new', 0)} archivos nuevos, "
+               f"{summary.get('files_changed', 0)} cambiados, {added / 2**20:.1f} MB enviados en {time.time() - t0:.0f} s")
+        self._log(f"✓ «{d['name']}»: {msg}")
+        self._record(d, "last_backup", True, msg, size=summary.get("total_bytes_processed"), added=added)
+        last = (d.get("last_check") or {}).get("at") or 0
+        if verify or time.time() - last > cfg["verify_days"] * 86400:
+            self._verify(d)
+
+    def _verify(self, d):
+        """Comprueba el repositorio (una parte de los datos, al azar) y restaura de verdad un archivo de prueba."""
+        ok, why = self.available(d)
+        if not ok:
+            self._record(d, "last_check", False, why.capitalize())
+            return
+        self._log(f"Comprobando «{d['name']}»: integridad y prueba de restauración…")
+        try:
+            self.restic(d, "check", "--read-data-subset=5%")
+            probe = os.path.join(os.path.realpath(DATA_DIR), "services.json")
+            tmp = tempfile.mkdtemp(prefix="novahub-prueba-")
+            try:
+                self.restic(d, "restore", "latest", "--tag", "novahub", "--target", tmp, "--include", probe)
+                got = os.path.join(tmp, probe.lstrip("/"))
+                with open(got, encoding="utf-8") as f:
+                    restored = json.load(f)
+                if not isinstance(restored, list):
+                    raise RuntimeError("el archivo restaurado no es el esperado")
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+        except Exception as e:  # noqa: BLE001
+            self._record(d, "last_check", False, f"Falla la comprobación: {e}")
+            raise
+        msg = f"Repositorio correcto y restauración de prueba bien ({len(restored)} servicios en la copia)"
+        self._log(f"✓ «{d['name']}»: {msg}")
+        self._record(d, "last_check", True, msg)
+
+    def snapshots(self, did):
+        d = self.dest(did)
+        ok, why = self.available(d)
+        if not ok:
+            raise ApiError(400, why.capitalize())
+        try:
+            res = self.restic(d, "snapshots", "--tag", "novahub", "--json", timeout=120, capture=True)
+            items = json.loads(res.stdout or "[]")
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
+            raise ApiError(502, f"No se pudieron leer las copias: {e}")
+        out = [{"id": s.get("short_id") or s.get("id", "")[:8], "time": s.get("time"), "host": s.get("hostname"),
+                "size": (s.get("summary") or {}).get("total_bytes_processed"),
+                "files": (s.get("summary") or {}).get("total_files_processed")} for s in items]
+        return {"snapshots": sorted(out, key=lambda s: s["time"] or "", reverse=True)}
+
+    def restore(self, did, snap):
+        d = self.dest(did)
+        if not re.fullmatch(r"[0-9a-f]{8,64}|latest", str(snap or "")):
+            raise ApiError(400, "Copia no válida")
+        target = os.path.join(RESTORE_DIR, f"{datetime.now():%Y%m%d-%H%M%S}-{snap[:8]}")
+
+        def fn():
+            os.makedirs(target, mode=0o700, exist_ok=True)
+            self._log(f"Recuperando la copia {snap} de «{d['name']}» en {target} (no se toca nada de lo actual)…")
+            self.restic(d, "restore", snap, "--target", target)
+            self._log(f"✓ Recuperada en {target}. Dentro están data/ (configuración de NovaHub) y las copias locales de cada servicio.")
+        return {**self._job(f"Recuperar de «{d['name']}»", fn), "target": target}
+
+    def loop(self):
+        while True:
+            time.sleep(60)
+            SUPERVISOR.beat("fuera-de-casa")
+            try:
+                cfg, now = self.config(), datetime.now()
+                if not cfg["enabled"] or now.hour != cfg["hour"] or self.job:
+                    continue
+                today = now.strftime("%Y-%m-%d")
+                for d in list(self.data["destinations"]):
+                    if self.data.get("ran", {}).get(d["id"]) == today:
+                        continue
+                    self.data.setdefault("ran", {})[d["id"]] = today
+                    self.save()
+                    self.job = f"Copia a «{d['name']}»"
+                    try:
+                        self._backup(d)
+                    except Exception as e:  # noqa: BLE001
+                        NOTIFIER.notify("backup", None, f"Ha fallado la copia fuera de casa a «{d['name']}»", str(e), key=f"offsite-{d['id']}", level="danger")
+                    finally:
+                        self.job = None
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+
+
+OFFSITE = Offsite()
+
+
 # ───────────────────────────── centro de actualizaciones ─────────────────────────────
 # NovaHub (versiones de GitHub o canal de desarrollo), el sistema (apt), el reinicio pendiente, las imágenes de los
 # contenedores, los servicios con git y las dependencias de cada proyecto. Se comprueba solo cada pocas horas;
@@ -5086,6 +5446,7 @@ SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|i
                            r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run|logs/search|env))?")
 KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
 USER_ROUTE = re.compile(r"/api/users/([a-z0-9][a-z0-9._-]{1,31})")
+OFFSITE_ROUTE = re.compile(r"/api/offsite/destinations/([a-z0-9][a-z0-9-]{0,40})(?:/(run|check|snapshots|restore))?")
 REMOTE_ROUTE = re.compile(r"/api/remote/([a-z0-9][a-z0-9-]{0,31})/(.+)")
 SERVER_ROUTE = re.compile(r"/api/servers/([a-z0-9][a-z0-9-]{0,31})")
 TOKEN_ROUTE = re.compile(r"/api/tokens/([0-9a-f]{12})")
@@ -5380,6 +5741,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(git_identity())
             if method == "PUT":
                 return self.send_json(set_git_identity(self.read_body()))
+            raise ApiError(405, "Método no permitido")
+        if path == "/api/offsite":
+            if method == "GET":
+                return self.send_json(OFFSITE.public())
+            if method == "PUT":
+                return self.send_json(OFFSITE.save_config(self.read_body()))
+            raise ApiError(405, "Método no permitido")
+        if path == "/api/offsite/destinations" and method == "POST":
+            return self.send_json(OFFSITE.add(self.read_body()), 201)
+        if path == "/api/offsite/key" and method == "POST":
+            return self.send_json({"pubkey": OFFSITE.ssh_key(create=True)})
+        m = OFFSITE_ROUTE.fullmatch(path)
+        if m:
+            did, act = m.groups()
+            if act is None and method == "DELETE":
+                return self.send_json(OFFSITE.delete(did))
+            if act == "run" and method == "POST":
+                return self.send_json(OFFSITE.run(did, verify=bool(self.read_body().get("verify"))), 202)
+            if act == "check" and method == "POST":
+                return self.send_json(OFFSITE.check(did), 202)
+            if act == "snapshots" and method == "GET":
+                return self.send_json(OFFSITE.snapshots(did))
+            if act == "restore" and method == "POST":
+                return self.send_json(OFFSITE.restore(did, self.read_body().get("snapshot")), 202)
             raise ApiError(405, "Método no permitido")
         if path == "/api/updates":
             if method == "GET":
@@ -5828,6 +6213,7 @@ def main():
     SUPERVISOR.spawn("graficas", METRICS.loop)
     SUPERVISOR.spawn("tareas", SCHEDULER.loop)
     SUPERVISOR.spawn("actualizaciones", UPDATES.loop)
+    SUPERVISOR.spawn("fuera-de-casa", OFFSITE.loop)
     write_json(RUNNING_FILE, {"version": VERSION, "commit": current_commit(), "pid": os.getpid(), "at": time.time()})
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)

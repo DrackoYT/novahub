@@ -622,6 +622,17 @@ body.remote-mode .srv-btn { background: var(--nova); color: #fff; border-color: 
 .upd-banner .grow { flex: 1; }
 .set-body .upd-card + .upd-card, .set-body .upd-card { margin-top: 12px; }
 
+/* copias fuera de casa */
+.upd-card > header h3 { display: flex; align-items: center; gap: 8px; }
+.upd-card > header h3 svg { width: 18px; height: 18px; color: var(--nova-text); }
+.off-repo { font-size: 12.5px; overflow-wrap: anywhere; }
+.off-form { display: flex; flex-direction: column; gap: 14px; }
+.off-key code { display: block; margin: 8px 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--module); color: var(--ink); font: 12px var(--f-mono); word-break: break-all; }
+.off-cfg { display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.off-cfg .upd-hour { margin: 0 4px; }
+.upd-actions .grow { flex: 1; }
+.off-snaps { margin-top: 4px; }
+
 /* ajustes */
 .user-list { display: flex; flex-direction: column; gap: 6px; }
 .user-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--sunk); }

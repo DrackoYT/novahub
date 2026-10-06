@@ -1359,6 +1359,7 @@ async function openGithub() {
 const SETTINGS = [
   ["cuenta", "Mi cuenta", "Tu contraseña", ICON.user, null],
   ["actualizaciones", "Actualizaciones", "NovaHub, sistema y servicios", ICON.download, "admin"],
+  ["fuera", "Copias fuera de casa", "Cifradas, en un USB u otro servidor", ICON.archive, "admin"],
   ["usuarios", "Usuarios", "Quién entra y qué puede hacer", ICON.users, "admin"],
   ["servidores", "Servidores", "Otros servidores en este panel", ICON.server, "admin"],
   ["remoto", "Acceso remoto", "Llaves para otros paneles", ICON.key, "admin"],
@@ -1382,7 +1383,7 @@ function viewSettings(cat) {
       <section class="module set-body" id="set-body"><div class="pane-msg">Cargando…</div></section>
     </div>`;
   $(".set-nav a.active").scrollIntoView({ block: "nearest", inline: "center" });  // en el móvil la lista se desliza
-  ({ cuenta: setAccount, actualizaciones: setUpdates, usuarios: setUsers, servidores: setServers, remoto: setTokens, avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, git: setGit, app: setApp })[cat]($("#set-body"));
+  ({ cuenta: setAccount, actualizaciones: setUpdates, fuera: setOffsite, usuarios: setUsers, servidores: setServers, remoto: setTokens, avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, git: setGit, app: setApp })[cat]($("#set-body"));
 }
 
 // Pie con «Guardar» y el error, común a todas las categorías
@@ -1492,6 +1493,130 @@ async function setGit(body) {
     </div>`, async (f) => {
     await api("PUT", "/api/git-identity", { name: f.name.value.trim(), email: f.email.value.trim() });
   });
+}
+
+async function setOffsite(body) {
+  let shown = null;  // contraseña generada que se enseña una sola vez
+  const draw = (o) => {
+    const busy = !!o.job, c = o.config;
+    const st = (r) => !r ? '<span class="dim-text">todavía no</span>'
+      : `<span class="${r.ok ? "ok-text" : r.ok === false ? "bad-text" : "dim-text"}">${r.ok ? "✓" : r.ok === false ? "✗" : "·"}</span> ${esc(r.msg)} <span class="dim-text">· ${fmtAgo(r.at)}</span>`;
+    const dest = (d) => `
+      <section class="upd-card" data-dest="${esc(d.id)}">
+        <header><h3>${d.type === "local" ? ICON.archive : ICON.server}${esc(d.name)}</h3>
+          <span class="${d.available ? "ok-text" : "dim-text"}">${d.available ? "disponible" : esc(d.why)}</span></header>
+        <p class="dim-text mono off-repo">${esc(d.repo)}</p>
+        ${d.same_disk ? '<p class="git-note">Está en el mismo disco que el servidor o que las copias locales: si ese disco falla, también se pierde. Usa un disco aparte.</p>' : ""}
+        <dl class="readout"><div><dt>Última copia</dt><dd>${st(d.last_backup)}</dd></div><div><dt>Última comprobación</dt><dd>${st(d.last_check)}</dd></div></dl>
+        <div class="upd-actions">
+          <button type="button" class="btn sm primary" data-off="run" ${busy || !o.restic ? "disabled" : ""}>Copiar ahora</button>
+          <button type="button" class="btn sm" data-off="check" ${busy || !o.restic ? "disabled" : ""}>Comprobar</button>
+          <button type="button" class="btn sm" data-off="list" ${!o.restic ? "disabled" : ""}>Ver copias</button>
+          <span class="grow"></span>
+          <button type="button" class="btn sm icon ghost" data-off="del" title="Quitar destino" aria-label="Quitar destino">${ICON.trash}</button>
+        </div>
+        <div class="off-snaps" hidden></div>
+      </section>`;
+    body.innerHTML = `
+      <h2 class="set-title">Copias fuera de casa</h2>
+      <p class="set-sub">Las copias de tus servicios y la configuración de NovaHub, <b>cifradas</b>, en un disco USB o en otro servidor tuyo
+        (por SSH, p. ej. por Tailscale). Sin servicios de terceros ni suscripciones. Si el servidor se estropea o se pierde, desde ahí
+        se recupera todo.</p>
+      ${o.restic ? "" : `<div class="git-note"><b>Falta restic</b> (libre, se instala con apt): <pre class="upd-cmd">sudo apt install restic</pre></div>`}
+      ${shown ? `<div class="nt-ok tok-show"><b>Contraseña de cifrado de «${esc(shown.name)}». Guárdala ahora fuera del servidor (gestor de contraseñas o papel):
+        sin ella no se pueden recuperar las copias si este servidor muere.</b><code id="off-pass">${esc(shown.password)}</code>
+        <button type="button" class="btn sm" data-off="copy">Copiar</button></div>` : ""}
+      ${busy ? `<p class="nt-ok upd-busy">En curso: ${esc(o.job)}…</p>` : ""}
+      ${o.destinations.map(dest).join("") || '<p class="dim-text">Aún no hay destinos.</p>'}
+      <details class="adv" ${o.destinations.length ? "" : "open"}><summary>Añadir destino</summary><div class="inner">
+        <form id="off-form" novalidate class="off-form">
+          <div class="field"><span>Tipo</span><div class="kind-pick">
+            <label><input type="radio" name="type" value="local" checked><span><strong>Disco USB o externo</strong><small>Una carpeta en un disco conectado al servidor</small></span></label>
+            <label><input type="radio" name="type" value="sftp"><span><strong>Otro servidor</strong><small>Por SSH: el de un familiar, una Raspberry…</small></span></label>
+          </div></div>
+          <label class="field"><span>Nombre</span><input name="name" placeholder="Disco USB"></label>
+          <label class="field" data-off-kind="local"><span>Carpeta en el disco</span><input name="path" class="mono" spellcheck="false" placeholder="/media/usb/novahub-copias">
+            <small>Si el disco no está conectado a la hora de la copia, se espera a la siguiente sin dar error.</small></label>
+          <div data-off-kind="sftp" class="kind-block" hidden>
+            <div class="set-grid"><label class="field"><span>Usuario</span><input name="user" class="mono" placeholder="copias"></label>
+              <label class="field"><span>Servidor</span><input name="host" class="mono" placeholder="100.64.0.5 (IP de Tailscale)"></label></div>
+            <div class="set-grid"><label class="field"><span>Carpeta allí</span><input name="rpath" class="mono" placeholder="/srv/copias/novahub"></label>
+              <label class="field"><span>Puerto SSH</span><input name="port" inputmode="numeric" placeholder="22"></label></div>
+            <div class="git-note off-key">En el otro servidor, añade esta llave de NovaHub a <code>~/.ssh/authorized_keys</code> del usuario (mejor uno solo para copias):
+              ${o.pubkey ? `<code id="off-key">${esc(o.pubkey)}</code><button type="button" class="btn sm" data-off="copykey">Copiar llave</button>`
+                : '<button type="button" class="btn sm" data-off="mkkey">Crear la llave de NovaHub</button>'}</div>
+          </div>
+          <label class="field"><span>Contraseña de cifrado</span><input name="password" type="password" autocomplete="new-password" placeholder="vacía = se genera una segura">
+            <small>Si el destino ya tiene copias de NovaHub (p. ej. tras reinstalar), pon su contraseña y se usan.</small></label>
+          <div class="form-error" id="off-error"></div>
+          <button type="submit" class="btn primary" ${!o.restic || busy ? "disabled" : ""}>Añadir destino</button>
+        </form></div></details>
+      <h3 class="set-h">Cuándo y cuántas</h3>
+      <div class="off-cfg">
+        <label class="chk-line"><input type="checkbox" id="off-enabled" ${c.enabled ? "checked" : ""}> Copia cada día a las <input id="off-hour" class="upd-hour" inputmode="numeric" value="${c.hour}">:00</label>
+        <span>Conservar <input id="off-d" class="upd-hour" value="${c.keep_daily}"> diarias, <input id="off-w" class="upd-hour" value="${c.keep_weekly}"> semanales
+          y <input id="off-m" class="upd-hour" value="${c.keep_monthly}"> mensuales</span>
+      </div>
+      <p class="dim-text upd-help">Se copian ${o.sources.map((x) => `<code>${esc(x)}</code>`).join(" y ")}. Cada ${c.verify_days} días se comprueba el destino y se restaura
+        de verdad un archivo para confirmar que la copia sirve. «Recuperar» saca una copia completa a <code>${esc(o.restore_dir)}</code> sin tocar nada de lo actual.</p>
+      ${o.log ? `<details class="adv" ${busy ? "open" : ""}><summary>Registro</summary><pre class="upd-log" id="off-log">${esc(o.log)}</pre></details>` : ""}`;
+    const f = $("#off-form", body);
+    const sync = () => f.querySelectorAll("[data-off-kind]").forEach((el) => { el.hidden = el.dataset.offKind !== f.type.value; });
+    f.addEventListener("change", (e) => { if (e.target.name === "type") sync(); });
+    sync();
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const v = Object.fromEntries(new FormData(f));
+      try {
+        const r = await api("POST", "/api/offsite/destinations", v);
+        shown = r.password ? { name: v.name, password: r.password } : null;
+        draw(r); toast("Destino añadido", "ok");
+      } catch (err) { $("#off-error", body).textContent = err.message; }
+    });
+    const log = $("#off-log", body); if (log) log.scrollTop = log.scrollHeight;
+    ui.offBusy = busy;
+  };
+  const load = async () => { try { draw(await api("GET", "/api/offsite")); } catch (e) { body.innerHTML = `<div class="pane-msg bad-text">${esc(e.message)}</div>`; } };
+  body.onchange = async (e) => {
+    if (!["off-enabled", "off-hour", "off-d", "off-w", "off-m"].includes(e.target.id)) return;
+    try {
+      draw(await api("PUT", "/api/offsite", { enabled: $("#off-enabled", body).checked, hour: $("#off-hour", body).value,
+        keep_daily: $("#off-d", body).value, keep_weekly: $("#off-w", body).value, keep_monthly: $("#off-m", body).value }));
+      toast("Guardado", "ok");
+    } catch (err) { toast(err.message, "error"); }
+  };
+  body.onclick = async (e) => {
+    const b = e.target.closest("[data-off]");
+    if (!b) return;
+    const act = b.dataset.off, card = b.closest("[data-dest]"), id = card?.dataset.dest;
+    const copy = (sel, what) => navigator.clipboard?.writeText($(sel, body).textContent).then(() => toast(`${what} copiada`, "ok"), () => {});
+    try {
+      if (act === "copy") copy("#off-pass", "Contraseña");
+      else if (act === "copykey") copy("#off-key", "Llave");
+      else if (act === "mkkey") { await api("POST", "/api/offsite/key"); await load(); }
+      else if (act === "run") draw(await api("POST", `/api/offsite/destinations/${id}/run`, {}));
+      else if (act === "check") draw(await api("POST", `/api/offsite/destinations/${id}/check`, {}));
+      else if (act === "del") {
+        if (!(await confirmDialog("Quitar destino", "NovaHub dejará de copiar ahí. Las copias que ya hay en el destino no se borran.", "Quitar"))) return;
+        shown = null; draw(await api("DELETE", `/api/offsite/destinations/${id}`));
+      } else if (act === "list") {
+        const box = $(".off-snaps", card);
+        box.hidden = !box.hidden;
+        if (box.hidden) return;
+        box.innerHTML = '<p class="dim-text">Leyendo las copias…</p>';
+        const { snapshots } = await api("GET", `/api/offsite/destinations/${id}/snapshots`);
+        box.innerHTML = snapshots.length ? `<ul class="upd-rows">${snapshots.map((s) => `<li><span><b>${esc(new Date(s.time).toLocaleString("es-ES"))}</b>
+          <small class="mono">${esc(s.id)}${s.size ? ` · ${fmtBytes(s.size)}` : ""}${s.files ? ` · ${s.files} archivos` : ""}</small></span>
+          <button type="button" class="btn sm" data-off="restore" data-snap="${esc(s.id)}">Recuperar</button></li>`).join("")}</ul>` : '<p class="dim-text">Aún no hay copias.</p>';
+      } else if (act === "restore") {
+        if (!(await confirmDialog("Recuperar copia", "Se sacará esta copia completa a una carpeta aparte, sin tocar nada de lo actual. Desde ahí puedes recuperar lo que necesites.", "Recuperar"))) return;
+        const r = await api("POST", `/api/offsite/destinations/${id}/restore`, { snapshot: b.dataset.snap });
+        draw(r); toast(`Recuperando en ${r.target}`, "ok");
+      }
+    } catch (err) { toast(err.message, "error"); }
+  };
+  await load();
+  every(3000, () => { if (ui.offBusy && $("#set-body") === body) load(); });
 }
 
 async function setUpdates(body) {

@@ -6,6 +6,11 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- **Copias fuera de casa** (Ajustes → Copias fuera de casa): copias cifradas con restic de las copias locales y de la
+  configuración de NovaHub a un disco USB o a otro servidor por SSH, sin servicios de terceros. Copia diaria incremental
+  con retención, comprobación mensual con restauración real de un archivo, lista de copias y recuperación a una carpeta
+  aparte. Si el disco USB no está conectado, se espera a la siguiente copia.
+
 ## 1.0.1 — 2026-10-06
 
 - **Centro de actualizaciones** (Ajustes → Actualizaciones): NovaHub (versiones de GitHub o canal de desarrollo, con
