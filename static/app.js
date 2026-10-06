@@ -307,6 +307,7 @@ async function refreshSystem() {
     ui.publishDomain = s.publish_domain;
     ui.user = s.user;
     ui.host = s.hostname;
+    if (ui.server === "local" && ui.localHost !== s.hostname) { ui.localHost = s.hostname; drawServerPicker(); }
     const chip = $("#host-chip");
     if (chip) chip.textContent = `${ui.me?.username || s.user}@${s.hostname}`;
     drawKpis();
@@ -493,23 +494,23 @@ function drawServerCards() {
 }
 
 function serverName() {
-  return ui.server === "local" ? "Este servidor" : ui.servers.find((s) => s.id === ui.server)?.name || ui.server;
+  return ui.server === "local" ? ui.localHost || "Este servidor" : ui.servers.find((s) => s.id === ui.server)?.name || ui.server;
 }
 
 function drawServerPicker() {
   const el = $("#srv-pick");
   if (!el) return;
-  el.hidden = !ui.servers?.length;
+  el.hidden = !can("admin");  // siempre visible para administradores: así se descubre que se pueden añadir servidores
   document.body.classList.toggle("remote-mode", ui.server !== "local");
   if (el.hidden) return;
   const dot = (s) => `<span class="srv-dot ${s.status?.online === false ? "off" : "on"}"></span>`;
   el.innerHTML = `
     <button type="button" class="btn srv-btn" data-srv="menu" aria-haspopup="true">${ICON.server}<span>${esc(serverName())}</span></button>
     <div class="srv-menu module" hidden>
-      <button type="button" data-srv="local" class="${ui.server === "local" ? "active" : ""}"><span class="srv-dot on"></span>Este servidor</button>
+      <button type="button" data-srv="local" class="${ui.server === "local" ? "active" : ""}"><span class="srv-dot on"></span>Este servidor${ui.localHost ? ` <span class="dim-text">· ${esc(ui.localHost)}</span>` : ""}</button>
       ${ui.servers.map((s) => `<button type="button" data-srv="${esc(s.id)}" class="${ui.server === s.id ? "active" : ""}" ${s.status?.online === false ? 'title="Sin conexión"' : ""}>
         ${dot(s)}${esc(s.name)}</button>`).join("")}
-      <a href="#/ajustes/servidores">Gestionar servidores…</a>
+      <a href="#/ajustes/servidores">${ui.servers.length ? "Gestionar servidores…" : `${ICON.plus}Añadir otro servidor…`}</a>
     </div>`;
 }
 

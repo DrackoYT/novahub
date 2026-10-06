@@ -549,6 +549,7 @@ body:not(.p-edit) [data-perm="edit"], body:not(.p-admin) [data-perm="admin"] { d
 /* varios servidores */
 .srv-pick { position: relative; }
 .srv-pick:not([hidden]) ~ .host-chip { display: none; }  /* el selector ya dice en qué servidor estás */
+.srv-menu a svg { width: 15px; height: 15px; }
 .srv-btn span { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .srv-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 220px; padding: 6px; display: flex; flex-direction: column; gap: 2px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, .18), inset 0 1px 0 var(--module-hi); }
