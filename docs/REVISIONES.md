@@ -5,11 +5,11 @@ Sirve para que cada revisión nueva cubra solo lo que ha cambiado desde la anter
 
 ## Cómo saber qué hay que revisar
 
-**Revisado hasta el commit: `aae4582`** (versión **1.0**, etiqueta `v1.0`) (se actualiza al cerrar cada revisión; editar este documento
+**Revisado hasta el commit: `2f6dcee`** (versión **1.0**, la primera pública, etiqueta `v1.0`) (se actualiza al cerrar cada revisión; editar este documento
 por otros motivos no cambia este valor). Para ver lo que ha cambiado desde entonces:
 
 ```bash
-BASE=aae4582
+BASE=2f6dcee
 git diff --stat "$BASE"..HEAD        # qué archivos han cambiado
 git diff "$BASE"..HEAD -- server.py  # el detalle de un archivo
 ```
@@ -161,7 +161,6 @@ a comprobarlas.
   ese servidor. Se revoca desde allí.
 - **Los contenedores aceptan opciones de podman arbitrarias** («Opciones de podman»), como el comando de un
   programa: solo los administradores pueden ponerlas. Sin root, no dan acceso de root al servidor.
-- **El correo del autor está en el historial de git** (44 commits). Al hacer público el repositorio será visible.
 - **Clonar repositorios o usar plantillas ejecuta sus scripts de instalación** (`npm ci` y
   similares). Solo se clonan repositorios propios.
 
@@ -180,6 +179,13 @@ y se revisó el historial completo de git en busca de llaves, contraseñas, IPs 
 | 2 | Los números del estado de otros servidores se pasaban tal cual | Bajo | Se fuerzan a número; el nombre de máquina se recorta y la interfaz lo escapa |
 
 También se quitaron del README el dominio y la carpeta personal.
+
+**Antes de publicarlo** (`aae4582..2f6dcee`) se revisaron también:
+- La app de Android (`android/`): solo abre `http(s)` dentro de la WebView (ni `intent://` ni otras apps), sin acceso a
+  archivos, tráfico solo cifrado; la firma vive fuera del repositorio. `GET /api/app/android` exige sesión.
+- El historial de git se reescribió con la dirección privada de GitHub del autor: ya no aparece ningún correo personal.
+- Valores por defecto genéricos (copias, carpeta de proyectos, `novahub.service`) y la página oculta de mejoras solo
+  existe si hay una lista guardada.
 
 ### Revisión 4 (incremental, 2026-10-06)
 
