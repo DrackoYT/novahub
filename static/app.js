@@ -27,6 +27,7 @@ const ICON = {
   upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9M7 14l5-5 5 5M5 3h14"/></svg>',
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/></svg>',
   moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>',
 };
@@ -1429,6 +1430,7 @@ function viewDetail(id) {
             <button type="button" role="tab" class="tab" data-tab="files" aria-selected="false">${ICON.folder}Archivos</button>
             <button type="button" role="tab" class="tab" data-tab="git" aria-selected="false">${ICON.git}Git<span class="count" id="git-count" hidden></span></button>
             <button type="button" role="tab" class="tab" data-tab="backups" aria-selected="false">${ICON.archive}Copias</button>
+            <button type="button" role="tab" class="tab" data-tab="tasks" aria-selected="false">${ICON.clock}Tareas</button>
           </div>
           <div class="term-tools" data-for="console">
             <label class="chk" title="Auto-scroll"><input type="checkbox" id="autoscroll" checked><span>Auto-scroll</span></label>
@@ -1448,6 +1450,7 @@ function viewDetail(id) {
         <div class="pane" data-pane="files" id="files" hidden></div>
         <div class="pane" data-pane="git" id="git" hidden></div>
         <div class="pane" data-pane="backups" id="backups" hidden></div>
+        <div class="pane" data-pane="tasks" id="tasks" hidden></div>
       </section>
       <aside class="side" id="d-info"></aside>
     </div>`;
@@ -1485,6 +1488,7 @@ function setupTabs(id) {
       if (tab === "files") loadFiles(id, "");
       if (tab === "git") loadGit(id);
       if (tab === "backups") loadBackups(id);
+      if (tab === "tasks") loadTasks(id);
     }
   });
   $("#files").addEventListener("click", async (e) => {
@@ -1504,6 +1508,10 @@ function setupTabs(id) {
     if (b) backupAction(id, b.dataset.bk, b.dataset.name);
   });
   $("#backups").addEventListener("submit", (e) => { e.preventDefault(); saveBackupConfig(id, e.target); });
+  $("#tasks").addEventListener("click", (e) => taskEdit(id, e));
+  $("#tasks").addEventListener("input", (e) => taskField(id, e));
+  $("#tasks").addEventListener("change", (e) => taskField(id, e));
+  every(5000, () => refreshTaskStatus(id));
   $("#git").addEventListener("click", (e) => {
     const act = e.target.closest("[data-git]")?.dataset.git;
     if (act) gitAction(id, act);
@@ -1890,6 +1898,126 @@ async function saveBackupConfig(id, form) {
     drawBackups(id, b);
     toast("Ajustes de copias guardados", "ok");
   } catch (e) { toast(e.message, "error"); }
+}
+
+// ───────────────────────── ficha: tareas programadas ─────────────────────────
+
+const TASK_DAYS = ["L", "M", "X", "J", "V", "S", "D"];   // 0 = lunes, como en el servidor
+const TASK_DAY_NAMES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"];
+
+async function loadTasks(id) {
+  const pane = $("#tasks");
+  if (!pane.innerHTML) pane.innerHTML = `<div class="pane-msg">Cargando…</div>`;
+  try {
+    const d = await api("GET", `/api/services/${id}/tasks`);
+    ui.taskActions = d.actions;
+    ui.taskDraft = d.tasks.map((t) => ({ ...t }));
+    ui.taskDirty = false;
+    drawTasksPane(id, d);
+  } catch (e) {
+    pane.innerHTML = `<div class="pane-msg bad-text">${esc(e.message)}</div>`;
+  }
+}
+
+// Refresco del estado (última vez, próxima, en curso) sin pisar lo que se está editando
+async function refreshTaskStatus(id) {
+  if (!$("#tasks") || $("#tasks").hidden || ui.taskDirty) return;
+  const d = await api("GET", `/api/services/${id}/tasks`).catch(() => null);
+  if (!d || ui.taskDirty || $("#tasks").contains(document.activeElement)) return;
+  ui.taskDraft = d.tasks.map((t) => ({ ...t }));
+  drawTasksPane(id, d);
+}
+
+const daysText = (days) => days.length === 7 ? "todos los días"
+  : days.join() === "0,1,2,3,4" ? "de lunes a viernes"
+  : days.join() === "5,6" ? "fines de semana"
+  : days.map((d) => TASK_DAY_NAMES[d]).join(", ");
+
+function drawTasksPane() {
+  const pane = $("#tasks");
+  const acts = ui.taskActions || {};
+  const rows = ui.taskDraft.map((t, i) => {
+    const last = t.last && t.last.ok !== null && t.last.ok !== undefined
+      ? `<span class="${t.last.ok ? "ok-text" : "bad-text"}">${esc(t.last.msg)}</span> · ${fmtAgo(t.last.at)}` : "Aún no se ha ejecutado";
+    const next = t.enabled && t.next ? `Próxima: ${new Date(t.next * 1000).toLocaleString("es-ES", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : "Desactivada";
+    return `
+    <div class="task" data-i="${i}">
+      <div class="task-main">
+        <label class="switch" title="Activar o desactivar"><input type="checkbox" data-f="enabled" ${t.enabled ? "checked" : ""}><span></span></label>
+        <select data-f="action" aria-label="Acción">${Object.entries(acts).map(([k, v]) => `<option value="${k}" ${t.action === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>
+        <span class="task-at">a las <input data-f="at" value="${esc(t.at)}" inputmode="numeric" maxlength="5" aria-label="Hora (HH:MM)"></span>
+        <div class="task-days" role="group" aria-label="Días">${TASK_DAYS.map((d, k) =>
+          `<button type="button" class="day ${t.days.includes(k) ? "on" : ""}" data-day="${k}" aria-pressed="${t.days.includes(k)}" title="${TASK_DAY_NAMES[k]}">${d}</button>`).join("")}</div>
+        <span class="grow"></span>
+        <button type="button" class="btn sm" data-tk="run" ${t.id && !t.busy ? "" : "disabled"} title="${t.id ? "Ejecutarla ahora para probarla" : "Guarda primero"}">${t.busy ? "En marcha…" : "Probar"}</button>
+        <button type="button" class="btn sm icon ghost" data-tk="del" title="Borrar tarea" aria-label="Borrar tarea">${ICON.trash}</button>
+      </div>
+      ${t.action === "input" || t.action === "command" ? `<input class="mono task-text" data-f="text" value="${esc(t.text)}" spellcheck="false"
+        placeholder="${t.action === "input" ? "texto para la consola, p. ej. say Reinicio en 5 minutos" : "comando, p. ej. ./limpiar.sh"}">` : ""}
+      <p class="task-meta">${esc(acts[t.action] || "")} ${esc(daysText(t.days))} a las ${esc(t.at)} · ${last} · ${next}</p>
+    </div>`;
+  }).join("");
+  pane.innerHTML = `
+    <div class="pane-bar">
+      <span class="bk-status">${ui.taskDirty ? '<b class="warn-text">Cambios sin guardar</b>' : `${ui.taskDraft.length} tarea${ui.taskDraft.length === 1 ? "" : "s"}`}</span>
+      <span class="grow"></span>
+      <button type="button" class="btn sm" data-tk="add">${ICON.plus}Añadir tarea</button>
+      <button type="button" class="btn sm primary" data-tk="save" ${ui.taskDirty ? "" : "disabled"}>Guardar</button>
+    </div>
+    <div class="git-body">
+      ${rows || `<p class="dim-text">No hay tareas. Ejemplos: reiniciar cada noche a las 05:00, o encenderlo a las 09:00 y apagarlo a las 23:00
+        de lunes a viernes para que solo funcione en ese horario.</p>`}
+      <p class="dim-text task-help">Se ejecutan a su hora aunque no tengas el panel abierto, y lo que pasa queda en la consola.
+        Los comandos se ejecutan en la carpeta del servicio y se cortan a los 10 minutos. Las copias de seguridad tienen su propio horario en «Copias».</p>
+    </div>`;
+}
+
+function taskEdit(id, e) {
+  const row = e.target.closest(".task");
+  const t = row && ui.taskDraft[+row.dataset.i];
+  const act = e.target.closest("[data-tk]")?.dataset.tk;
+  if (act === "add") {
+    ui.taskDraft.push({ id: "", action: "restart", at: "05:00", days: [0, 1, 2, 3, 4, 5, 6], text: "", enabled: true });
+  } else if (act === "del" && t) {
+    ui.taskDraft.splice(+row.dataset.i, 1);
+  } else if (act === "save") {
+    return saveTasks(id);
+  } else if (act === "run" && t) {
+    return api("POST", `/api/services/${id}/tasks/run`, { id: t.id })
+      .then((d) => { ui.taskDraft = d.tasks.map((x) => ({ ...x })); drawTasksPane(id); toast("Tarea lanzada: el resultado sale en la consola", "ok"); })
+      .catch((err) => toast(err.message, "error"));
+  } else if (e.target.closest("[data-day]") && t) {
+    const k = +e.target.closest("[data-day]").dataset.day;
+    t.days = t.days.includes(k) ? t.days.filter((d) => d !== k) : [...t.days, k].sort();
+  } else {
+    return;
+  }
+  ui.taskDirty = true;
+  drawTasksPane(id);
+}
+
+function taskField(id, e) {
+  const row = e.target.closest(".task");
+  const f = e.target.dataset.f;
+  if (!row || !f) return;
+  const t = ui.taskDraft[+row.dataset.i];
+  t[f] = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+  ui.taskDirty = true;
+  // solo al cambiar la acción se redibuja (aparece o desaparece el campo de texto); en el resto no,
+  // porque redibujar al salir de un campo le quitaría el foco al siguiente que se ha pulsado
+  if (e.type === "change" && f === "action") return drawTasksPane(id);
+  $("#tasks .bk-status").innerHTML = '<b class="warn-text">Cambios sin guardar</b>';  // al escribir no se redibuja (perdería el foco)
+  $("#tasks [data-tk=save]").disabled = false;
+}
+
+async function saveTasks(id) {
+  try {
+    const d = await api("PUT", `/api/services/${id}/tasks`, { tasks: ui.taskDraft });
+    ui.taskDraft = d.tasks.map((t) => ({ ...t }));
+    ui.taskDirty = false;
+    drawTasksPane(id);
+    toast("Tareas guardadas", "ok");
+  } catch (err) { toast(err.message, "error"); }
 }
 
 // ───────────────────────── ficha: git ─────────────────────────

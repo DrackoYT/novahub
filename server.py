@@ -2031,6 +2031,7 @@ NOTIFY_EVENTS = {
     "update": "Falla una actualización desde GitHub",
     "novahub": "NovaHub se reinicia tras un fallo o tiene un problema interno",
     "backup": "Falla una copia de seguridad o una restauración",
+    "task": "Falla una tarea programada",
 }
 NOTIFY_COOLDOWN = 600   # como mucho un correo por servicio y tipo de aviso cada 10 min
 NOTIFY_MAX_HOUR = 30    # y nunca más de 30 por hora en total
@@ -3319,6 +3320,192 @@ class Backups:
 BACKUPS = Backups()
 
 
+# ───────────────────────────── tareas programadas ─────────────────────────────
+
+TASK_ACTIONS = {"start": "Encender", "stop": "Apagar", "restart": "Reiniciar", "input": "Escribir en la consola",
+                "command": "Ejecutar un comando"}
+TASK_MAX = 20                # tareas por servicio
+TASK_GRACE = 180             # si NovaHub iba con retraso, una tarea se lanza hasta 3 min tarde (nunca dos veces)
+TASK_COMMAND_TIMEOUT = 600   # un comando programado se corta a los 10 min
+
+
+class Scheduler:
+    """Tareas a una hora fija y ciertos días de la semana, por servicio: encender, apagar, reiniciar,
+    escribir en su consola o ejecutar un comando en su carpeta. Lo que pasó queda en la consola del servicio."""
+
+    def __init__(self):
+        self.running = set()   # (servicio, tarea) en curso
+
+    # ── configuración ──
+    @staticmethod
+    def normalize(raw):
+        if not isinstance(raw, list):
+            raise ApiError(400, "Se esperaba una lista de tareas")
+        if len(raw) > TASK_MAX:
+            raise ApiError(400, f"Como mucho {TASK_MAX} tareas por servicio")
+        out, seen = [], set()
+        for t in raw:
+            if not isinstance(t, dict):
+                raise ApiError(400, "Tarea inválida")
+            action = t.get("action")
+            if action not in TASK_ACTIONS:
+                raise ApiError(400, "Acción desconocida")
+            at = str(t.get("at") or "").strip()
+            if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", at):
+                raise ApiError(400, "La hora debe tener el formato HH:MM (p. ej. 04:30)")
+            days = sorted({int(d) for d in (t.get("days") or []) if str(d).isdigit() and 0 <= int(d) <= 6})
+            if not days:
+                raise ApiError(400, "Elige al menos un día")
+            text = str(t.get("text") or "")
+            if action in ("input", "command"):
+                if not text.strip() or "\n" in text or len(text) > 2000:
+                    raise ApiError(400, "Escribe el texto o comando (una sola línea)")
+            else:
+                text = ""
+            tid = str(t.get("id") or "")
+            if not re.fullmatch(r"[0-9a-f]{8}", tid) or tid in seen:
+                tid = secrets.token_hex(4)
+            seen.add(tid)
+            out.append({"id": tid, "action": action, "at": at, "days": days, "text": text,
+                        "enabled": bool(t.get("enabled", True))})
+        return out
+
+    def save(self, sid, raw):
+        tasks = self.normalize(raw)
+        with MANAGER.lock:
+            MANAGER.services[sid]["tasks"] = tasks
+            st = MANAGER.st(sid)
+            ids = {t["id"] for t in tasks}
+            st["tasks"] = {k: v for k, v in (st.get("tasks") or {}).items() if k in ids}  # olvida las borradas
+            MANAGER.save_services()
+            MANAGER.save_state()
+        return self.public(sid)
+
+    @staticmethod
+    def next_time(task, now=None):
+        """Próxima vez que toca (timestamp), mirando hasta una semana adelante."""
+        now = now or datetime.now()
+        h, m = map(int, task["at"].split(":"))
+        for add in range(8):
+            day = (now + timedelta(days=add)).replace(hour=h, minute=m, second=0, microsecond=0)
+            if day.weekday() in task["days"] and day > now:
+                return day.timestamp()
+        return None
+
+    def public(self, sid):
+        svc, st = MANAGER.services[sid], MANAGER.state.get(sid) or {}
+        last = st.get("tasks") or {}
+        return {"tasks": [{**t, "next": self.next_time(t) if t["enabled"] else None, "last": last.get(t["id"]),
+                           "busy": (sid, t["id"]) in self.running} for t in svc.get("tasks") or []],
+                "actions": TASK_ACTIONS}
+
+    def run_now(self, sid, tid):
+        """«Probar ahora» desde la interfaz: lanza la tarea en el momento, sin esperar a su hora."""
+        task = next((dict(t) for t in MANAGER.services[sid].get("tasks") or [] if t["id"] == tid), None)
+        if not task:
+            raise ApiError(404, "Esa tarea no existe (¿has guardado los cambios?)")
+        with MANAGER.lock:
+            if (sid, tid) in self.running:
+                raise ApiError(409, "Esa tarea ya está en marcha")
+            self.running.add((sid, tid))
+        threading.Thread(target=self.run, args=(sid, task, "manual"), name="tarea", daemon=True).start()
+        return self.public(sid)
+
+    # ── ejecución ──
+    def loop(self):
+        while True:
+            time.sleep(15)
+            SUPERVISOR.beat("tareas")
+            try:
+                self.tick(datetime.now())
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+
+    def tick(self, now):
+        with MANAGER.lock:
+            todo = [(sid, dict(t)) for sid, s in MANAGER.services.items() for t in s.get("tasks") or [] if t.get("enabled")]
+        for sid, t in todo:
+            h, m = map(int, t["at"].split(":"))
+            when = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            key = when.strftime("%Y-%m-%d %H:%M")
+            if when.weekday() not in t["days"] or not 0 <= (now - when).total_seconds() < TASK_GRACE:
+                continue
+            with MANAGER.lock:
+                st = MANAGER.st(sid)
+                done = st.setdefault("tasks", {})
+                if (done.get(t["id"]) or {}).get("key") == key or (sid, t["id"]) in self.running:
+                    continue
+                done[t["id"]] = {"key": key, "at": time.time(), "ok": None, "msg": "en curso"}
+                MANAGER.save_state()
+                self.running.add((sid, t["id"]))
+            threading.Thread(target=self.run, args=(sid, t, key), name="tarea", daemon=True).start()
+
+    def run(self, sid, t, key):
+        label = TASK_ACTIONS[t["action"]].lower()
+        MANAGER.log(sid, f"\x1b[35mtarea programada ({t['at']}): {label}"
+                         + (f" \x1b[2m{t['text']}\x1b[0m" if t["text"] else "") + "\x1b[0m")
+        ok, msg = True, "Hecho"
+        try:
+            msg = self.do(sid, t)
+        except Exception as e:  # noqa: BLE001
+            ok, msg = False, e.msg if isinstance(e, ApiError) else str(e)
+            MANAGER.log(sid, f"\x1b[31mla tarea programada ha fallado: {msg}\x1b[0m")
+            name = MANAGER.services.get(sid, {}).get("name", sid)
+            NOTIFIER.notify("task", sid, f"Ha fallado una tarea programada de {name}",
+                            f"La tarea «{label}» de las {t['at']} de «{name}» ha fallado: {msg}", log=True)
+        finally:
+            with MANAGER.lock:
+                st = MANAGER.st(sid)
+                done = st.setdefault("tasks", {})
+                if key == "manual":  # «Probar» no cuenta como la ejecución programada de hoy
+                    key = (done.get(t["id"]) or {}).get("key")
+                done[t["id"]] = {"key": key, "at": time.time(), "ok": ok, "msg": msg}
+                MANAGER.save_state()
+                self.running.discard((sid, t["id"]))
+
+    @staticmethod
+    def do(sid, t):
+        action = t["action"]
+        if action == "start":
+            if MANAGER.running(sid):
+                return "Ya estaba encendido"
+            MANAGER.start(sid)
+            return "Encendido"
+        if action == "stop":
+            if not MANAGER.running(sid) and not (MANAGER.state.get(sid) or {}).get("restart_at"):
+                return "Ya estaba apagado"
+            MANAGER.stop(sid)
+            return "Apagado"
+        if action == "restart":
+            if MANAGER.running(sid):
+                MANAGER.restart(sid)
+                return "Reiniciado"
+            MANAGER.start(sid)
+            return "Estaba apagado: encendido"
+        if action == "input":
+            MANAGER.send_input(sid, t["text"])
+            return "Enviado a la consola"
+        # command: en la carpeta del servicio, con sus variables, salida a su consola y límite de tiempo
+        svc = MANAGER.services[sid]
+        env = {**os.environ, **(svc.get("env") or {})}
+        with open(log_path(sid), "ab") as logf:
+            proc = subprocess.Popen(["bash", "-lc", t["text"]], cwd=service_root(svc), stdout=logf,
+                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env, start_new_session=True)
+            try:
+                code = proc.wait(timeout=TASK_COMMAND_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+                raise RuntimeError(f"el comando seguía tras {TASK_COMMAND_TIMEOUT // 60} min y se ha cortado")
+        if code != 0:
+            raise RuntimeError(f"el comando ha terminado con código {code}")
+        MANAGER.log(sid, "\x1b[32mcomando programado terminado\x1b[0m")
+        return "Comando terminado (código 0)"
+
+
+SCHEDULER = Scheduler()
+
+
 # ───────────────────────────── plantillas de servicio ─────────────────────────────
 
 def _has_venv():
@@ -3676,7 +3863,7 @@ JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
                            r"|files|file|file/download|git|git/commit|git/push|git/pull|update|mode"
-                           r"|backups|backups/run|backups/restore|backups/delete|backups/download))?")
+                           r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run))?")
 KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
 
 
@@ -3943,6 +4130,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(read_file(svc, self.query("path")))
         if method == "GET" and action == "file/download":
             return self.download_file(svc, self.query("path"))
+        if action == "tasks" and method == "GET":
+            return self.send_json(SCHEDULER.public(sid))
+        if action == "tasks" and method == "PUT":
+            return self.send_json(SCHEDULER.save(sid, self.read_body().get("tasks")))
+        if action == "tasks/run" and method == "POST":
+            return self.send_json(SCHEDULER.run_now(sid, str(self.read_body().get("id") or "")), 202)
         if action == "backups" and method == "GET":
             return self.send_json(BACKUPS.public(sid))
         if action == "backups" and method == "PUT":
@@ -4171,6 +4364,7 @@ def main():
     SUPERVISOR.spawn("vigilancia", MANAGER.monitor)
     SUPERVISOR.spawn("copias", BACKUPS.loop)
     SUPERVISOR.spawn("graficas", METRICS.loop)
+    SUPERVISOR.spawn("tareas", SCHEDULER.loop)
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
