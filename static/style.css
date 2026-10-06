@@ -490,6 +490,37 @@ kbd { font: 500 10.5px var(--f-mono); padding: 1px 5px; border-radius: 4px; back
 .git-last { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-weight: 600; }
 .git-out { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--screen); color: var(--screen-ink); font: 12px/1.55 var(--f-mono); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
 
+/* ajustes */
+.btn.icon.active { background: var(--ink); color: var(--module); box-shadow: none; }
+.settings { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 18px; align-items: start; }
+.set-nav { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 84px; }
+.set-nav a { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--r-sm); color: var(--soft); }
+.set-nav a svg { width: 18px; height: 18px; flex: none; }
+.set-nav a span { display: flex; flex-direction: column; min-width: 0; }
+.set-nav a b { color: var(--ink); font-weight: 700; font-size: 14.5px; }
+.set-nav a small { font-size: 12.5px; }
+.set-nav a:hover { background: var(--nova-soft); }
+.set-nav a.active { background: var(--module); box-shadow: inset 0 1px 0 var(--module-hi), 0 2px 0 var(--edge); color: var(--nova-text); }
+.set-body { padding: 22px 24px; }
+.set-body form { display: flex; flex-direction: column; gap: 14px; }
+.set-title { margin: 0; font-size: 21px; font-weight: 800; letter-spacing: -.01em; }
+.set-sub { margin: -6px 0 2px; color: var(--soft); line-height: 1.55; }
+.set-sub a { color: var(--nova-text); font-weight: 600; }
+.set-h { margin: 8px 0 0; font: 500 11px/1.4 var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--soft); }
+.set-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.set-grid.git-id { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }  /* el correo es más largo que el nombre */
+.checks.one { grid-template-columns: 1fr; }
+.set-foot .grow { flex: 1; }
+.set-foot { display: flex; align-items: center; gap: 10px; padding-top: 14px; margin-top: 4px; border-top: 1px solid var(--line); }
+@media (max-width: 860px) {
+  .settings { grid-template-columns: 1fr; }
+  .set-nav { position: static; flex-direction: row; overflow-x: auto; scrollbar-width: none; gap: 6px; }
+  .set-nav a { flex: none; padding: 8px 12px; }
+  .set-nav a small { display: none; }
+  .set-grid, .set-grid.git-id { grid-template-columns: 1fr; }
+  .set-body { padding: 18px 16px; }
+}
+
 /* variables (.env) */
 #env-file { height: 32px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--line-hi); background: var(--module); color: var(--ink); font: 600 13px var(--f-mono); }
 .env-list { display: flex; flex-direction: column; gap: 6px; }

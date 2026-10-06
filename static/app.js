@@ -26,6 +26,9 @@ const ICON = {
   git: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 8.5v7M18 10.5c0 4-6 3-11 6"/></svg>',
   upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9M7 14l5-5 5 5M5 3h14"/></svg>',
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
   key: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 8.7-8.7M17 6l2.5 2.5M14.5 8.5 17 11"/></svg>',
   eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
@@ -268,7 +271,7 @@ function shell() {
       <div class="top-actions">
         <span class="lcd host-chip" id="host-chip"></span>
         <button class="btn primary" data-act="new">${ICON.plus}<span>Nuevo servicio</span></button>
-        <button class="btn icon" data-act="settings" title="Ajustes: avisos, vigilancia y sesión" aria-label="Ajustes">${ICON.settings}</button>
+        <a class="btn icon" href="#/ajustes" data-nav="settings" title="Ajustes" aria-label="Ajustes">${ICON.settings}</a>
         <button class="btn icon" data-act="theme" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema">${currentTheme() === "dark" ? ICON.sun : ICON.moon}</button>
         <button class="btn icon" data-act="poweroff" title="Apagar el servidor" aria-label="Apagar el servidor">${ICON.power}</button>
         <button class="btn icon ghost" data-act="logout" title="Cerrar sesión" aria-label="Cerrar sesión">${ICON.logout}</button>
@@ -1235,110 +1238,153 @@ async function openGithub() {
   });
 }
 
-// Ajustes → avisos por correo (Gmail con contraseña de aplicación).
-async function openSettings() {
-  const dlg = modal(`
-    <form id="nt-form" novalidate>
-      <header><h2>Ajustes</h2><button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
-      <div class="body" id="nt-body"><div class="pane-msg">Cargando…</div></div>
-      <footer>
-        <button type="button" class="btn ghost" data-close>Cancelar</button>
-        <button type="button" class="btn" id="nt-test">Enviar correo de prueba</button>
-        <button type="submit" class="btn primary" id="nt-save">Guardar</button>
-      </footer>
-    </form>`);
-  const body = $("#nt-body", dlg);
-  let sess = { lock_on_reload: true, idle_minutes: 15, max_hours: 12 };
-  let gid = { name: "", email: "" };
-  const draw = (n) => {
-    const status = n.last_error ? `<p class="git-note bad">Último error: ${esc(n.last_error)}</p>`
-      : n.last_sent ? `<p class="nt-ok">Último correo enviado ${fmtAgo(n.last_sent)}.</p>`
-      : n.configured ? `<p class="nt-ok">Configurado. Pulsa «Enviar correo de prueba» para comprobarlo.</p>` : "";
-    body.innerHTML = `
-      <p>NovaHub te escribirá cuando algo vaya mal. Como mucho un correo por servicio y tipo de aviso cada 10 minutos.</p>
-      ${status}
-      <div class="form-error" id="nt-error"></div>
-      <label class="field"><span>Tu Gmail</span><input id="nt-user" type="email" autocomplete="off" placeholder="tu.cuenta@gmail.com" value="${esc(n.user)}"></label>
-      <label class="field"><span>Contraseña de aplicación</span>
-        <input id="nt-pass" type="password" autocomplete="new-password" spellcheck="false" placeholder="${n.configured ? "guardada · déjala vacía para mantenerla" : "16 letras"}">
-        <small>No es tu contraseña de Google: créala en <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>
-          (hace falta tener activada la verificación en dos pasos). Se guarda en el servidor y no se vuelve a mostrar.</small></label>
-      <label class="field"><span>Enviar a</span><input id="nt-to" autocomplete="off" placeholder="${esc(n.user || "el mismo Gmail")}" value="${esc(n.to)}">
+// ───────────────────────── vista: ajustes ─────────────────────────
+// Página propia (#/ajustes/<categoría>): lista de categorías a la izquierda y la elegida a la derecha.
+// Cada categoría se guarda por separado.
+
+const SETTINGS = [
+  ["avisos", "Avisos por correo", "Gmail y qué avisar", ICON.mail],
+  ["vigilante", "Vigilante externo", "Si el servidor cae del todo", ICON.activity],
+  ["sesion", "Sesión", "Contraseña e inactividad", ICON.lock],
+  ["git", "Git", "Autor de los commits", ICON.git],
+  ["app", "App para el móvil", "Instalar NovaHub", ICON.phone],
+];
+
+function viewSettings(cat) {
+  if (!SETTINGS.some(([k]) => k === cat)) cat = "avisos";
+  $("#main").innerHTML = `
+    <section class="page-head"><div><h1 class="page-title">Ajustes</h1><p class="page-sub">Cada apartado se guarda por separado</p></div></section>
+    <div class="settings">
+      <nav class="set-nav" aria-label="Categorías de ajustes">
+        ${SETTINGS.map(([k, label, sub, icon]) => `<a href="#/ajustes/${k}" class="${k === cat ? "active" : ""}" ${k === cat ? 'aria-current="page"' : ""}>
+          ${icon}<span><b>${label}</b><small>${sub}</small></span></a>`).join("")}
+      </nav>
+      <section class="module set-body" id="set-body"><div class="pane-msg">Cargando…</div></section>
+    </div>`;
+  $(".set-nav a.active").scrollIntoView({ block: "nearest", inline: "center" });  // en el móvil la lista se desliza
+  ({ avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, git: setGit, app: setApp })[cat]($("#set-body"));
+}
+
+// Pie con «Guardar» y el error, común a todas las categorías
+const setFoot = (extra = "") => `<div class="form-error" id="set-error"></div>
+  <footer class="set-foot">${extra}<span class="grow"></span><button type="submit" class="btn primary" id="set-save">Guardar</button></footer>`;
+
+function setForm(body, html, save, extra) {
+  body.innerHTML = `<form id="set-form" novalidate>${html}${setFoot(extra)}</form>`;
+  const form = $("#set-form", body);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("#set-error", body).textContent = "";
+    const btn = $("#set-save", body);
+    btn.disabled = true;
+    try { await save(form); toast("Guardado", "ok"); } catch (err) { $("#set-error", body).textContent = err.message; }
+    btn.disabled = false;
+  });
+  return form;
+}
+
+async function setNotify(body) {
+  const n = await api("GET", "/api/notify");
+  const status = n.last_error ? `<p class="git-note bad">Último error: ${esc(n.last_error)}</p>`
+    : n.last_sent ? `<p class="nt-ok">Último correo enviado ${fmtAgo(n.last_sent)}.</p>`
+    : n.configured ? '<p class="nt-ok">Configurado. Pulsa «Enviar correo de prueba» para comprobarlo.</p>' : "";
+  const form = setForm(body, `
+    <h2 class="set-title">Avisos por correo</h2>
+    <p class="set-sub">NovaHub te escribe cuando algo va mal. Como mucho un correo por servicio y tipo de aviso cada 10 minutos.</p>
+    ${status}
+    <h3 class="set-h">Cuenta de Gmail</h3>
+    <div class="set-grid">
+      <label class="field"><span>Tu Gmail</span><input name="user" type="email" autocomplete="off" placeholder="tu.cuenta@gmail.com" value="${esc(n.user)}"></label>
+      <label class="field"><span>Enviar a</span><input name="to" autocomplete="off" placeholder="${esc(n.user || "el mismo Gmail")}" value="${esc(n.to)}">
         <small>Opcional. Varias direcciones separadas por comas.</small></label>
-      <p class="label">Avisarme cuando…</p>
-      <div class="checks">${n.events.map((e) => `
-        <label><input type="checkbox" data-event="${e.key}" ${e.on ? "checked" : ""}><span><strong>${esc(e.label)}</strong></span></label>`).join("")}
-      </div>
-      <p class="label">Vigilante externo</p>
-      <label class="field"><span>Dirección de ping (healthchecks.io)</span>
-        <input id="nt-hb" class="mono" spellcheck="false" autocomplete="off" placeholder="https://hc-ping.com/…" value="${esc(n.heartbeat_url)}">
-        <small>NovaHub manda una señal de vida cada minuto mientras todo funciona. Si deja de llegar (corte de luz,
-          sin internet, servidor colgado), <a href="https://healthchecks.io" target="_blank" rel="noopener">healthchecks.io</a> te avisa.
-          Configura allí el check con periodo de 1 minuto y 3 de gracia.</small></label>
-      ${n.heartbeat_error ? `<p class="git-note bad">Señal de vida: ${esc(n.heartbeat_error)}</p>`
-        : n.heartbeat_last ? `<p class="nt-ok">Última señal de vida ${fmtAgo(n.heartbeat_last)}.</p>` : ""}
-      <p class="label">Sesión</p>
-      <div class="checks"><label><input type="checkbox" id="ss-reload" ${sess.lock_on_reload ? "checked" : ""}>
-        <span><strong>Pedir la contraseña al recargar la página</strong><small>También al abrir el panel en una pestaña nueva.</small></span></label></div>
-      <div class="row2">
-        <label class="field"><span>Cerrar sesión tras… sin usarlo (min)</span><input id="ss-idle" inputmode="numeric" value="${sess.idle_minutes}">
-          <small>Sin clics ni teclas en el panel. Las actualizaciones automáticas de la pantalla no cuentan.</small></label>
-        <label class="field"><span>Máximo (horas)</span><input id="ss-max" inputmode="numeric" value="${sess.max_hours}"></label>
-      </div>
-      <p class="label">Git</p>
-      <p>Con este nombre y correo se firman los commits que hagas desde el panel (pestaña Git de cada servicio).</p>
-      <div class="row2">
-        <label class="field"><span>Nombre</span><input id="gi-name" autocomplete="off" spellcheck="false" placeholder="tu usuario de GitHub" value="${esc(gid.name)}"></label>
-        <label class="field"><span>Correo</span><input id="gi-email" type="email" autocomplete="off" spellcheck="false" placeholder="el de tu cuenta de GitHub" value="${esc(gid.email)}"></label>
-      </div>
-      <p class="label">App para el móvil</p>
-      ${appInstallHTML()}`;
-  };
-  const values = () => {
+    </div>
+    <label class="field"><span>Contraseña de aplicación</span>
+      <input name="app_password" type="password" autocomplete="new-password" spellcheck="false" placeholder="${n.configured ? "guardada · déjala vacía para mantenerla" : "16 letras"}">
+      <small>No es tu contraseña de Google: créala en <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>
+        (hace falta la verificación en dos pasos). Se guarda en el servidor y no se vuelve a mostrar.</small></label>
+    <h3 class="set-h">Avisarme cuando…</h3>
+    <div class="checks">${n.events.map((e) => `
+      <label><input type="checkbox" data-event="${esc(e.key)}" ${e.on ? "checked" : ""}><span><strong>${esc(e.label)}</strong></span></label>`).join("")}
+    </div>`, async (f) => {
     const events = {};
-    body.querySelectorAll("[data-event]").forEach((c) => { events[c.dataset.event] = c.checked; });
-    return { user: $("#nt-user", dlg).value.trim(), app_password: $("#nt-pass", dlg).value, to: $("#nt-to", dlg).value.trim(), events,
-      heartbeat_url: $("#nt-hb", dlg).value.trim() };
-  };
+    f.querySelectorAll("[data-event]").forEach((c) => { events[c.dataset.event] = c.checked; });
+    await api("PUT", "/api/notify", { user: f.user.value.trim(), to: f.to.value.trim(), app_password: f.app_password.value, events });
+    setNotify(body);
+  }, '<button type="button" class="btn" id="set-test">Enviar correo de prueba</button>');
+  $("#set-test", body).addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try {
+      form.requestSubmit();
+      await new Promise((r) => setTimeout(r, 600));  // primero se guarda lo escrito
+      await api("POST", "/api/notify/test");
+      toast("Correo de prueba enviado: mira tu bandeja de entrada", "ok");
+      setNotify(body);
+    } catch (err) { const el = $("#set-error", body); if (el) el.textContent = err.message; }
+    e.target.disabled = false;
+  });
+}
+
+async function setHeartbeat(body) {
+  const n = await api("GET", "/api/notify");
+  setForm(body, `
+    <h2 class="set-title">Vigilante externo</h2>
+    <p class="set-sub">NovaHub manda una señal de vida cada minuto mientras todo funciona. Si deja de llegar (corte de luz, sin internet,
+      servidor colgado), <a href="https://healthchecks.io" target="_blank" rel="noopener">healthchecks.io</a> te avisa: es lo único que avisa
+      cuando el propio servidor no puede hacerlo.</p>
+    ${n.heartbeat_error ? `<p class="git-note bad">Señal de vida: ${esc(n.heartbeat_error)}</p>`
+      : n.heartbeat_last ? `<p class="nt-ok">Última señal de vida ${fmtAgo(n.heartbeat_last)}.</p>` : ""}
+    <label class="field"><span>Dirección de ping</span>
+      <input name="hb" class="mono" spellcheck="false" autocomplete="off" placeholder="https://hc-ping.com/…" value="${esc(n.heartbeat_url)}">
+      <small>Configura allí el check con periodo de 1 minuto y 3 de gracia. Vacío = desactivado.</small></label>`, async (f) => {
+    await api("PUT", "/api/notify", { heartbeat_url: f.hb.value.trim() });
+    setTimeout(() => setHeartbeat(body), 1500);  // el primer ping sale enseguida
+  });
+}
+
+async function setSession(body) {
+  const s = await api("GET", "/api/session-settings");
+  setForm(body, `
+    <h2 class="set-title">Sesión</h2>
+    <p class="set-sub">Cuándo vuelve a pedir la contraseña. Antes del panel está además tu cuenta de Google (Cloudflare Access).</p>
+    <div class="checks one"><label><input type="checkbox" name="reload" ${s.lock_on_reload ? "checked" : ""}>
+      <span><strong>Pedir la contraseña al recargar la página</strong><small>También al abrir el panel en una pestaña nueva o abrir la app del móvil.</small></span></label></div>
+    <div class="set-grid">
+      <label class="field"><span>Cerrar tras… sin usarlo (minutos)</span><input name="idle" inputmode="numeric" value="${s.idle_minutes}">
+        <small>Sin clics ni teclas en el panel. Las actualizaciones automáticas de la pantalla no cuentan.</small></label>
+      <label class="field"><span>Duración máxima (horas)</span><input name="max" inputmode="numeric" value="${s.max_hours}">
+        <small>Aunque lo estés usando, pasado este tiempo vuelve a pedirla.</small></label>
+    </div>`, async (f) => {
+    await api("PUT", "/api/session-settings", { lock_on_reload: f.reload.checked, idle_minutes: f.idle.value.trim(), max_hours: f.max.value.trim() });
+  });
+}
+
+async function setGit(body) {
+  const g = await api("GET", "/api/git-identity");
+  setForm(body, `
+    <h2 class="set-title">Git</h2>
+    <p class="set-sub">Con este nombre y correo se firman los commits que hagas desde el panel (pestaña Git de cada servicio).
+      Es la configuración global de git del servidor.</p>
+    <div class="set-grid git-id">
+      <label class="field"><span>Nombre</span><input name="name" autocomplete="off" spellcheck="false" placeholder="tu usuario de GitHub" value="${esc(g.name)}"></label>
+      <label class="field"><span>Correo</span><input name="email" type="email" autocomplete="off" spellcheck="false" placeholder="el de tu cuenta de GitHub" value="${esc(g.email)}">
+        <small>Usa el de tu cuenta de GitHub para que los commits aparezcan como tuyos.</small></label>
+    </div>`, async (f) => {
+    await api("PUT", "/api/git-identity", { name: f.name.value.trim(), email: f.email.value.trim() });
+  });
+}
+
+function setApp(body) {
+  body.innerHTML = `
+    <h2 class="set-title">App para el móvil</h2>
+    <p class="set-sub">NovaHub se instala como app: icono en la pantalla de inicio y se abre a pantalla completa, sin la barra del navegador.
+      Sigue pasando por el túnel, con tu cuenta de Google y la contraseña.</p>
+    ${appInstallHTML()}`;
   body.addEventListener("click", async (e) => {
     if (!e.target.closest("#app-install") || !ui.installPrompt) return;
     ui.installPrompt.prompt();
     const { outcome } = await ui.installPrompt.userChoice;
-    if (outcome === "accepted") { ui.installPrompt = null; toast("NovaHub instalada: ábrela desde la pantalla de inicio", "ok"); dlg.close(); }
+    if (outcome === "accepted") { ui.installPrompt = null; toast("NovaHub instalada: ábrela desde la pantalla de inicio", "ok"); setApp(body); }
   });
-  const busy = (on) => dlg.querySelectorAll("footer .btn").forEach((b) => { b.disabled = on; });
-  const save = async () => {
-    $("#nt-error", dlg).textContent = "";
-    const gname = $("#gi-name", dlg).value.trim(), gemail = $("#gi-email", dlg).value.trim();
-    if ((gname || gemail) && (gname !== gid.name || gemail !== gid.email)) gid = await api("PUT", "/api/git-identity", { name: gname, email: gemail });
-    sess = await api("PUT", "/api/session-settings", {
-      lock_on_reload: $("#ss-reload", dlg).checked, idle_minutes: $("#ss-idle", dlg).value.trim(), max_hours: $("#ss-max", dlg).value.trim(),
-    });
-    return api("PUT", "/api/notify", values());
-  };
-  $("#nt-form", dlg).addEventListener("submit", async (e) => {
-    e.preventDefault();
-    busy(true);
-    try { await save(); dlg.close(); toast("Ajustes guardados", "ok"); }
-    catch (err) { $("#nt-error", dlg).textContent = err.message; busy(false); }
-  });
-  $("#nt-test", dlg).addEventListener("click", async () => {
-    busy(true);
-    try {
-      draw(await save());
-      draw(await api("POST", "/api/notify/test"));
-      toast("Correo de prueba enviado: mira tu bandeja de entrada", "ok");
-    } catch (err) {
-      const el = $("#nt-error", dlg);
-      if (el) el.textContent = err.message;
-    }
-    busy(false);
-  });
-  try {
-    [sess, gid] = await Promise.all([api("GET", "/api/session-settings"), api("GET", "/api/git-identity")]);
-    draw(await api("GET", "/api/notify"));
-  }
-  catch (err) { body.innerHTML = `<div class="pane-msg bad-text">${esc(err.message)}</div>`; }
 }
 
 // ───────────────────────── app para el móvil (PWA) ─────────────────────────
@@ -1410,7 +1456,6 @@ document.addEventListener("click", async (e) => {
   else if (act === "new") openNew();
   else if (act === "poweroff") powerOff();
   else if (act === "theme") toggleTheme();
-  else if (act === "settings") openSettings();
   else if (act === "logout") {
     await api("POST", "/api/logout").catch(() => {});
     ui.unlocked = false;
@@ -2763,6 +2808,7 @@ function route() {
   else if (hash === "#/servicios") { viewList(); section = "services"; }
   else if (hash === "#/procesos") { viewTasks(); section = "tasks"; }
   else if (hash === "#/red") { viewNetwork(); section = "network"; }
+  else if (hash.startsWith("#/ajustes")) { viewSettings(hash.split("/")[2]); section = "settings"; }
   else if (hash === "#/mejoras") { viewRoadmap(); section = "roadmap"; }
   else viewOverview();
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
