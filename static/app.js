@@ -1429,7 +1429,7 @@ function viewDetail(id) {
       <section class="term module" id="term">
         <div class="term-bar">
           <div class="tabs" role="tablist" aria-label="Vistas del servicio">
-            <button type="button" role="tab" class="tab term-title" id="live" data-tab="console" aria-selected="true">Consola <span class="live">en directo</span></button>
+            <button type="button" role="tab" class="tab term-title" id="live" data-tab="console" aria-selected="true">Consola</button>
             <button type="button" role="tab" class="tab" data-tab="files" aria-selected="false">${ICON.folder}Archivos</button>
             <button type="button" role="tab" class="tab" data-tab="git" aria-selected="false">${ICON.git}Git<span class="count" id="git-count" hidden></span></button>
             <button type="button" role="tab" class="tab" data-tab="backups" aria-selected="false">${ICON.archive}Copias</button>

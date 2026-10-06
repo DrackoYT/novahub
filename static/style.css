@@ -363,11 +363,8 @@ a.net-card:hover { background: var(--hover); }
 .term.max { position: fixed; inset: 14px; z-index: 50; height: auto; box-shadow: 0 0 0 100vmax rgba(10, 8, 16, .6), 0 30px 80px rgba(0, 0, 0, .5); }
 .term-bar { display: flex; align-items: center; gap: 10px; padding: 2px 4px 10px 6px; flex: none; }
 .term-title { display: flex; align-items: center; gap: 10px; font-weight: 750; white-space: nowrap; }
-.term-title .live { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 6px; font: 600 10.5px/1 var(--f-mono); letter-spacing: .08em; text-transform: uppercase; background: var(--off-bg); color: var(--soft); }
-.term-title .live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.term-title.on .live { background: var(--ok-bg); color: var(--ok); }
 .term-tools { display: flex; align-items: center; gap: 4px; margin-left: auto; }
-.chk { display: inline-flex; align-items: center; gap: 6px; color: var(--soft); padding: 0 8px; cursor: pointer; user-select: none; font-size: 13px; font-weight: 600; }
+.chk { display: inline-flex; align-items: center; gap: 6px; color: var(--soft); padding: 0 8px; cursor: pointer; user-select: none; font-size: 13px; font-weight: 600; white-space: nowrap; }
 .chk input { accent-color: var(--nova); }
 .screen { flex: 1; min-height: 0; display: flex; flex-direction: column; border-radius: 11px; background: var(--screen); box-shadow: inset 0 3px 10px rgba(0, 0, 0, .55); overflow: hidden; }
 .term-out {
@@ -412,7 +409,7 @@ a.net-card:hover { background: var(--hover); }
 /* pestañas de la ficha: Consola · Archivos · Git */
 .tabs { display: flex; gap: 4px; padding: 3px; border-radius: 11px; background: var(--sunk); box-shadow: inset 0 1px 2px rgba(0, 0, 0, .08); min-width: 0; overflow-x: auto; }
 .tab {
-  display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border: 0; border-radius: 8px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border: 0; border-radius: 8px; cursor: pointer;
   background: transparent; color: var(--soft); font-weight: 700; font-size: 14px; white-space: nowrap;
 }
 .tab svg { width: 15px; height: 15px; }
@@ -501,6 +498,7 @@ kbd { font: 500 10.5px var(--f-mono); padding: 1px 5px; border-radius: 4px; back
 .env-key { flex: 0 1 240px; font-weight: 600; }
 .env-val { flex: 1; }
 .env-eq { color: var(--faint); font-family: var(--f-mono); }
+@media (max-width: 1100px) { .term-tools .chk span { display: none; } .tabs { flex-wrap: wrap; overflow: visible; } }  /* todas las pestañas a la vista, en dos líneas si hace falta */  /* «Auto-scroll» solo con la casilla: más sitio para las pestañas */
 @media (max-width: 640px) { .env-row { flex-wrap: wrap; } .env-key { flex: 1 1 100%; } .env-eq { display: none; } }
 
 /* tareas programadas */
