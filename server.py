@@ -1024,32 +1024,193 @@ class Manager:
 
 # ───────────────────────────── autenticación ─────────────────────────────
 
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+# Permisos por rol. «edit» y «admin» son solo del administrador; operador y lector pueden limitarse a algunos servicios.
+ROLES = {
+    "admin": {"view", "operate", "console", "edit", "admin"},
+    "operator": {"view", "operate", "console"},
+    "viewer": {"view"},
+}
+ROLE_LABELS = {"admin": "Administrador", "operator": "Operador", "viewer": "Lector"}
+USERNAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{1,31}")
+
+
 class Auth:
+    """Usuarios con contraseña (PBKDF2) y sesiones firmadas «emitido:caduca:usuario:versión.firma».
+    La versión cambia al cambiar la contraseña o el rol del usuario: así se cierran sus sesiones abiertas."""
+
     ITERATIONS = 600_000
 
     def __init__(self):
         self.data = read_json(AUTH_FILE, {})
+        self.users = read_json(USERS_FILE, {})
+        self.users_mtime = self._mtime()
+        self.lock = threading.Lock()
         self.fails = {}    # ip -> [timestamps]
-        self.revoked = {}  # «emitido» de la sesión -> caducidad máxima (sesiones cerradas antes de caducar)
+        self.revoked = {}  # «usuario:emitido» de la sesión -> caducidad máxima (sesiones cerradas antes de caducar)
+        if not self.users and self.data.get("password"):
+            # De la contraseña única de antes al primer usuario administrador (el usuario del sistema)
+            name = re.sub(r"[^a-z0-9._-]", "", getpass.getuser().lower()) or "admin"
+            name = name if USERNAME_RE.fullmatch(name) else "admin"
+            self.users = {name: {"name": name, "role": "admin", "services": "*", "password": self.data["password"],
+                                 "ver": 1, "created": time.time()}}
+            write_json(USERS_FILE, self.users, mode=0o600)
+            self.data.pop("password", None)
+            write_json(AUTH_FILE, self.data, mode=0o600)
 
     def configured(self):
-        return bool(self.data.get("password"))
+        return bool(self.users) and bool(self.data.get("secret"))
 
-    def set_password(self, password):
+    def _hash(self, password):
         salt = secrets.token_hex(16)
         digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), self.ITERATIONS).hex()
-        # Un secreto nuevo invalida todas las sesiones abiertas.
-        self.data = {"password": f"pbkdf2_sha256${self.ITERATIONS}${salt}${digest}",
-                     "secret": secrets.token_hex(32)}
-        write_json(AUTH_FILE, self.data, mode=0o600)
+        return f"pbkdf2_sha256${self.ITERATIONS}${salt}${digest}"
 
-    def check_password(self, password):
+    @staticmethod
+    def _verify(stored, password):
         try:
-            _, iterations, salt, digest = self.data["password"].split("$")
-        except (KeyError, ValueError):
+            _, iterations, salt, digest = stored.split("$")
+        except (AttributeError, ValueError):
             return False
         test = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), int(iterations)).hex()
         return hmac.compare_digest(test, digest)
+
+    def _save_users(self):
+        write_json(USERS_FILE, self.users, mode=0o600)
+        self.users_mtime = self._mtime()
+
+    @staticmethod
+    def _mtime():
+        try:
+            return os.path.getmtime(USERS_FILE)
+        except OSError:
+            return None
+
+    def _fresh(self):
+        """Si users.json ha cambiado por fuera (python3 server.py set-password con NovaHub en marcha), se relee."""
+        m = self._mtime()
+        if m != self.users_mtime:
+            self.users, self.users_mtime = read_json(USERS_FILE, self.users), m
+
+    def set_password(self, password, username=None):
+        """Desde la línea de órdenes (python3 server.py set-password [usuario]): crea o cambia un administrador."""
+        with self.lock:
+            if not self.data.get("secret"):
+                self.data["secret"] = secrets.token_hex(32)
+                write_json(AUTH_FILE, self.data, mode=0o600)
+            if not username:
+                username = next((u for u, d in self.users.items() if d["role"] == "admin"), None) \
+                    or re.sub(r"[^a-z0-9._-]", "", getpass.getuser().lower()) or "admin"
+            if not USERNAME_RE.fullmatch(username):
+                raise ApiError(400, "Nombre de usuario inválido: letras minúsculas, números, punto, guion o _ (2–32)")
+            u = self.users.get(username) or {"name": username, "role": "admin", "services": "*", "ver": 0, "created": time.time()}
+            u.update(password=self._hash(password), ver=u.get("ver", 0) + 1)
+            self.users[username] = u
+            self._save_users()
+            return username
+
+    def login(self, username, password):
+        """El usuario si la contraseña es correcta; si no, None (con el mismo coste aunque el usuario no exista)."""
+        self._fresh()
+        username = str(username or "").strip().lower()
+        if not username and len(self.users) == 1:
+            username = next(iter(self.users))  # compatibilidad: el formulario antiguo solo pedía contraseña
+        u = self.users.get(username)
+        ok = self._verify(u["password"] if u else f"pbkdf2_sha256${self.ITERATIONS}${'0' * 32}${'0' * 64}", password)
+        if not (u and ok):
+            return None
+        with self.lock:
+            u["last_login"] = time.time()
+            self._save_users()
+        return username
+
+    # ── usuarios (solo administradores) ──
+    def public_user(self, username):
+        u = self.users[username]
+        return {"username": username, "name": u.get("name") or username, "role": u["role"], "role_label": ROLE_LABELS[u["role"]],
+                "services": u.get("services", "*"), "perms": sorted(ROLES[u["role"]]),
+                "created": u.get("created"), "last_login": u.get("last_login")}
+
+    def list_users(self):
+        return [self.public_user(n) for n in sorted(self.users)]
+
+    def _clean_user(self, data, current=None):
+        name = re.sub(r"[\x00-\x1f\x7f]", "", str(data.get("name", (current or {}).get("name", "")) or "")).strip()[:60]
+        role = data.get("role", (current or {}).get("role", "viewer"))
+        if role not in ROLES:
+            raise ApiError(400, "Rol desconocido")
+        services = data.get("services", (current or {}).get("services", "*"))
+        if services != "*":
+            if not isinstance(services, list):
+                raise ApiError(400, "Lista de servicios no válida")
+            services = sorted({str(x) for x in services if str(x) in MANAGER.services})
+        return name, role, "*" if role == "admin" else services
+
+    def _check_password_rules(self, password):
+        if len(password) < 8:
+            raise ApiError(400, "La contraseña debe tener al menos 8 caracteres")
+        if len(password) > 200:
+            raise ApiError(400, "La contraseña es demasiado larga")
+
+    def create_user(self, data):
+        username = str(data.get("username") or "").strip().lower()
+        if not USERNAME_RE.fullmatch(username):
+            raise ApiError(400, "Nombre de usuario inválido: letras minúsculas, números, punto, guion o _ (2–32)")
+        password = str(data.get("password") or "")
+        self._check_password_rules(password)
+        name, role, services = self._clean_user(data)
+        with self.lock:
+            self._fresh()
+            if username in self.users:
+                raise ApiError(409, "Ya existe un usuario con ese nombre")
+            self.users[username] = {"name": name or username, "role": role, "services": services,
+                                    "password": self._hash(password), "ver": 1, "created": time.time()}
+            self._save_users()
+        return self.public_user(username)
+
+    def update_user(self, username, data, actor):
+        with self.lock:
+            self._fresh()
+            u = self.users.get(username)
+            if not u:
+                raise ApiError(404, "Ese usuario no existe")
+            name, role, services = self._clean_user(data, u)
+            if u["role"] == "admin" and role != "admin":
+                if username == actor:
+                    raise ApiError(400, "No puedes quitarte a ti mismo el rol de administrador")
+                if sum(1 for d in self.users.values() if d["role"] == "admin") <= 1:
+                    raise ApiError(400, "Tiene que quedar al menos un administrador")
+            changed = role != u["role"] or services != u.get("services", "*")
+            u.update(name=name or username, role=role, services=services)
+            if data.get("password"):
+                self._check_password_rules(str(data["password"]))
+                u["password"] = self._hash(str(data["password"]))
+                changed = True
+            if changed:
+                u["ver"] = u.get("ver", 0) + 1  # sus sesiones abiertas se cierran: vuelven a entrar con lo nuevo
+            self._save_users()
+        return self.public_user(username)
+
+    def delete_user(self, username, actor):
+        with self.lock:
+            self._fresh()
+            if username not in self.users:
+                raise ApiError(404, "Ese usuario no existe")
+            if username == actor:
+                raise ApiError(400, "No puedes borrar tu propio usuario")
+            if self.users[username]["role"] == "admin" and sum(1 for d in self.users.values() if d["role"] == "admin") <= 1:
+                raise ApiError(400, "Tiene que quedar al menos un administrador")
+            del self.users[username]
+            self._save_users()
+
+    def change_own_password(self, username, current, new):
+        if not self._verify(self.users[username]["password"], str(current or "")):
+            raise ApiError(400, "La contraseña actual no es correcta")
+        self._check_password_rules(str(new or ""))
+        with self.lock:
+            u = self.users[username]
+            u.update(password=self._hash(str(new)), ver=u.get("ver", 0) + 1)
+            self._save_users()
 
     def _sign(self, payload):
         return hmac.new(self.data["secret"].encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -1078,28 +1239,34 @@ class Auth:
         write_json(SESSION_FILE, cfg)
         return cfg
 
-    def make_token(self, issued=None):
-        """Token «emitido:caduca.firma». Caduca tras la inactividad, nunca después del máximo absoluto."""
+    def make_token(self, username, issued=None):
+        """Token «emitido:caduca:usuario:versión.firma». Caduca tras la inactividad, nunca después del máximo absoluto."""
         cfg, now = self.settings(), int(time.time())
         issued = issued or now
         expires = min(now + cfg["idle_minutes"] * 60, issued + cfg["max_hours"] * 3600)
-        payload = f"{issued}:{expires}"
+        payload = f"{issued}:{expires}:{username}:{self.users[username].get('ver', 0)}"
         return f"{payload}.{self._sign(payload)}"
 
     def parse_token(self, token):
-        """(emitido, caduca) si el token es auténtico, vigente y no se ha cerrado la sesión; si no, None."""
+        """(emitido, caduca, usuario) si el token es auténtico, vigente, de un usuario que existe con la misma
+        versión (no ha cambiado su contraseña ni su rol) y la sesión no se ha cerrado; si no, None."""
         if not token or "." not in token or not self.configured():
             return None
         payload, sig = token.rsplit(".", 1)
         if not hmac.compare_digest(sig, self._sign(payload)):
             return None
+        self._fresh()
         try:
-            issued, expires = (int(x) for x in payload.split(":"))
+            issued, expires, username, ver = payload.split(":")
+            issued, expires, ver = int(issued), int(expires), int(ver)
         except ValueError:
             return None
-        if issued in self.revoked:  # sesión cerrada: vale para todos sus tokens, también los renovados
+        u = self.users.get(username)
+        if not u or u.get("ver", 0) != ver:
             return None
-        return (issued, expires) if expires > time.time() else None
+        if f"{username}:{issued}" in self.revoked:  # sesión cerrada: vale para todos sus tokens, también los renovados
+            return None
+        return (issued, expires, username) if expires > time.time() else None
 
     def valid_token(self, token):
         return self.parse_token(token) is not None
@@ -1111,7 +1278,7 @@ class Auth:
             now = time.time()
             self.revoked = {i: exp for i, exp in self.revoked.items() if exp > now}  # limpia los caducados
             # ningún token de esta sesión puede durar más que su máximo absoluto
-            self.revoked[parsed[0]] = max(parsed[1], parsed[0] + self.settings()["max_hours"] * 3600)
+            self.revoked[f"{parsed[2]}:{parsed[0]}"] = max(parsed[1], parsed[0] + self.settings()["max_hours"] * 3600)
 
     def throttled(self, ip):
         now = time.time()
@@ -4317,6 +4484,31 @@ SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|i
                            r"|files|file|file/download|git|git/commit|git/push|git/pull|update|mode"
                            r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run|logs/search|env))?")
 KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
+USER_ROUTE = re.compile(r"/api/users/([a-z0-9][a-z0-9._-]{1,31})")
+# Lo que puede hacer quien no es administrador. Todo lo demás exige «admin» (denegado por defecto).
+SERVICE_VIEW = {None, "logs/stream", "logs/search", "logs/download", "backups", "tasks"}
+SERVICE_OPERATE = {"start", "stop", "restart", "backups/run", "tasks/run"}
+
+
+def route_permission(method, path, service_param=""):
+    """(permiso, servicio) que exige cada petición de la API; None = cualquier usuario con sesión."""
+    if path == "/api/me" or (path == "/api/account" and method == "PUT"):
+        return None, None
+    if method == "GET" and path in ("/api/system", "/api/services"):
+        return "view", None
+    if method == "GET" and path == "/api/metrics":
+        return "view", (service_param if service_param and service_param != "system" else None)
+    m = SERVICE_ROUTE.fullmatch(path)
+    if m:
+        sid, action = m.groups()
+        if method == "GET" and action in SERVICE_VIEW:
+            return "view", sid
+        if method == "POST" and action in SERVICE_OPERATE:
+            return "operate", sid
+        if method == "POST" and action == "input":
+            return "console", sid
+        return "edit", sid
+    return "admin", None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -4409,14 +4601,34 @@ class Handler(BaseHTTPRequestHandler):
         parsed = AUTH.parse_token(token)
         if not parsed:
             return False
-        issued, expires = parsed
+        issued, expires, username = parsed
+        self.user = AUTH.public_user(username)
         if self.headers.get("X-NovaHub-Activity") == "1" and expires - time.time() < AUTH.settings()["idle_minutes"] * 60 - 30:
-            self.renewed_cookie = self.session_cookie(AUTH.make_token(issued))
+            self.renewed_cookie = self.session_cookie(AUTH.make_token(username, issued))
         return True
+
+    # ── permisos ──
+    def can(self, perm, sid=None):
+        u = self.user
+        if perm not in ROLES[u["role"]]:
+            return False
+        return not sid or u["role"] == "admin" or u["services"] == "*" or sid in u["services"]
+
+    def need(self, perm, sid=None):
+        if perm and not self.can(perm, sid):
+            raise ApiError(403, "No tienes acceso a este servicio" if self.can(perm) else "No tienes permiso para esto")
+
+    def svc_out(self, data):
+        """Lo que ve cada usuario de un servicio: sin comando, rutas ni variables si no es administrador."""
+        if self.can("edit"):
+            return data
+        hidden = ("command", "dev_command", "cwd", "env", "volumes", "cargs", "ccmd", "compose_file", "stop_command", "tasks", "backup_cfg")
+        return {k: v for k, v in data.items() if k not in hidden}
 
     # ── enrutado ──
     def route(self, method):
         self.renewed_cookie = None  # la conexión puede reutilizarse: nada de la petición anterior
+        self.user = None
         path = urlparse(self.path).path
         try:
             if path.startswith("/api/"):
@@ -4465,19 +4677,42 @@ class Handler(BaseHTTPRequestHandler):
             ip = self.client_ip()
             if AUTH.throttled(ip):
                 raise ApiError(429, "Demasiados intentos. Espera unos minutos.")
-            if not AUTH.check_password(str(self.read_body().get("password") or "")):
+            body = self.read_body()
+            username = AUTH.login(body.get("username"), str(body.get("password") or ""))
+            if not username:
                 AUTH.failed(ip)
-                raise ApiError(401, "Contraseña incorrecta")
-            return self.send_json({"ok": True}, cookie=self.session_cookie(AUTH.make_token()))
+                raise ApiError(401, "Usuario o contraseña incorrectos")
+            return self.send_json({"ok": True}, cookie=self.session_cookie(AUTH.make_token(username)))
         if path == "/api/logout" and method == "POST":
             AUTH.revoke(self.session_token())
             return self.send_json({"ok": True}, cookie=self.session_cookie("", 0))
 
         if not self.authed():
             raise ApiError(401, "No autorizado")
+        perm, psid = route_permission(method, path, self.query("service"))
+        self.need(perm, psid)  # todo lo que no está en route_permission es solo para administradores
 
         if path == "/api/me":
-            return self.send_json({"ok": True, **AUTH.settings()})
+            return self.send_json({"ok": True, **AUTH.settings(), "user": self.user})
+        if path == "/api/account" and method == "PUT":
+            body = self.read_body()
+            AUTH.change_own_password(self.user["username"], body.get("current"), body.get("password"))
+            username = self.user["username"]  # la versión ha cambiado: sesión nueva para seguir dentro
+            return self.send_json({"ok": True}, cookie=self.session_cookie(AUTH.make_token(username)))
+        if path == "/api/users":
+            if method == "GET":
+                return self.send_json({"users": AUTH.list_users(), "roles": ROLE_LABELS})
+            if method == "POST":
+                return self.send_json(AUTH.create_user(self.read_body()), 201)
+            raise ApiError(405, "Método no permitido")
+        m = USER_ROUTE.fullmatch(path)
+        if m:
+            if method == "PUT":
+                return self.send_json(AUTH.update_user(m.group(1), self.read_body(), self.user["username"]))
+            if method == "DELETE":
+                AUTH.delete_user(m.group(1), self.user["username"])
+                return self.send_json({"ok": True})
+            raise ApiError(405, "Método no permitido")
         if path == "/api/session-settings":
             if method == "GET":
                 return self.send_json(AUTH.settings())
@@ -4548,7 +4783,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True}, 202)
         if path == "/api/services":
             if method == "GET":
-                return self.send_json({"services": MANAGER.list_public()})
+                return self.send_json({"services": [self.svc_out(s) for s in MANAGER.list_public() if self.can("view", s["id"])]})
             if method == "POST":
                 body = self.read_body()
                 extra, notice = PUBLISHER.apply(None, None, normalize_service(body), body)
@@ -4565,7 +4800,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if action is None:
             if method == "GET":
-                return self.send_json(MANAGER.get_public(sid))
+                return self.send_json(self.svc_out(MANAGER.get_public(sid)))
             if method == "PUT":
                 body = self.read_body()
                 extra, notice = PUBLISHER.apply(sid, MANAGER.services[sid], normalize_service(body), body)
@@ -4596,7 +4831,10 @@ class Handler(BaseHTTPRequestHandler):
         if action == "env" and method == "PUT":
             return self.send_json(write_env(sid, svc, self.query("file"), self.read_body()))
         if action == "tasks" and method == "GET":
-            return self.send_json(SCHEDULER.public(sid))
+            out = SCHEDULER.public(sid)
+            if not self.can("edit"):  # los comandos de las tareas pueden llevar claves
+                out["tasks"] = [{**t, "text": ""} for t in out["tasks"]]
+            return self.send_json(out)
         if action == "tasks" and method == "PUT":
             return self.send_json(SCHEDULER.save(sid, self.read_body().get("tasks")))
         if action == "tasks/run" and method == "POST":
@@ -4646,7 +4884,7 @@ class Handler(BaseHTTPRequestHandler):
             MANAGER.send_input(sid, line)
         elif action == "logs/clear":
             MANAGER.clear_log(sid)
-        return self.send_json(MANAGER.get_public(sid))
+        return self.send_json(self.svc_out(MANAGER.get_public(sid)))
 
     def query(self, name):
         return (parse_qs(urlparse(self.path).query).get(name) or [""])[0]
@@ -4792,6 +5030,7 @@ def main():
     global MANAGER, AUTH, PUBLISHER, GATEWAY
     parser = argparse.ArgumentParser(description="NovaHub — gestor de servicios")
     parser.add_argument("command", nargs="?", default="serve", choices=["serve", "set-password"])
+    parser.add_argument("user", nargs="?", help="con set-password: el usuario (por defecto, el primer administrador)")
     parser.add_argument("--host", default=os.environ.get("NOVAHUB_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("NOVAHUB_PORT", "8686")))
     args = parser.parse_args()
@@ -4801,14 +5040,18 @@ def main():
 
     AUTH = Auth()
     if args.command == "set-password":
-        AUTH.set_password(ask_password())
-        print("Contraseña guardada. Las sesiones abiertas se han cerrado.")
+        try:
+            name = AUTH.set_password(ask_password(), (args.user or "").lower() or None)
+        except ApiError as e:
+            sys.exit(e.msg)
+        print(f"Contraseña de «{name}» guardada. Sus sesiones abiertas se han cerrado.")
         return
     if not AUTH.configured():
         if not sys.stdin.isatty():
-            sys.exit("No hay contraseña configurada. Ejecuta primero: python3 server.py set-password")
+            sys.exit("No hay ningún usuario. Ejecuta primero: python3 server.py set-password")
         print("Primera ejecución: elige la contraseña del panel.")
-        AUTH.set_password(ask_password())
+        name = AUTH.set_password(ask_password())
+        print(f"Usuario administrador: {name}")
 
     seed_example()
     prev = previous_run()

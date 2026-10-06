@@ -542,7 +542,21 @@ kbd { font: 500 10.5px var(--f-mono); padding: 1px 5px; border-radius: 4px; back
 .kind-block { display: flex; flex-direction: column; gap: 14px; }
 @media (max-width: 640px) { .kind-pick { grid-template-columns: 1fr; } }
 
+/* permisos: lo que el usuario no puede usar no se muestra (el servidor lo rechaza igualmente) */
+body:not(.p-operate) [data-perm="operate"], body:not(.p-console) [data-perm="console"],
+body:not(.p-edit) [data-perm="edit"], body:not(.p-admin) [data-perm="admin"] { display: none !important; }
+
 /* ajustes */
+.user-list { display: flex; flex-direction: column; gap: 6px; }
+.user-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--sunk); }
+.user-main { flex: 1; min-width: 0; }
+.user-main small { display: block; color: var(--soft); font-size: 12.5px; margin-top: 2px; }
+.user-edit { display: flex; flex-direction: column; gap: 14px; padding: 16px; border-radius: var(--r); border: 1px solid var(--line-hi); }
+.chk-line { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.field .chk-line input[type="checkbox"] {  /* que no herede el aspecto de los campos de texto de .field */
+  flex: none; width: 16px; height: 16px; margin: 0; padding: 0; border: 0; background: none; box-shadow: none; accent-color: var(--nova);
+}
+.svc-checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 14px; margin-top: 4px; padding-left: 4px; }
 .btn.icon.active { background: var(--ink); color: var(--module); box-shadow: none; }
 .settings { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 18px; align-items: start; }
 .set-nav { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 84px; }

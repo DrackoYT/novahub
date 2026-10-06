@@ -27,6 +27,8 @@ const ICON = {
   upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9M7 14l5-5 5 5M5 3h14"/></svg>',
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg>',
+  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 4 6"/></svg>',
   mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg>',
@@ -55,7 +57,7 @@ const statusHTML = (s) => `<span class="status">${STATUS_LABEL[s.status]}</span>
 // Tecla de encendido: hundida y morada mientras el servicio está en marcha.
 function keyHTML(s) {
   const busy = s.status === "starting" || s.status === "stopping";
-  return `<button class="key${busy ? " busy" : ""}" role="switch" aria-checked="${isOn(s)}" data-act="toggle" data-id="${esc(s.id)}"
+  return `<button class="key${busy ? " busy" : ""}" role="switch" aria-checked="${isOn(s)}" data-act="toggle" data-perm="operate" data-id="${esc(s.id)}"
     title="${isOn(s) ? "Apagar" : "Encender"}" aria-label="${isOn(s) ? "Apagar" : "Encender"} ${esc(s.name)}">${ICON.power}</button>`;
 }
 const pct = (a, b) => (b ? (a / b) * 100 : 0);
@@ -231,17 +233,24 @@ function showLogin(reason = "") {
         <form id="login-form">
           ${reason ? `<p class="nt-ok login-note">${esc(reason)}</p>` : ""}
           <div class="form-error" id="login-error"></div>
-          <label class="field"><span>Contraseña</span><input id="pw" type="password" name="password" autocomplete="current-password" required autofocus></label>
+          <label class="field"><span>Usuario</span><input id="user" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+          <label class="field"><span>Contraseña</span><input id="pw" type="password" name="password" autocomplete="current-password" required></label>
           <button class="btn primary" type="submit">Entrar</button>
         </form>
       </div>
     </div>`;
+  let last = "";
+  try { last = localStorage.getItem("nh-user") || ""; } catch { /* sin almacenamiento */ }
+  $("#user").value = last;
+  (last ? $("#pw") : $("#user")).focus();
   $("#login-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector("button");
     btn.disabled = true;
     try {
-      await api("POST", "/api/login", { password: e.target.password.value });
+      const username = e.target.username.value.trim().toLowerCase();
+      await api("POST", "/api/login", { username, password: e.target.password.value });
+      try { localStorage.setItem("nh-user", username); } catch { /* sin almacenamiento */ }
       ui.unlocked = true;
       ui.locked = false;
       ui.lastActivity = Date.now();
@@ -258,28 +267,34 @@ function showLogin(reason = "") {
 const NAV = [
   ["overview", "#/", "Resumen", "1", ICON.home],
   ["services", "#/servicios", "Servicios", "2", ICON.grid],
-  ["tasks", "#/procesos", "Procesos", "3", ICON.activity],
-  ["network", "#/red", "Red", "4", ICON.globe],
+  ["tasks", "#/procesos", "Procesos", "3", ICON.activity, "admin"],
+  ["network", "#/red", "Red", "4", ICON.globe, "admin"],
 ];
+
+// Permisos del usuario (los decide el servidor, que rechaza lo demás; aquí solo se esconde lo que no puede usar)
+const can = (perm) => !!ui.me?.perms?.includes(perm);
+function applyPerms() {
+  for (const p of ["view", "operate", "console", "edit", "admin"]) document.body.classList.toggle(`p-${p}`, can(p));
+}
 
 function shell() {
   app.innerHTML = `
     <header class="topbar">
       <a class="brand" href="#/" aria-label="NovaHub · inicio">${BRAND}</a>
       <nav class="nav" aria-label="Secciones">
-        ${NAV.map(([key, href, label, k, icon]) => `<a href="${href}" data-nav="${key}" title="${label} (${k})">${icon}<span>${label}</span></a>`).join("")}
+        ${NAV.filter((n) => !n[5] || can(n[5])).map(([key, href, label, k, icon]) => `<a href="${href}" data-nav="${key}" title="${label} (${k})">${icon}<span>${label}</span></a>`).join("")}
       </nav>
       <div class="top-actions">
         <span class="lcd host-chip" id="host-chip"></span>
-        <button class="btn primary" data-act="new">${ICON.plus}<span>Nuevo servicio</span></button>
+        <button class="btn primary" data-act="new" data-perm="admin">${ICON.plus}<span>Nuevo servicio</span></button>
         <a class="btn icon" href="#/ajustes" data-nav="settings" title="Ajustes" aria-label="Ajustes">${ICON.settings}</a>
         <button class="btn icon" data-act="theme" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema">${currentTheme() === "dark" ? ICON.sun : ICON.moon}</button>
-        <button class="btn icon" data-act="poweroff" title="Apagar el servidor" aria-label="Apagar el servidor">${ICON.power}</button>
+        <button class="btn icon" data-act="poweroff" data-perm="admin" title="Apagar el servidor" aria-label="Apagar el servidor">${ICON.power}</button>
         <button class="btn icon ghost" data-act="logout" title="Cerrar sesión" aria-label="Cerrar sesión">${ICON.logout}</button>
       </div>
     </header>
     <main id="main"></main>`;
-  $(".topbar .brand").addEventListener("dblclick", (e) => { e.preventDefault(); location.hash = "#/mejoras"; });
+  $(".topbar .brand").addEventListener("dblclick", (e) => { e.preventDefault(); if (can("admin")) location.hash = "#/mejoras"; });
 }
 
 async function refreshSystem() {
@@ -291,7 +306,7 @@ async function refreshSystem() {
     ui.user = s.user;
     ui.host = s.hostname;
     const chip = $("#host-chip");
-    if (chip) chip.textContent = `${s.user}@${s.hostname}`;
+    if (chip) chip.textContent = `${ui.me?.username || s.user}@${s.hostname}`;
     drawKpis();
     if (!ui.current && ui.services.length) { drawList(); drawOverview(); } // los enlaces «Abrir» dependen de la IP del servidor
   } catch { /* silencioso */ }
@@ -436,6 +451,12 @@ function drawChart(plot, d, sp) {
   svg.addEventListener("pointermove", move);
   svg.addEventListener("pointerdown", move);
   svg.addEventListener("pointerleave", () => { hover.hidden = tip.hidden = true; });
+}
+
+function viewNoAccess() {
+  $("#main").innerHTML = `<div class="empty"><h2>Sin permiso</h2>
+    <p>Tu usuario (${esc(ui.me?.role_label || "")}) no puede abrir esta página. Pídele acceso a un administrador.</p>
+    <a class="btn" href="#/">Volver al resumen</a></div>`;
 }
 
 // ───────────────────────── vista: resumen ─────────────────────────
@@ -920,7 +941,7 @@ function drawList() {
       <div class="empty">
         <h2>Aún no hay servicios</h2>
         <p>Añade tu primer servicio: un bot, una web, un servidor de juegos…</p>
-        <button class="btn primary" data-act="new">${ICON.plus}Crear servicio</button>
+        <button class="btn primary" data-act="new" data-perm="admin">${ICON.plus}Crear servicio</button>
       </div>`);
     return;
   }
@@ -1223,26 +1244,29 @@ async function openGithub() {
 // Cada categoría se guarda por separado.
 
 const SETTINGS = [
-  ["avisos", "Avisos por correo", "Gmail y qué avisar", ICON.mail],
-  ["vigilante", "Vigilante externo", "Si el servidor cae del todo", ICON.activity],
-  ["sesion", "Sesión", "Contraseña e inactividad", ICON.lock],
-  ["git", "Git", "Autor de los commits", ICON.git],
-  ["app", "App para el móvil", "Instalar NovaHub", ICON.phone],
+  ["cuenta", "Mi cuenta", "Tu contraseña", ICON.user, null],
+  ["usuarios", "Usuarios", "Quién entra y qué puede hacer", ICON.users, "admin"],
+  ["avisos", "Avisos por correo", "Gmail y qué avisar", ICON.mail, "admin"],
+  ["vigilante", "Vigilante externo", "Si el servidor cae del todo", ICON.activity, "admin"],
+  ["sesion", "Sesión", "Contraseña e inactividad", ICON.lock, "admin"],
+  ["git", "Git", "Autor de los commits", ICON.git, "admin"],
+  ["app", "App para el móvil", "Instalar NovaHub", ICON.phone, null],
 ];
 
 function viewSettings(cat) {
-  if (!SETTINGS.some(([k]) => k === cat)) cat = "avisos";
+  const cats = SETTINGS.filter((c) => !c[4] || can(c[4]));
+  if (!cats.some(([k]) => k === cat)) cat = can("admin") ? "avisos" : "cuenta";
   $("#main").innerHTML = `
     <section class="page-head"><div><h1 class="page-title">Ajustes</h1><p class="page-sub">Cada apartado se guarda por separado</p></div></section>
     <div class="settings">
       <nav class="set-nav" aria-label="Categorías de ajustes">
-        ${SETTINGS.map(([k, label, sub, icon]) => `<a href="#/ajustes/${k}" class="${k === cat ? "active" : ""}" ${k === cat ? 'aria-current="page"' : ""}>
+        ${cats.map(([k, label, sub, icon]) => `<a href="#/ajustes/${k}" class="${k === cat ? "active" : ""}" ${k === cat ? 'aria-current="page"' : ""}>
           ${icon}<span><b>${label}</b><small>${sub}</small></span></a>`).join("")}
       </nav>
       <section class="module set-body" id="set-body"><div class="pane-msg">Cargando…</div></section>
     </div>`;
   $(".set-nav a.active").scrollIntoView({ block: "nearest", inline: "center" });  // en el móvil la lista se desliza
-  ({ avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, git: setGit, app: setApp })[cat]($("#set-body"));
+  ({ cuenta: setAccount, usuarios: setUsers, avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, git: setGit, app: setApp })[cat]($("#set-body"));
 }
 
 // Pie con «Guardar» y el error, común a todas las categorías
@@ -1352,6 +1376,104 @@ async function setGit(body) {
     </div>`, async (f) => {
     await api("PUT", "/api/git-identity", { name: f.name.value.trim(), email: f.email.value.trim() });
   });
+}
+
+async function setAccount(body) {
+  const u = ui.me;
+  setForm(body, `
+    <h2 class="set-title">Mi cuenta</h2>
+    <p class="set-sub">Has entrado como <b>${esc(u.username)}</b> · ${esc(u.role_label)}${u.role !== "admin"
+      ? ` · ${u.services === "*" ? "todos los servicios" : `${u.services.length} servicio${u.services.length === 1 ? "" : "s"}`}` : ""}.</p>
+    <h3 class="set-h">Cambiar la contraseña</h3>
+    <label class="field"><span>Contraseña actual</span><input name="current" type="password" autocomplete="current-password"></label>
+    <div class="set-grid">
+      <label class="field"><span>Nueva contraseña</span><input name="password" type="password" autocomplete="new-password"><small>Al menos 8 caracteres.</small></label>
+      <label class="field"><span>Repítela</span><input name="again" type="password" autocomplete="new-password"></label>
+    </div>
+    <p class="dim-text task-help">Al cambiarla se cierran tus sesiones en otros dispositivos; en este sigues dentro.</p>`, async (f) => {
+    if (f.password.value !== f.again.value) throw new Error("Las dos contraseñas nuevas no coinciden");
+    await api("PUT", "/api/account", { current: f.current.value, password: f.password.value });
+    f.reset();
+  });
+}
+
+async function setUsers(body) {
+  const [{ users, roles }, svcs] = await Promise.all([api("GET", "/api/users"), api("GET", "/api/services")]);
+  const services = svcs.services;
+  const svcName = (id) => services.find((s) => s.id === id)?.name || id;
+  const row = (u) => `
+    <div class="user-row" data-user="${esc(u.username)}">
+      <div class="user-main"><b>${esc(u.name)}</b> <span class="dim-text mono">${esc(u.username)}</span>${u.username === ui.me.username ? ' <span class="status svc">tú</span>' : ""}
+        <small>${esc(u.role_label)}${u.role === "admin" ? " · todo" : ` · ${u.services === "*" ? "todos los servicios" : u.services.map(svcName).map(esc).join(", ") || "ningún servicio"}`}
+          · ${u.last_login ? `entró ${fmtAgo(u.last_login)}` : "aún no ha entrado"}</small></div>
+      <button type="button" class="btn sm" data-uact="edit">${ICON.edit}Editar</button>
+      ${u.username === ui.me.username ? "" : `<button type="button" class="btn sm icon ghost" data-uact="del" title="Borrar usuario" aria-label="Borrar usuario">${ICON.trash}</button>`}
+    </div>`;
+  const editor = (u = null) => `
+    <form class="user-edit" id="user-form" novalidate>
+      <h3 class="set-h">${u ? `Editar ${esc(u.username)}` : "Nuevo usuario"}</h3>
+      <div class="set-grid">
+        <label class="field"><span>Usuario</span><input name="username" class="mono" autocapitalize="off" spellcheck="false" value="${esc(u?.username || "")}" ${u ? "disabled" : ""}
+          placeholder="amigo"><small>Minúsculas, números, punto o guion. Es con lo que entra.</small></label>
+        <label class="field"><span>Nombre</span><input name="name" value="${esc(u?.name || "")}" placeholder="Nombre para mostrar"></label>
+      </div>
+      <div class="field"><span>Rol</span><div class="kind-pick">
+        ${Object.entries({ admin: "Todo: servicios, archivos, ajustes y usuarios", operator: "Ver, encender, apagar, reiniciar y escribir en la consola", viewer: "Solo ver estado, gráficas y logs" })
+          .map(([k, d]) => `<label><input type="radio" name="role" value="${k}" ${(u?.role || "viewer") === k ? "checked" : ""}><span><strong>${esc(roles[k])}</strong><small>${d}</small></span></label>`).join("")}
+      </div></div>
+      <div class="field" id="svc-pick"><span>Servicios a los que tiene acceso</span>
+        <label class="chk-line"><input type="checkbox" name="all" ${!u || u.services === "*" ? "checked" : ""}> Todos (también los que crees después)</label>
+        <div class="svc-checks">${services.map((s) => `<label class="chk-line"><input type="checkbox" name="svc" value="${esc(s.id)}"
+          ${u && Array.isArray(u.services) && u.services.includes(s.id) ? "checked" : ""}> ${esc(s.name)}</label>`).join("")}</div>
+      </div>
+      <label class="field"><span>${u ? "Nueva contraseña" : "Contraseña"}</span><input name="password" type="password" autocomplete="new-password"
+        placeholder="${u ? "vacía = no cambiarla" : "al menos 8 caracteres"}"><small>${u ? "Si la cambias, o cambias su rol o servicios, sus sesiones abiertas se cierran." : "Pásasela por un canal seguro; podrá cambiarla en Ajustes → Mi cuenta."}</small></label>
+      <div class="form-error" id="user-error"></div>
+      <footer class="set-foot"><button type="button" class="btn ghost" data-uact="cancel">Cancelar</button><span class="grow"></span>
+        <button type="submit" class="btn primary">${u ? "Guardar" : "Crear usuario"}</button></footer>
+    </form>`;
+  body.innerHTML = `
+    <h2 class="set-title">Usuarios</h2>
+    <p class="set-sub">Quién puede entrar al panel y qué puede hacer. Para que alguien llegue desde internet, añade también su correo
+      a la regla de Cloudflare Access (Zero Trust → Access → Applications → la de NovaHub → Policies).</p>
+    <div class="user-list">${users.map(row).join("")}</div>
+    <div id="user-editor"><button type="button" class="btn" data-uact="new">${ICON.plus}Añadir usuario</button></div>`;
+  const openEditor = (u) => {
+    $("#user-editor", body).innerHTML = editor(u);
+    const f = $("#user-form", body);
+    const sync = () => {
+      const admin = f.querySelector('[name="role"]:checked').value === "admin";
+      $("#svc-pick", body).hidden = admin;
+      f.querySelectorAll('[name="svc"]').forEach((c) => { c.disabled = f.all.checked; });
+    };
+    f.addEventListener("change", sync);
+    sync();
+    (u ? f.name : f.username).focus();
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const data = { name: f.name.value.trim(), role: f.querySelector('[name="role"]:checked').value,
+        services: f.all.checked ? "*" : [...f.querySelectorAll('[name="svc"]:checked')].map((c) => c.value) };
+      if (f.password.value) data.password = f.password.value;
+      try {
+        if (u) await api("PUT", `/api/users/${encodeURIComponent(u.username)}`, data);
+        else await api("POST", "/api/users", { ...data, username: f.username.value.trim().toLowerCase() });
+        toast(u ? "Usuario guardado" : "Usuario creado", "ok");
+        setUsers(body);
+      } catch (err) { $("#user-error", body).textContent = err.message; }
+    });
+  };
+  body.onclick = async (e) => {
+    const act = e.target.closest("[data-uact]")?.dataset.uact;
+    const name = e.target.closest("[data-user]")?.dataset.user;
+    const u = users.find((x) => x.username === name);
+    if (act === "new") openEditor(null);
+    else if (act === "edit") { openEditor(u); $("#user-editor", body).scrollIntoView({ block: "nearest", behavior: "smooth" }); }
+    else if (act === "cancel") setUsers(body);
+    else if (act === "del" && await confirmDialog("Borrar usuario", `«${u.name}» (${u.username}) no podrá volver a entrar. Sus sesiones se cierran al momento.`, "Borrar")) {
+      try { await api("DELETE", `/api/users/${encodeURIComponent(name)}`); toast("Usuario borrado", "ok"); setUsers(body); }
+      catch (err) { toast(err.message, "error"); }
+    }
+  };
 }
 
 function setApp(body) {
@@ -1470,16 +1592,16 @@ function viewDetail(id) {
         <div class="term-bar">
           <div class="tabs" role="tablist" aria-label="Vistas del servicio">
             <button type="button" role="tab" class="tab term-title" id="live" data-tab="console" aria-selected="true">Consola</button>
-            <button type="button" role="tab" class="tab" data-tab="files" aria-selected="false">${ICON.folder}Archivos</button>
-            <button type="button" role="tab" class="tab" data-tab="git" aria-selected="false">${ICON.git}Git<span class="count" id="git-count" hidden></span></button>
-            <button type="button" role="tab" class="tab" data-tab="backups" aria-selected="false">${ICON.archive}Copias</button>
-            <button type="button" role="tab" class="tab" data-tab="tasks" aria-selected="false">${ICON.clock}Tareas</button>
-            <button type="button" role="tab" class="tab" data-tab="env" aria-selected="false">${ICON.key}Variables</button>
+            <button type="button" role="tab" class="tab" data-tab="files" data-perm="edit" aria-selected="false">${ICON.folder}Archivos</button>
+            <button type="button" role="tab" class="tab" data-tab="git" data-perm="edit" aria-selected="false">${ICON.git}Git<span class="count" id="git-count" hidden></span></button>
+            <button type="button" role="tab" class="tab" data-tab="backups" data-perm="edit" aria-selected="false">${ICON.archive}Copias</button>
+            <button type="button" role="tab" class="tab" data-tab="tasks" data-perm="edit" aria-selected="false">${ICON.clock}Tareas</button>
+            <button type="button" role="tab" class="tab" data-tab="env" data-perm="edit" aria-selected="false">${ICON.key}Variables</button>
           </div>
           <div class="term-tools" data-for="console">
             <label class="chk" title="Auto-scroll"><input type="checkbox" id="autoscroll" checked><span>Auto-scroll</span></label>
             <a class="btn sm icon" href="/api/services/${esc(id)}/logs/download" download title="Descargar log" aria-label="Descargar log">${ICON.download}</a>
-            <button class="btn sm icon" data-act="clear-log" title="Limpiar consola" aria-label="Limpiar consola">${ICON.trash}</button>
+            <button class="btn sm icon" data-act="clear-log" data-perm="edit" title="Limpiar consola" aria-label="Limpiar consola">${ICON.trash}</button>
             <button class="btn sm icon" data-term="max" title="Pantalla completa (Esc para salir)" aria-label="Pantalla completa">${ICON.expand}</button>
           </div>
         </div>
@@ -1494,7 +1616,7 @@ function viewDetail(id) {
           </div>
           <pre class="term-out" id="out"></pre>
           <div class="term-out found" id="found" hidden></div>
-          <form class="term-in" id="cin">
+          <form class="term-in" id="cin" data-perm="console">
             <span class="prompt" id="prompt"></span>
             <input id="cmd" placeholder="enviar un comando al proceso…" autocomplete="off" spellcheck="false" aria-label="Comando">
             <button class="btn sm" type="submit">↵</button>
@@ -2305,7 +2427,7 @@ async function refreshDetail(id) {
   try {
     s = await api("GET", `/api/services/${id}`);
   } catch (e) {
-    if (e.message === "Servicio no encontrado") { toast(e.message, "error"); location.hash = "#/servicios"; }
+    if (e.message === "Servicio no encontrado" || e.message.startsWith("No tienes")) { toast(e.message, "error"); location.hash = "#/servicios"; }
     return;
   }
   if (!ui.current || ui.current.id !== id) return;
@@ -2327,12 +2449,12 @@ function drawDetail(s) {
       <div class="d-actions">
         ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Abrir ↗</a>` : ""}
         ${s.kind === "container" || s.kind === "compose"
-    ? `<button class="btn" data-act="update" ${s.updating ? "disabled" : ""} title="Descargar la versión nueva de la imagen y reiniciar si ha cambiado">${ICON.download}${s.updating ? "Actualizando…" : "Actualizar imagen"}</button>`
-    : ui.gitRepo === s.id ? `<button class="btn" data-act="update" ${s.updating ? "disabled" : ""} title="Traer cambios de GitHub, instalar dependencias y reiniciar">${ICON.download}${s.updating ? "Actualizando…" : "Actualizar"}</button>` : ""}
-        <button class="btn" data-act="restart" ${s.status === "running" ? "" : "disabled"}>${ICON.restart}Reiniciar</button>
-        <button class="btn" data-act="edit">${ICON.edit}Editar</button>
-        <button class="btn danger" data-act="delete" ${isOn(s) || busy ? "disabled title=\"Detén el servicio para eliminarlo\"" : ""}>${ICON.trash}Eliminar</button>
-        <button class="btn power ${isOn(s) ? "off" : "on"}" data-act="toggle" ${s.status === "stopping" ? "disabled" : ""}>
+    ? `<button class="btn" data-act="update" data-perm="edit" ${s.updating ? "disabled" : ""} title="Descargar la versión nueva de la imagen y reiniciar si ha cambiado">${ICON.download}${s.updating ? "Actualizando…" : "Actualizar imagen"}</button>`
+    : ui.gitRepo === s.id ? `<button class="btn" data-act="update" data-perm="edit" ${s.updating ? "disabled" : ""} title="Traer cambios de GitHub, instalar dependencias y reiniciar">${ICON.download}${s.updating ? "Actualizando…" : "Actualizar"}</button>` : ""}
+        <button class="btn" data-act="restart" data-perm="operate" ${s.status === "running" ? "" : "disabled"}>${ICON.restart}Reiniciar</button>
+        <button class="btn" data-act="edit" data-perm="edit">${ICON.edit}Editar</button>
+        <button class="btn danger" data-act="delete" data-perm="edit" ${isOn(s) || busy ? "disabled title=\"Detén el servicio para eliminarlo\"" : ""}>${ICON.trash}Eliminar</button>
+        <button class="btn power ${isOn(s) ? "off" : "on"}" data-act="toggle" data-perm="operate" ${s.status === "stopping" ? "disabled" : ""}>
           ${ICON.power}${isOn(s) ? "Apagar" : "Encender"}</button>
       </div>
     </div>`;
@@ -2365,7 +2487,7 @@ function drawDetail(s) {
         ${s.last_update ? cell("Última actualización", `<span class="${s.last_update.ok ? "" : "bad-text"}">${esc(s.last_update.msg)}</span> <span class="dim-text">· ${fmtAgo(s.last_update.at)}</span>`) : ""}
       </dl>
     </div>
-    <div class="module">
+    <div class="module" data-perm="edit">
       <span class="label">Configuración</span>
       <dl class="readout">
         ${cell("Comando", `<code>${esc(s.command)}</code>`, "wide")}
@@ -2923,7 +3045,9 @@ function route() {
   const m = hash.match(/^#\/s\/([a-z0-9-]+)(\/editar)?$/);
   const nm = hash.match(/^#\/nuevo(?:\/(programa|contenedor|compose))?$/);
   let section = "overview";
-  if (m && m[2]) { viewServiceForm({ id: m[1] }); section = "services"; }
+  const adminOnly = (m && m[2]) || nm || ["#/procesos", "#/red", "#/mejoras"].includes(hash);
+  if (adminOnly && !can("admin")) { viewNoAccess(); section = ""; }
+  else if (m && m[2]) { viewServiceForm({ id: m[1] }); section = "services"; }
   else if (m) { viewDetail(m[1]); section = "services"; }
   else if (nm && nm[1]) { viewServiceForm({ kind: KIND_SLUG[nm[1]] }); section = "services"; }
   else if (nm) { viewNew(); section = "services"; }
@@ -2947,6 +3071,8 @@ async function start() {
     if (e.message === "Sin conexión con el servidor") showOffline();
     return; // si no, es un 401 y showLogin ya se ha mostrado
   }
+  ui.me = me.user;
+  applyPerms();
   if (me.lock_on_reload && !ui.unlocked) {
     // «pedir la contraseña al recargar»: se cierra la sesión que quedara de la carga anterior
     await api("POST", "/api/logout").catch(() => {});
@@ -2966,9 +3092,9 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") $("#term.max")?.classList.remove("max");
   // 1, 2… cambian de pestaña (salvo escribiendo o con un diálogo abierto)
   if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, textarea, select, dialog") || !$("#main")) return;
-  const nav = NAV.find(([, , , k]) => k === e.key);
+  const nav = NAV.find(([, , , k, , perm]) => k === e.key && (!perm || can(perm)));
   if (nav) location.hash = nav[1];
-  else if (e.key === "m") location.hash = "#/mejoras";
+  else if (e.key === "m" && can("admin")) location.hash = "#/mejoras";
 });
 let currentHash = location.hash;
 window.addEventListener("hashchange", async () => {
