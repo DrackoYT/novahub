@@ -100,6 +100,8 @@ soporte para rutas de SPA, caché larga para los archivos con huella y compresi�
 fracción de la memoria del modo desarrollo (≈20 MB frente a ≈300 MB en una web Vite). «Recompilar»
 aplica los cambios del código; «Actualizar» desde GitHub recompila solo; «Volver a desarrollo»
 recupera el comando original. El puerto llega por la variable `NOVAHUB_SERVICE_PORT`.
+Se sirve una copia de la compilación (`data/builds/<servicio>/current`), no la carpeta `dist/`: mientras se
+recompila, o si la compilación falla, la web publicada sigue funcionando con la versión anterior.
 
 ## Vista de red
 

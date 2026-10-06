@@ -5,11 +5,11 @@ Sirve para que cada revisión nueva cubra solo lo que ha cambiado desde la anter
 
 ## Cómo saber qué hay que revisar
 
-**Revisado hasta el commit: `92ee43d`** (se actualiza al cerrar cada revisión; editar este documento
+**Revisado hasta el commit: `72eae4a`** (se actualiza al cerrar cada revisión; editar este documento
 por otros motivos no cambia este valor). Para ver lo que ha cambiado desde entonces:
 
 ```bash
-BASE=92ee43d
+BASE=72eae4a
 git diff --stat "$BASE"..HEAD        # qué archivos han cambiado
 git diff "$BASE"..HEAD -- server.py  # el detalle de un archivo
 ```
@@ -23,53 +23,58 @@ pieza marcada como *invariante de seguridad*, hay que revisar esa pieza entera, 
 |---|---|---|---|---|
 | 1 | 2026-10-05 | **Completa**: todo el código | hasta `cad7b13` (incluido) | 9 corregidos |
 | 2 | 2026-10-06 | **Incremental**: solo lo cambiado | `cad7b13..92ee43d` | 5 corregidos |
+| 3 | 2026-10-06 | **Incremental**: modo producción, sesiones, editor, copias, gráficas y vista de red | `92ee43d..72eae4a` | 7 corregidos |
 
 ---
 
 ## Inventario: qué está revisado
 
-Estado de cada pieza tras la revisión 2. Lo añadido después de `92ee43d` (modo producción, `serve.py`,
-sesiones con caducidad por inactividad) está **pendiente de revisar**. «R1» = revisada entera en la revisión 1 y sin cambios
-desde entonces; «R2» = cambiada después de R1 y revisada en la revisión 2.
+Estado de cada pieza tras la revisión 3. «R1» = revisada entera en la revisión 1 y sin cambios
+desde entonces; «R2» / «R3» = cambiada o añadida después y revisada en esa revisión.
 
-### `server.py` (backend, ~3.200 líneas)
+### `server.py` (backend, ~4.200 líneas)
 
 | Pieza | Estado | Notas |
 |---|---|---|
-| Utilidades (`read_json`, `write_json`, `proc_*`, `group_usage`, `listening_ports`, `lan_ip`, `system_info`, `slugify`) | R1 | `write_json` escribe con permisos 600 |
+| Utilidades (`read_json`, `write_json`, `proc_*`, `group_usage`, `listening_ports`, `lan_ip`, `system_info`, `slugify`) | R1 + R3 | `write_json` escribe con permisos 600; R3: opción compacta (`indent=None`) |
 | `uptime`, `wait_for_network` | R2 | |
 | `normalize_service` | R1 + R2 | R2: campos de una línea sin caracteres de control (salvo `command` y `description`) |
-| `Manager`: `spawn`, `start`, `stop`, `_do_stop`, `restart`, stdin, `_rotate_live`, CRUD, `public` | R1 | `stop` cambia en R2: limpia `down_notified` |
+| `Manager`: `spawn`, `start`, `stop`, `_do_stop`, `restart`, stdin, `_rotate_live`, CRUD, `public` | R1 + R3 | R3: `NOVAHUB_SERVICE_PORT`, `mode`/`can_build`/`backup` en `public`, `delete` borra `data/builds/<id>` |
 | `Manager.boot`, `_autostart` | R2 | Autoarranque solo al encender el servidor; espera red; relanza los servicios que murieron con NovaHub caído |
 | `Manager.monitor`, `_check_all`, `_check_memory` | R2 | Reintentos rápidos y luego lentos (nunca se abandona), avisos, aviso de recuperación |
 | `Manager.status` | R2 | Estado nuevo `retrying` |
-| `Auth` | R1 | Invariante de seguridad |
+| `Auth` | R1 + R3 | Invariante de seguridad. R3: tokens `emitido:caduca.firma`, inactividad y máximo absoluto (`data/session.json`), revocación por sesión |
 | `Publisher` (túnel, DNS, ingress) | R1 | |
 | `Power` | R1 + R2 | R2: correo de apagado antes de programar el corte del enchufe |
 | Archivos: `service_root`, `safe_path`, `list_dir`, `read_file` | R1 | Invariante de seguridad |
+| Edición: `write_file`, `backup_file`, `_check_writable` | R3 | Escritura atómica, conflicto por `mtime`, bloquea `.git`, versión anterior en `data/backups/` |
 | Git: `git_*` | R1 | |
 | `Tasks` (procesos) | R1 | |
 | `Health` | R1 + R2 | R2: latido del supervisor en cada comprobación; avisos por correo |
+| `Network` (vista de red) | R3 | Métricas de cloudflared (2 s de límite), reglas del túnel, enchufe en segundo plano cada ≥60 s |
+| `Metrics` (gráficas), `cpu_times` | R3 | Hilo propio que late; `data/metrics.json` cada 5 min y al cerrar |
+| `Backups` y ayudantes (`backup_disk`, `disk_kind`, `snapshot_time`, `_own_rels`, `_excluded`) | R3 | Copias en el HDD, no escribe si no está montado; restauración con filtro `data` |
 | `Gateway` (pasarela y página 503) | R1 + R2 | R2: su hilo lo lanza el supervisor |
 | `Roadmap` | R1 | |
 | Correo: `Notifier`, `email_html`, `make_orb_png`, `log_tail`, `strip_ansi` | R2 | |
 | Vigilancia: `Supervisor`, `sd_notify`, `previous_run`/`mark_run`, `journal_tail`, `startup_notice`, `_boot_report` | R2 | |
-| Despliegue: `gh_repos`, `detect_project`, `project_dir`, `install_steps`, `Deployer` | R1 | `Deployer._update` cambia en R2 solo para avisar |
+| Despliegue: `gh_repos`, `detect_project`, `project_dir`, `install_steps`, `Deployer` | R1 + R3 | R3: modo producción (`set_mode`, `_to_prod`, `_build`, `_publish_build`, `prod_command`, `build_info`) |
 | Plantillas (`TEMPLATES`, `template_create`, `_template_job`, `download_paper`) | R1 | |
-| `Handler` (rutas, cabeceras, cookies, estáticos, SSE) | R1 + R2 | R2: rutas `/api/notify` y `/api/notify/test` |
-| `main`, `panel_url` | R2 | Orden de arranque con supervisor, `READY=1` y watchdog |
+| `Handler` (rutas, cabeceras, cookies, estáticos, SSE) | R1 + R2 + R3 | R3: renovación de sesión, `/api/session-settings`, `/api/network`, `/api/metrics`, `mode`, `file` (PUT), `backups*` |
+| `main`, `panel_url` | R2 + R3 | R3: hilos `copias` y `graficas`; guarda las métricas al cerrar |
 
 ### Otros archivos
 
 | Archivo | Estado | Notas |
 |---|---|---|
-| `static/app.js` | R1 + R2 | R2: ventana de ajustes (avisos y vigilante externo), estado `retrying` |
-| `static/style.css` | R1 + R2 | R2: solo estilos de ajustes y del estado `retrying` |
+| `static/app.js` | R1 + R2 + R3 | R3: sesión y bloqueo, editor con resaltado, modo producción, pestaña Copias, gráficas SVG, vista Red |
+| `static/style.css` | R1 + R2 + R3 | R3: editor, copias, gráficas (`--chart`) y vista de red |
+| `serve.py` | R3 | Servidor estático de producción: solo 127.0.0.1, sin salir de la carpeta, gzip y caché |
 | `static/index.html`, `static/theme.js` | R1 | |
 | `static/favicon.svg`, `static/fonts/*` | — | Recursos estáticos, sin lógica |
-| `tapo.py` | R1 + R2 | R2: `rules`, `countdown` con una sola cuenta atrás, `cancel` que verifica, `setup`, `check` |
+| `tapo.py` | R1 + R2 + R3 | R3: `status` devuelve consumo (W, kWh), señal, IP y encendido desde |
 | `novahub.service` | R2 | `Type=notify`, `NotifyAccess=main`, `WatchdogSec=30`, `KillMode=process` |
-| `README.md` | R2 | Comprobado que describe lo que hace el código |
+| `README.md` | R2 + R3 | Comprobado que describe lo que hace el código |
 | `demo/` | — | Página de ejemplo, sin lógica |
 
 ---
@@ -80,18 +85,22 @@ Son propiedades que se verificaron con pruebas reales. Si un cambio toca su cód
 a comprobarlas.
 
 1. **Autenticación**: sin cookie, con token falsificado, caducado o de una sesión cerrada, toda la API responde 401. Los tokens se
-   firman con HMAC-SHA256 y un secreto de `data/auth.json`. La contraseña usa PBKDF2 con 600.000
+   firman con HMAC-SHA256 y un secreto de `data/auth.json`. Caducan tras la inactividad (15 min) y como mucho a las 12 h; solo
+   los renuevan peticiones con actividad real del usuario. Cerrar sesión invalida **todos** los tokens de esa sesión. La contraseña usa PBKDF2 con 600.000
    iteraciones. Máximo 5 intentos de login por IP cada 5 minutos.
 2. **CSRF**: toda petición que no sea GET exige la cabecera `X-NovaHub: 1`, y la cookie es
    `HttpOnly` y `SameSite=Strict`. Ningún GET modifica estado.
 3. **Rutas de archivos**: `safe_path` resuelve con `realpath` y rechaza todo lo que quede fuera de
    la carpeta del servicio, incluidos `../` y enlaces simbólicos. Los estáticos solo se sirven
-   desde `static/`.
+   desde `static/`. Editar no puede tocar `.git/`. Los nombres de copia se validan con una expresión
+   exacta, y restaurar usa el filtro `data` de `tarfile` (nada fuera de la carpeta). `serve.py` no sale
+   de la carpeta compilada.
 4. **XSS**: en `app.js`, todo dato del servidor pasa por `esc()` o se asigna con `textContent`. Las
    URL de servicio solo pueden ser `http(s)://`. En los correos, todo texto dinámico pasa por
    `html.escape`.
 5. **Secretos**: los archivos de `data/` tienen permisos 600. La contraseña de aplicación de Gmail
-   nunca se devuelve por la API. `tapo.json` exige 600.
+   nunca se devuelve por la API. `tapo.json` exige 600. Las copias del HDD (pueden llevar `.env`) van en
+   carpetas 700 y archivos 600.
 6. **Superficie de red**: el panel y las pasarelas escuchan solo en `127.0.0.1`. Desde fuera se
    llega únicamente por el túnel, con Cloudflare Access (Google) delante.
 7. **Peticiones malformadas**: si `Content-Length` es negativo o no numérico, la respuesta es 400 sin
@@ -112,10 +121,32 @@ a comprobarlas.
   falsas. Solo se muestra a usuarios autenticados.
 - **Las webs publicadas dependen de NovaHub**, que hace de pasarela: si NovaHub se reinicia, se
   cortan 2 o 3 segundos. Los servicios no se ven afectados.
+- **«Pedir la contraseña al recargar» lo aplica la interfaz**: al cargar sin haber escrito la contraseña,
+  cierra la sesión en el servidor. Quien tenga la cookie y no use la interfaz no se ve afectado; para eso
+  están la caducidad por inactividad y Cloudflare Access.
+- **Restaurar una copia borra** lo creado después en las carpetas copiadas (salvo lo excluido). Antes
+  siempre se guarda una copia del estado actual.
+- **Se puede encender a mano un servicio durante su restauración**: la interfaz no lo impide.
+- **El modo producción y las actualizaciones ejecutan `npm run build`** del propio proyecto.
 - **Clonar repositorios o usar plantillas ejecuta sus scripts de instalación** (`npm ci` y
   similares). Solo se clonan repositorios propios.
 
 ## Hallazgos y correcciones
+
+### Revisión 3 (incremental, 2026-10-06)
+
+| # | Problema | Riesgo | Corrección |
+|---|---|---|---|
+| 1 | Modo producción: `serve.py` servía `dist/` directamente y `npm run build` la vacía al empezar. Una compilación fallida (o los segundos que dura una buena) dejaba la web publicada sin archivos | Medio | Se sirve una copia en `data/builds/<id>/current`, que solo cambia (de forma atómica) cuando la compilación acaba bien |
+| 2 | Cerrar sesión solo invalidaba el último token; uno anterior de la misma sesión (antes de una renovación) seguía valiendo hasta su caducidad | Bajo | La revocación es por sesión («emitido»), así caen todos sus tokens |
+| 3 | Restaurar borraba según las exclusiones *actuales*: si después de la copia se quitaba `node_modules` de «Excluir», restaurar lo borraba | Medio | Cada copia guarda sus exclusiones (cabecera PAX) y la restauración usa esas |
+| 4 | Una copia automática que fallaba (p. ej. disco sin montar) se reintentaba cada 30 s | Bajo | Reintento a los 30 min |
+| 5 | Si el servicio estaba esperando un reintento, el gestor podía arrancarlo a mitad de una restauración | Bajo | Parar para copiar o restaurar cancela el reintento y lo arranca al acabar |
+| 6 | `serve.py` marcaba como inmutables un año archivos sin huella con nombres largos (`logo-transparente.png`); una ruta con byte nulo daba un error interno | Bajo | Caché larga solo en `assets/` o `static/`; byte nulo → 404 |
+| 7 | La pestaña Copias dejaba de refrescarse sola tras salir de la ficha durante una copia | Bajo | El temporizador se reinicia al cambiar de vista |
+
+También se ordenó una cabecera de sección mal colocada y la lista de servicios que lee el hilo de
+gráficas pasa a leerse con el lock.
 
 ### Revisión 2 (incremental, 2026-10-06)
 
@@ -151,6 +182,8 @@ Los anoto para no buscarlos otra vez: ya están corregidos.
 - Reiniciar NovaHub volvía a encender servicios que se habían apagado a propósito.
 - Al encender el servidor, el túnel arrancaba antes que el DNS y casi agotaba los reintentos.
 - Gmail corta la conexión, en vez de responder 535, cuando la contraseña de aplicación es incorrecta.
+- Ctrl+S del editor solo guardaba con el foco en el área de texto, y dos guardados en el mismo segundo
+  pisaban la versión anterior guardada.
 
 ---
 
@@ -167,7 +200,10 @@ Los anoto para no buscarlos otra vez: ya están corregidos.
 4. **Watchdog real**: una copia en un servicio temporal de systemd (`systemd-run --user` con
    `Type=notify` y `WatchdogSec=30`). Se congeló con `SIGSTOP` y se comprobó que systemd la
    reiniciaba.
-5. **Regresión en el panel real**: las 16 rutas de lectura responden 200; se comprueban las
+5. **Prueba de memoria** (revisión 3): un servicio que crece hasta 500 MB con límite de 300 MB se
+   reinició 3 veces (a los ~30 s por encima del límite cada vez) y a la cuarta NovaHub dejó de reiniciarlo
+   y lo anotó, como está previsto. La gráfica de memoria muestra la línea del límite.
+6. **Regresión en el panel real**: las 18 rutas de lectura responden 200; se comprueban las
    protecciones (401 sin sesión, 403 sin cabecera, 403 con `../`); y un navegador headless recorre
    24 pasos en claro, oscuro, escritorio y móvil sin errores de JavaScript ni desbordamientos.
 
