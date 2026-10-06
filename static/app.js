@@ -29,6 +29,7 @@ const ICON = {
   box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg>',
   user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 4 6"/></svg>',
+  server: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>',
   mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg>',
@@ -159,7 +160,7 @@ async function api(method, url, body) {
   if (body !== undefined) headers["Content-Type"] = "application/json";
   let res;
   try {
-    res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, credentials: "same-origin" });
+    res = await fetch(apiUrl(url), { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, credentials: "same-origin" });
   } catch {
     setOffline(true);
     await checkAccessSession();
@@ -285,6 +286,7 @@ function shell() {
         ${NAV.filter((n) => !n[5] || can(n[5])).map(([key, href, label, k, icon]) => `<a href="${href}" data-nav="${key}" title="${label} (${k})">${icon}<span>${label}</span></a>`).join("")}
       </nav>
       <div class="top-actions">
+        <div class="srv-pick" id="srv-pick" hidden></div>
         <span class="lcd host-chip" id="host-chip"></span>
         <button class="btn primary" data-act="new" data-perm="admin">${ICON.plus}<span>Nuevo servicio</span></button>
         <a class="btn icon" href="#/ajustes" data-nav="settings" title="Ajustes" aria-label="Ajustes">${ICON.settings}</a>
@@ -459,6 +461,77 @@ function viewNoAccess() {
     <a class="btn" href="#/">Volver al resumen</a></div>`;
 }
 
+// ───────────────────────── varios servidores ─────────────────────────
+// Con otro servidor elegido arriba, las peticiones van a /api/remote/<id>/… y este panel las reenvía.
+
+const HUB_ONLY = /^\/api\/(me|login|logout|account|servers|remote)(\/|$|\?)/;
+function apiUrl(url) {
+  if (!ui.server || ui.server === "local" || !url.startsWith("/api/") || HUB_ONLY.test(url)) return url;
+  return `/api/remote/${encodeURIComponent(ui.server)}/${url.slice(5)}`;
+}
+
+async function loadServers() {
+  if (!can("admin")) { ui.servers = []; return; }
+  try { ui.servers = (await api("GET", "/api/servers")).servers; } catch { ui.servers = ui.servers || []; }
+  if (ui.server !== "local" && !ui.servers.some((s) => s.id === ui.server)) ui.server = "local";
+  drawServerPicker();
+}
+
+// En el resumen de este servidor: los demás, con su estado (clic para cambiar a ese)
+function drawServerCards() {
+  const el = $("#ov-servers");
+  if (!el || ui.server !== "local" || !ui.servers?.length) { if (el) el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="section-title"><h2>Otros servidores</h2><a href="#/ajustes/servidores">Gestionar →</a></div>
+    <div class="srv-cards">${ui.servers.map((x) => {
+      const st = x.status || {};
+      return `<button type="button" class="module srv-card" data-srv="${esc(x.id)}" ${st.online ? "" : "disabled"}>
+        <span class="srv-head"><span class="srv-dot ${st.online ? "on" : "off"}"></span><b>${esc(x.name)}</b></span>
+        <small>${st.online ? `${st.running} de ${st.services} en marcha${st.crashed ? ` · <span class="bad-text">${st.crashed} con error</span>` : ""}
+          · RAM ${Math.round(pct(st.mem_used, st.mem_total))} % · encendido ${fmtDuration(st.uptime)}` : `<span class="bad-text">${esc(st.error || "Sin conexión")}</span>`}</small>
+      </button>`;
+    }).join("")}</div>`;
+}
+
+function serverName() {
+  return ui.server === "local" ? "Este servidor" : ui.servers.find((s) => s.id === ui.server)?.name || ui.server;
+}
+
+function drawServerPicker() {
+  const el = $("#srv-pick");
+  if (!el) return;
+  el.hidden = !ui.servers?.length;
+  document.body.classList.toggle("remote-mode", ui.server !== "local");
+  if (el.hidden) return;
+  const dot = (s) => `<span class="srv-dot ${s.status?.online === false ? "off" : "on"}"></span>`;
+  el.innerHTML = `
+    <button type="button" class="btn srv-btn" data-srv="menu" aria-haspopup="true">${ICON.server}<span>${esc(serverName())}</span></button>
+    <div class="srv-menu module" hidden>
+      <button type="button" data-srv="local" class="${ui.server === "local" ? "active" : ""}"><span class="srv-dot on"></span>Este servidor</button>
+      ${ui.servers.map((s) => `<button type="button" data-srv="${esc(s.id)}" class="${ui.server === s.id ? "active" : ""}" ${s.status?.online === false ? 'title="Sin conexión"' : ""}>
+        ${dot(s)}${esc(s.name)}</button>`).join("")}
+      <a href="#/ajustes/servidores">Gestionar servidores…</a>
+    </div>`;
+}
+
+function switchServer(id) {
+  ui.server = id;
+  try { localStorage.setItem("nh-server", id); } catch { /* sin almacenamiento */ }
+  ui.services = [];
+  ui.gitRepo = null;
+  drawServerPicker();
+  toast(`Ahora ves: ${serverName()}`, "ok");
+  if (location.hash === "#/" || location.hash === "") route(); else location.hash = "#/";
+}
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-srv]");
+  const menu = $("#srv-pick .srv-menu");
+  if (!b) { if (menu && !e.target.closest("#srv-pick")) menu.hidden = true; return; }
+  if (b.dataset.srv === "menu") { menu.hidden = !menu.hidden; return; }
+  menu.hidden = true;
+  if (b.dataset.srv !== ui.server) switchServer(b.dataset.srv);
+});
+
 // ───────────────────────── vista: resumen ─────────────────────────
 
 function viewOverview() {
@@ -470,10 +543,12 @@ function viewOverview() {
       </div>
     </section>
     <section class="kpis" id="kpis"></section>
+    <div id="ov-servers"></div>
     ${usageHTML("system")}
     <div class="section-title"><h2>Servicios</h2><a href="#/servicios">Ver todos →</a></div>
     <section class="module rows" id="ov-rows"></section>`;
   drawKpis();
+  drawServerCards();
   setupUsage();
   refreshOverview();
   every(3000, refreshOverview);
@@ -1246,6 +1321,8 @@ async function openGithub() {
 const SETTINGS = [
   ["cuenta", "Mi cuenta", "Tu contraseña", ICON.user, null],
   ["usuarios", "Usuarios", "Quién entra y qué puede hacer", ICON.users, "admin"],
+  ["servidores", "Servidores", "Otros servidores en este panel", ICON.server, "admin"],
+  ["remoto", "Acceso remoto", "Llaves para otros paneles", ICON.key, "admin"],
   ["avisos", "Avisos por correo", "Gmail y qué avisar", ICON.mail, "admin"],
   ["vigilante", "Vigilante externo", "Si el servidor cae del todo", ICON.activity, "admin"],
   ["sesion", "Sesión", "Contraseña e inactividad", ICON.lock, "admin"],
@@ -1266,7 +1343,7 @@ function viewSettings(cat) {
       <section class="module set-body" id="set-body"><div class="pane-msg">Cargando…</div></section>
     </div>`;
   $(".set-nav a.active").scrollIntoView({ block: "nearest", inline: "center" });  // en el móvil la lista se desliza
-  ({ cuenta: setAccount, usuarios: setUsers, avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, git: setGit, app: setApp })[cat]($("#set-body"));
+  ({ cuenta: setAccount, usuarios: setUsers, servidores: setServers, remoto: setTokens, avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, git: setGit, app: setApp })[cat]($("#set-body"));
 }
 
 // Pie con «Guardar» y el error, común a todas las categorías
@@ -1476,6 +1553,88 @@ async function setUsers(body) {
   };
 }
 
+async function setServers(body) {
+  const { servers } = await api("GET", "/api/servers");
+  const row = (s) => {
+    const st = s.status || {};
+    return `<div class="user-row" data-server="${esc(s.id)}">
+      <span class="srv-dot ${st.online ? "on" : "off"}" title="${st.online ? "En línea" : esc(st.error || "Sin conexión")}"></span>
+      <div class="user-main"><b>${esc(s.name)}</b> <span class="dim-text mono">${esc(s.url)}</span>
+        <small>${st.online ? `${esc(st.hostname)} · ${st.running} de ${st.services} servicios en marcha${st.crashed ? ` · <span class="bad-text">${st.crashed} con error</span>` : ""} · RAM ${fmtBytes(st.mem_used)} de ${fmtBytes(st.mem_total)}`
+          : `<span class="bad-text">${esc(st.error || "Sin conexión")}</span>`}</small></div>
+      <button type="button" class="btn sm" data-sact="open" ${st.online ? "" : "disabled"}>Abrir</button>
+      <button type="button" class="btn sm icon ghost" data-sact="del" title="Quitar del panel" aria-label="Quitar del panel">${ICON.trash}</button>
+    </div>`;
+  };
+  setForm(body, `
+    <h2 class="set-title">Servidores</h2>
+    <p class="set-sub">Otros servidores con NovaHub que puedes manejar desde este panel con el selector de arriba. Las peticiones van
+      por <b>Tailscale</b> (red privada y cifrada, sin abrir puertos).</p>
+    <div class="user-list">${servers.length ? servers.map(row).join("") : '<p class="dim-text">Aún no hay otros servidores.</p>'}</div>
+    <details class="adv" ${servers.length ? "" : "open"}><summary>Cómo preparar otro servidor</summary><div class="inner set-steps">
+      <ol>
+        <li>Instala NovaHub en el otro servidor (Linux) y Tailscale con tu misma cuenta.</li>
+        <li>En su <code>novahub.service</code>, añade <code>Environment=NOVAHUB_REMOTE_LISTEN=&lt;su IP de Tailscale&gt;:8687</code> y reinícialo.
+          Es una puerta solo para paneles: no tiene interfaz ni inicio de sesión, solo acepta llaves.</li>
+        <li>En el NovaHub de ese servidor: Ajustes → <b>Acceso remoto</b> → crea una llave y cópiala.</li>
+        <li>Aquí abajo: nombre, <code>http://&lt;su IP de Tailscale&gt;:8687</code> y la llave.</li>
+      </ol></div></details>
+    <h3 class="set-h">Añadir servidor</h3>
+    <div class="set-grid">
+      <label class="field"><span>Nombre</span><input name="name" placeholder="Raspberry del salón"></label>
+      <label class="field"><span>Dirección</span><input name="url" class="mono" spellcheck="false" placeholder="http://100.64.0.2:8687"></label>
+    </div>
+    <label class="field"><span>Llave de acceso</span><input name="token" type="password" class="mono" spellcheck="false" autocomplete="off" placeholder="nh_…">
+      <small>Se comprueba la conexión antes de guardarlo.</small></label>`, async (f) => {
+    await api("POST", "/api/servers", { name: f.name.value.trim(), url: f.url.value.trim(), token: f.token.value.trim() });
+    await loadServers();
+    setServers(body);
+  });
+  $("#set-save", body).textContent = "Añadir servidor";
+  body.onclick = async (e) => {
+    const act = e.target.closest("[data-sact]")?.dataset.sact, id = e.target.closest("[data-server]")?.dataset.server;
+    if (act === "open") switchServer(id);
+    if (act === "del" && await confirmDialog("Quitar servidor", "Deja de verse en este panel. El otro servidor y sus servicios siguen funcionando; revoca también la llave allí si ya no la vas a usar.", "Quitar")) {
+      try { await api("DELETE", `/api/servers/${id}`); await loadServers(); setServers(body); } catch (err) { toast(err.message, "error"); }
+    }
+  };
+}
+
+async function setTokens(body) {
+  const d = await api("GET", "/api/tokens");
+  const list = () => d.tokens.length ? d.tokens.map((t) => `<div class="user-row" data-token="${esc(t.id)}">
+      <div class="user-main"><b>${esc(t.name)}</b> <span class="dim-text">de ${esc(t.user)}</span>
+        <small>creada ${fmtAgo(t.created)} · ${t.last_used ? `usada ${fmtAgo(t.last_used)}` : "sin usar"}</small></div>
+      <button type="button" class="btn sm" data-tact="del">Revocar</button></div>`).join("") : '<p class="dim-text">No hay llaves.</p>';
+  setForm(body, `
+    <h2 class="set-title">Acceso remoto</h2>
+    <p class="set-sub">Llaves para que <b>otro</b> panel NovaHub maneje ${ui.server !== "local" ? "este servidor" : "este servidor"} (Ajustes → Servidores, allí).
+      Cada llave actúa con tus permisos; revócala y deja de valer al momento.</p>
+    ${d.listen ? `<p class="nt-ok">Puerta para otros paneles activa en <code>http://${esc(d.listen)}</code>.</p>`
+      : '<p class="git-note">La puerta para otros paneles está cerrada. Para abrirla, añade <code>Environment=NOVAHUB_REMOTE_LISTEN=&lt;IP de Tailscale&gt;:8687</code> a novahub.service y reinicia NovaHub.</p>'}
+    <div class="user-list" id="tok-list">${list()}</div>
+    <div id="tok-new"></div>
+    <h3 class="set-h">Nueva llave</h3>
+    <label class="field"><span>Para qué panel es</span><input name="name" placeholder="Panel principal"></label>`, async (f) => {
+    const r = await api("POST", "/api/tokens", { name: f.name.value.trim() });
+    d.tokens = r.tokens;
+    $("#tok-list", body).innerHTML = list();
+    $("#tok-new", body).innerHTML = `<div class="nt-ok tok-show"><b>Copia la llave ahora: no se vuelve a mostrar.</b>
+      <code id="tok-raw">${esc(r.token)}</code><button type="button" class="btn sm" data-tact="copy">Copiar</button></div>`;
+    f.reset();
+  });
+  $("#set-save", body).textContent = "Crear llave";
+  body.onclick = async (e) => {
+    const act = e.target.closest("[data-tact]")?.dataset.tact;
+    if (act === "copy") { navigator.clipboard?.writeText($("#tok-raw", body).textContent).then(() => toast("Llave copiada", "ok"), () => {}); }
+    if (act === "del") {
+      const id = e.target.closest("[data-token]").dataset.token;
+      if (!(await confirmDialog("Revocar llave", "El panel que la usa dejará de poder manejar este servidor al momento.", "Revocar"))) return;
+      try { d.tokens = (await api("DELETE", `/api/tokens/${id}`)).tokens; $("#tok-list", body).innerHTML = list(); } catch (err) { toast(err.message, "error"); }
+    }
+  };
+}
+
 function setApp(body) {
   body.innerHTML = `
     <h2 class="set-title">App para el móvil</h2>
@@ -1600,7 +1759,7 @@ function viewDetail(id) {
           </div>
           <div class="term-tools" data-for="console">
             <label class="chk" title="Auto-scroll"><input type="checkbox" id="autoscroll" checked><span>Auto-scroll</span></label>
-            <a class="btn sm icon" href="/api/services/${esc(id)}/logs/download" download title="Descargar log" aria-label="Descargar log">${ICON.download}</a>
+            <a class="btn sm icon" href="${esc(apiUrl(`/api/services/${id}/logs/download`))}" download title="Descargar log" aria-label="Descargar log">${ICON.download}</a>
             <button class="btn sm icon" data-act="clear-log" data-perm="edit" title="Limpiar consola" aria-label="Limpiar consola">${ICON.trash}</button>
             <button class="btn sm icon" data-term="max" title="Pantalla completa (Esc para salir)" aria-label="Pantalla completa">${ICON.expand}</button>
           </div>
@@ -1715,7 +1874,7 @@ function setupTabs(id) {
 
 // ───────────────────────── ficha: archivos ─────────────────────────
 
-const fileUrl = (id, path, action = "file") => `/api/services/${encodeURIComponent(id)}/${action}?path=${encodeURIComponent(path)}`;
+const fileUrl = (id, path, action = "file") => apiUrl(`/api/services/${encodeURIComponent(id)}/${action}?path=${encodeURIComponent(path)}`);
 
 function crumbsHTML(root, path) {
   const parts = path ? path.split("/") : [];
@@ -2050,7 +2209,7 @@ function backupRows(id, b) {
       <span class="bk-date">${esc(fmtTime(x.created))}</span>
       <span class="bk-size num">${fmtBytes(x.size)}</span>
       <span class="bk-actions">
-        <a class="btn sm icon" href="/api/services/${encodeURIComponent(id)}/backups/download?name=${encodeURIComponent(x.name)}" download title="Descargar" aria-label="Descargar">${ICON.download}</a>
+        <a class="btn sm icon" href="${esc(apiUrl(`/api/services/${encodeURIComponent(id)}/backups/download?name=${encodeURIComponent(x.name)}`))}" download title="Descargar" aria-label="Descargar">${ICON.download}</a>
         <button type="button" class="btn sm" data-bk="restore" data-name="${esc(x.name)}" ${b.running ? "disabled" : ""}>Restaurar</button>
         <button type="button" class="btn sm icon ghost" data-bk="delete" data-name="${esc(x.name)}" title="Borrar" aria-label="Borrar">${ICON.trash}</button>
       </span>
@@ -2676,7 +2835,7 @@ function openConsole(id) {
   });
   auto.addEventListener("change", scroll);
 
-  const es = new EventSource(`/api/services/${encodeURIComponent(id)}/logs/stream`);
+  const es = new EventSource(apiUrl(`/api/services/${encodeURIComponent(id)}/logs/stream`));
   // al (re)conectar el servidor vuelve a mandar la cola del log: se empieza de cero
   es.onopen = () => { term.clear(); live.classList.add("on"); };
   es.onmessage = (e) => { term.write(JSON.parse(e.data)); scroll(); };
@@ -3073,6 +3232,7 @@ async function start() {
   }
   ui.me = me.user;
   applyPerms();
+  try { ui.server = localStorage.getItem("nh-server") || "local"; } catch { ui.server = "local"; }
   if (me.lock_on_reload && !ui.unlocked) {
     // «pedir la contraseña al recargar»: se cierra la sesión que quedara de la carga anterior
     await api("POST", "/api/logout").catch(() => {});
@@ -3081,6 +3241,7 @@ async function start() {
   }
   ui.locked = false;
   shell();
+  await loadServers();
   route();
 }
 

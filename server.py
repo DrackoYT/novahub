@@ -4125,6 +4125,172 @@ class Scheduler:
 SCHEDULER = Scheduler()
 
 
+# ───────────────────────────── varios servidores ─────────────────────────────
+# Cada servidor extra ejecuta su propio NovaHub («agente») con una puerta solo de API (NOVAHUB_REMOTE_LISTEN,
+# p. ej. su IP de Tailscale) que únicamente acepta llaves de acceso. El panel principal guarda esas llaves y
+# reenvía las peticiones: /api/remote/<servidor>/… → http://<agente>/api/…
+
+TOKENS_FILE = os.path.join(DATA_DIR, "tokens.json")
+SERVERS_FILE = os.path.join(DATA_DIR, "servers.json")
+
+
+class ApiTokens:
+    """Llaves de acceso para otro panel NovaHub. Solo se guarda su huella (SHA-256): la llave se ve una vez."""
+
+    def __init__(self):
+        self.items = read_json(TOKENS_FILE, {})   # huella -> {name, user, created, last_used}
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def _hash(raw):
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    def create(self, name, user):
+        name = re.sub(r"[\x00-\x1f\x7f]", "", str(name or "")).strip()[:60]
+        if not name:
+            raise ApiError(400, "Ponle un nombre a la llave (p. ej. el panel que la usará)")
+        if user not in AUTH.users:
+            raise ApiError(400, "Ese usuario no existe")
+        raw = "nh_" + secrets.token_urlsafe(32)
+        with self.lock:
+            self.items[self._hash(raw)] = {"name": name, "user": user, "created": time.time(), "last_used": None}
+            write_json(TOKENS_FILE, self.items, mode=0o600)
+        return raw
+
+    def public(self):
+        return [{"id": h[:12], "name": t["name"], "user": t["user"], "created": t["created"], "last_used": t.get("last_used")}
+                for h, t in sorted(self.items.items(), key=lambda x: x[1]["created"])]
+
+    def revoke(self, tid):
+        with self.lock:
+            match = [h for h in self.items if h.startswith(tid)]
+            if len(match) != 1:
+                raise ApiError(404, "Esa llave no existe")
+            del self.items[match[0]]
+            write_json(TOKENS_FILE, self.items, mode=0o600)
+
+    def check(self, raw):
+        """El usuario de la llave, o None. Una llave de un usuario borrado no vale."""
+        t = self.items.get(self._hash(raw)) if raw.startswith("nh_") else None
+        if not t or t["user"] not in AUTH.users:
+            return None
+        if time.time() - (t.get("last_used") or 0) > 300:  # se anota como mucho cada 5 min
+            with self.lock:
+                t["last_used"] = time.time()
+                write_json(TOKENS_FILE, self.items, mode=0o600)
+        return t["user"]
+
+
+TOKENS = ApiTokens()
+SERVER_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+
+
+class Remotes:
+    """Los otros servidores que se ven desde este panel."""
+
+    STATUS_TTL = 10
+
+    def __init__(self):
+        self.items = read_json(SERVERS_FILE, [])   # [{id, name, url, token}]
+        self.lock = threading.Lock()
+        self.cache = {}   # id -> (momento, estado)
+
+    def get(self, rid):
+        s = next((x for x in self.items if x["id"] == rid), None)
+        if not s:
+            raise ApiError(404, "Ese servidor no existe")
+        return s
+
+    @staticmethod
+    def _split(url):
+        u = urlparse(url)
+        return u.scheme, u.hostname, u.port or (443 if u.scheme == "https" else 80)
+
+    def connect(self, s, timeout=15):
+        scheme, host, port = self._split(s["url"])
+        cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+        return cls(host, port, timeout=timeout)
+
+    def call(self, s, method, path, body=None, timeout=6):
+        """Petición a la API de un agente y su respuesta JSON (lanza ApiError si no se puede)."""
+        try:
+            conn = self.connect(s, timeout)
+            conn.request(method, path, body=json.dumps(body).encode() if body is not None else None,
+                         headers={"Authorization": f"Bearer {s['token']}", "X-NovaHub": "1", "Content-Type": "application/json"})
+            res = conn.getresponse()
+            data = json.loads(res.read(5_000_000) or b"{}")
+            conn.close()
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            raise ApiError(502, f"No se puede conectar con «{s['name']}»: {e}")
+        if res.status == 401:
+            raise ApiError(502, f"«{s['name']}» no acepta la llave (¿la han revocado?)")
+        if res.status >= 400:
+            raise ApiError(502, f"«{s['name']}» responde: {data.get('error', res.status)}")
+        return data
+
+    def add(self, data):
+        name = re.sub(r"[\x00-\x1f\x7f]", "", str(data.get("name") or "")).strip()[:40]
+        url = str(data.get("url") or "").strip().rstrip("/")
+        token = str(data.get("token") or "").strip()
+        if not name:
+            raise ApiError(400, "Ponle un nombre al servidor")
+        if not re.fullmatch(r"https?://[A-Za-z0-9.\-\[\]:]+(:\d+)?", url):
+            raise ApiError(400, "La dirección debe ser como http://100.64.0.2:8687 (sin rutas)")
+        if not token.startswith("nh_"):
+            raise ApiError(400, "La llave empieza por nh_: créala en el otro NovaHub, en Ajustes → Acceso remoto")
+        rid = slugify(name)
+        with self.lock:
+            while any(x["id"] == rid for x in self.items):
+                rid = f"{slugify(name)[:26]}-{secrets.token_hex(2)}"
+        s = {"id": rid, "name": name, "url": url, "token": token}
+        me = self.call(s, "GET", "/api/me")  # antes de guardar: que conecte y que la llave valga
+        if (me.get("user") or {}).get("role") != "admin":
+            raise ApiError(400, "La llave tiene que ser de un administrador del otro servidor")
+        with self.lock:
+            self.items.append(s)
+            write_json(SERVERS_FILE, self.items, mode=0o600)
+        return self.public()
+
+    def delete(self, rid):
+        with self.lock:
+            self.get(rid)
+            self.items = [x for x in self.items if x["id"] != rid]
+            write_json(SERVERS_FILE, self.items, mode=0o600)
+        self.cache.pop(rid, None)
+
+    def status(self, s):
+        hit = self.cache.get(s["id"])
+        if hit and time.time() - hit[0] < self.STATUS_TTL:
+            return hit[1]
+        try:
+            sysinfo = self.call(s, "GET", "/api/system", timeout=4)
+            svcs = self.call(s, "GET", "/api/services", timeout=4)["services"]
+            st = {"online": True, "hostname": sysinfo.get("hostname"), "cpus": sysinfo.get("cpus"), "load": sysinfo.get("load"),
+                  "mem_used": sysinfo.get("mem_used"), "mem_total": sysinfo.get("mem_total"), "uptime": sysinfo.get("uptime"),
+                  "services": len(svcs), "running": sum(1 for x in svcs if x["status"] == "running"),
+                  "crashed": sum(1 for x in svcs if x["status"] == "crashed")}
+        except ApiError as e:
+            st = {"online": False, "error": e.msg}
+        self.cache[s["id"]] = (time.time(), st)
+        return st
+
+    def public(self, with_status=False):
+        items = [{"id": s["id"], "name": s["name"], "url": s["url"]} for s in self.items]
+        if with_status and items:
+            results = {}
+            threads = [threading.Thread(target=lambda s=s: results.__setitem__(s["id"], self.status(s)), daemon=True) for s in self.items]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(6)
+            for it in items:
+                it["status"] = results.get(it["id"], {"online": False, "error": "no responde"})
+        return items
+
+
+REMOTES = Remotes()
+
+
 # ───────────────────────────── plantillas de servicio ─────────────────────────────
 
 def _has_venv():
@@ -4485,6 +4651,10 @@ SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|i
                            r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run|logs/search|env))?")
 KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
 USER_ROUTE = re.compile(r"/api/users/([a-z0-9][a-z0-9._-]{1,31})")
+REMOTE_ROUTE = re.compile(r"/api/remote/([a-z0-9][a-z0-9-]{0,31})/(.+)")
+SERVER_ROUTE = re.compile(r"/api/servers/([a-z0-9][a-z0-9-]{0,31})")
+TOKEN_ROUTE = re.compile(r"/api/tokens/([0-9a-f]{12})")
+REMOTE_LISTEN = os.environ.get("NOVAHUB_REMOTE_LISTEN", "").strip()   # «IP:puerto» de la puerta para otros paneles
 # Lo que puede hacer quien no es administrador. Todo lo demás exige «admin» (denegado por defecto).
 SERVICE_VIEW = {None, "logs/stream", "logs/search", "logs/download", "backups", "tasks"}
 SERVICE_OPERATE = {"start", "stop", "restart", "backups/run", "tasks/run"}
@@ -4597,6 +4767,16 @@ class Handler(BaseHTTPRequestHandler):
     def authed(self):
         """Valida la sesión. Si el usuario está activo (cabecera de la interfaz), alarga la caducidad:
         las peticiones automáticas de la pantalla no cuentan, así una pestaña olvidada se bloquea sola."""
+        auth = self.headers.get("Authorization") or ""
+        if auth.startswith("Bearer "):  # otro panel NovaHub con una llave de acceso: sin cookies ni renovación
+            username = TOKENS.check(auth[7:].strip())
+            if not username:
+                AUTH.failed(self.client_ip())
+                return False
+            self.user = AUTH.public_user(username)
+            return True
+        if getattr(self.server, "remote_only", False):
+            return False  # la puerta para otros paneles solo acepta llaves
         token = self.session_token()
         parsed = AUTH.parse_token(token)
         if not parsed:
@@ -4631,6 +4811,8 @@ class Handler(BaseHTTPRequestHandler):
         self.user = None
         path = urlparse(self.path).path
         try:
+            if getattr(self.server, "remote_only", False) and (not path.startswith("/api/") or path in ("/api/login", "/api/logout")):
+                raise ApiError(404, "No encontrado")  # puerta solo de API: ni interfaz ni inicio de sesión
             if path.startswith("/api/"):
                 self.api(method, path)
             elif method == "GET":
@@ -4687,8 +4869,14 @@ class Handler(BaseHTTPRequestHandler):
             AUTH.revoke(self.session_token())
             return self.send_json({"ok": True}, cookie=self.session_cookie("", 0))
 
+        if AUTH.throttled(self.client_ip()) and (self.headers.get("Authorization") or "").startswith("Bearer "):
+            raise ApiError(429, "Demasiados intentos. Espera unos minutos.")
         if not self.authed():
             raise ApiError(401, "No autorizado")
+        m = REMOTE_ROUTE.fullmatch(path)
+        if m:  # otro servidor: este panel reenvía la petición con la llave guardada
+            self.need("admin")
+            return self.proxy(m.group(1), m.group(2))
         perm, psid = route_permission(method, path, self.query("service"))
         self.need(perm, psid)  # todo lo que no está en route_permission es solo para administradores
 
@@ -4699,6 +4887,28 @@ class Handler(BaseHTTPRequestHandler):
             AUTH.change_own_password(self.user["username"], body.get("current"), body.get("password"))
             username = self.user["username"]  # la versión ha cambiado: sesión nueva para seguir dentro
             return self.send_json({"ok": True}, cookie=self.session_cookie(AUTH.make_token(username)))
+        if path == "/api/servers":
+            if method == "GET":
+                return self.send_json({"servers": REMOTES.public(with_status=True)})
+            if method == "POST":
+                return self.send_json({"servers": REMOTES.add(self.read_body())}, 201)
+            raise ApiError(405, "Método no permitido")
+        m = SERVER_ROUTE.fullmatch(path)
+        if m and method == "DELETE":
+            REMOTES.delete(m.group(1))
+            return self.send_json({"ok": True})
+        if path == "/api/tokens":
+            if method == "GET":
+                return self.send_json({"tokens": TOKENS.public(), "listen": REMOTE_LISTEN or None})
+            if method == "POST":
+                body = self.read_body()
+                raw = TOKENS.create(body.get("name"), self.user["username"])
+                return self.send_json({"token": raw, "tokens": TOKENS.public()}, 201)
+            raise ApiError(405, "Método no permitido")
+        m = TOKEN_ROUTE.fullmatch(path)
+        if m and method == "DELETE":
+            TOKENS.revoke(m.group(1))
+            return self.send_json({"tokens": TOKENS.public()})
         if path == "/api/users":
             if method == "GET":
                 return self.send_json({"users": AUTH.list_users(), "roles": ROLE_LABELS})
@@ -4904,6 +5114,46 @@ class Handler(BaseHTTPRequestHandler):
         with open(full, "rb") as f:
             shutil.copyfileobj(f, self.wfile, 64 * 1024)
 
+    def proxy(self, rid, rest):
+        """Reenvía la petición al agente y devuelve su respuesta tal cual, a trozos (sirve para SSE y descargas)."""
+        s = REMOTES.get(rid)
+        if rest in ("login", "logout", "account") or rest.startswith("remote/"):
+            raise ApiError(400, "Eso se hace en el panel principal")
+        query = urlparse(self.path).query
+        body = None
+        if self.command not in ("GET", "HEAD"):
+            body = json.dumps(self.read_body()).encode()
+        stream = rest.endswith("logs/stream")
+        try:
+            conn = REMOTES.connect(s, timeout=60 if stream else 30)
+            conn.request(self.command, f"/api/{rest}" + (f"?{query}" if query else ""), body=body,
+                         headers={"Authorization": f"Bearer {s['token']}", "X-NovaHub": "1", "Content-Type": "application/json"})
+            res = conn.getresponse()
+        except (OSError, http.client.HTTPException) as e:
+            raise ApiError(502, f"No se puede conectar con «{s['name']}»: {e}")
+        if res.status == 401:
+            raise ApiError(502, f"«{s['name']}» no acepta la llave (¿la han revocado?)")
+        self.send_response(res.status)
+        for h in ("Content-Type", "Content-Disposition", "Content-Length", "Cache-Control"):
+            if res.getheader(h):
+                self.send_header(h, res.getheader(h))
+        if self.renewed_cookie:  # mientras se usa otro servidor, la sesión de este panel también se alarga
+            self.send_header("Set-Cookie", self.renewed_cookie)
+        self.common_headers()
+        self.end_headers()
+        try:
+            while True:
+                chunk = res.read1(65536) if stream else res.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                if stream:
+                    self.wfile.flush()
+        except (OSError, http.client.HTTPException):
+            pass
+        finally:
+            conn.close()
+
     def download_snapshot(self, sid, name):
         full = BACKUPS.path_of(sid, name)
         self.send_response(200)
@@ -5026,6 +5276,21 @@ def panel_url(port):
     return f"https://{host}" if host else None
 
 
+def remote_listener():
+    """Puerta solo de API para otros paneles NovaHub (NOVAHUB_REMOTE_LISTEN=IP:puerto, p. ej. la IP de Tailscale)."""
+    host, _, port = REMOTE_LISTEN.rpartition(":")
+    while True:
+        try:
+            srv = ThreadingHTTPServer((host.strip("[]"), int(port)), Handler)
+            srv.daemon_threads = True
+            srv.remote_only = True
+            print(f"Puerta para otros paneles en http://{REMOTE_LISTEN} (solo con llave de acceso)", flush=True)
+            srv.serve_forever()
+        except (OSError, ValueError) as e:
+            print(f"[puerta remota] no se puede escuchar en {REMOTE_LISTEN}: {e}; reintento en 30 s", flush=True)
+            time.sleep(30)
+
+
 def main():
     global MANAGER, AUTH, PUBLISHER, GATEWAY
     parser = argparse.ArgumentParser(description="NovaHub — gestor de servicios")
@@ -5076,6 +5341,8 @@ def main():
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
+    if REMOTE_LISTEN:
+        threading.Thread(target=remote_listener, name="puerta-remota", daemon=True).start()
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown).start())
     SUPERVISOR.url = ("127.0.0.1" if args.host in ("0.0.0.0", "::", "") else args.host, args.port)
     threading.Thread(target=SUPERVISOR.loop, name="supervisor", daemon=True).start()
