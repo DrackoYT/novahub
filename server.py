@@ -2467,7 +2467,15 @@ class Roadmap:
     def __init__(self):
         self.lock = threading.Lock()
 
+    @staticmethod
+    def enabled():
+        """La página oculta de mejoras es una herramienta personal: solo existe si ya hay una lista guardada
+        (data/roadmap.json) o con NOVAHUB_ROADMAP=1. Las instalaciones nuevas no la tienen."""
+        return os.path.isfile(ROADMAP_FILE) or os.environ.get("NOVAHUB_ROADMAP") == "1"
+
     def load(self):
+        if not self.enabled():
+            raise ApiError(404, "No encontrado")
         items = read_json(ROADMAP_FILE, None)
         if items is None:
             items = [{"id": slugify(title), "tag": tag, "title": title, "desc": desc,
@@ -4844,7 +4852,8 @@ class Handler(BaseHTTPRequestHandler):
         self.need(perm, psid)  # todo lo que no está en route_permission es solo para administradores
 
         if path == "/api/me":
-            return self.send_json({"ok": True, **AUTH.settings(), "user": self.user})
+            return self.send_json({"ok": True, **AUTH.settings(), "user": self.user,
+                                   "roadmap": ROADMAP.enabled() and self.can("admin")})
         if path == "/api/account" and method == "PUT":
             body = self.read_body()
             AUTH.change_own_password(self.user["username"], body.get("current"), body.get("password"))

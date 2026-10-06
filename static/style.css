@@ -577,6 +577,10 @@ body.remote-mode .srv-btn { background: var(--nova); color: #fff; border-color: 
   .host-chip { display: none; }
 }
 @media (max-width: 440px) { .wordmark { display: none; } }
+@media (max-width: 640px) {  /* en el móvil, el menú de servidores ocupa el ancho de la pantalla bajo la cabecera */
+  .srv-menu { position: fixed; top: 64px; left: 12px; right: 12px; min-width: 0; }
+  .srv-menu button, .srv-menu a { padding: 12px; font-size: 15px; }
+}
 
 /* ajustes */
 .user-list { display: flex; flex-direction: column; gap: 6px; }

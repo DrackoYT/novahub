@@ -296,7 +296,7 @@ function shell() {
       </div>
     </header>
     <main id="main"></main>`;
-  $(".topbar .brand").addEventListener("dblclick", (e) => { e.preventDefault(); if (can("admin")) location.hash = "#/mejoras"; });
+  $(".topbar .brand").addEventListener("dblclick", (e) => { e.preventDefault(); if (ui.roadmap) location.hash = "#/mejoras"; });
 }
 
 async function refreshSystem() {
@@ -3214,7 +3214,7 @@ function route() {
   const nm = hash.match(/^#\/nuevo(?:\/(programa|contenedor|compose))?$/);
   let section = "overview";
   const adminOnly = (m && m[2]) || nm || ["#/procesos", "#/red", "#/mejoras"].includes(hash);
-  if (adminOnly && !can("admin")) { viewNoAccess(); section = ""; }
+  if ((adminOnly && !can("admin")) || (hash === "#/mejoras" && !ui.roadmap)) { viewNoAccess(); section = ""; }
   else if (m && m[2]) { viewServiceForm({ id: m[1] }); section = "services"; }
   else if (m) { viewDetail(m[1]); section = "services"; }
   else if (nm && nm[1]) { viewServiceForm({ kind: KIND_SLUG[nm[1]] }); section = "services"; }
@@ -3240,6 +3240,7 @@ async function start() {
     return; // si no, es un 401 y showLogin ya se ha mostrado
   }
   ui.me = me.user;
+  ui.roadmap = !!me.roadmap;  // página oculta de mejoras: solo administradores y solo si existe la lista
   applyPerms();
   try { ui.server = localStorage.getItem("nh-server") || "local"; } catch { ui.server = "local"; }
   if (me.lock_on_reload && !ui.unlocked) {
@@ -3264,7 +3265,7 @@ document.addEventListener("keydown", (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, textarea, select, dialog") || !$("#main")) return;
   const nav = NAV.find(([, , , k, , perm]) => k === e.key && (!perm || can(perm)));
   if (nav) location.hash = nav[1];
-  else if (e.key === "m" && can("admin")) location.hash = "#/mejoras";
+  else if (e.key === "m" && ui.roadmap) location.hash = "#/mejoras";
 });
 let currentHash = location.hash;
 window.addEventListener("hashchange", async () => {
