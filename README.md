@@ -12,7 +12,8 @@ Panel web para encender, apagar y vigilar los servicios de tu servidor con un cl
   (503) mientras el servicio no responde.
 - **Desplegar desde GitHub** (clonar, instalar dependencias, «Actualizar» con un botón) y **plantillas**
   para empezar proyectos nuevos (web, React + Vite, API, bot de Discord, Flask, Minecraft).
-- Por servicio: **explorador de archivos** (solo lectura) y **Git** (commit, subir y traer cambios).
+- Por servicio: **explorador y editor de archivos** (resaltado de código, Ctrl+S, aviso de conflictos y
+  copia de seguridad automática en `data/backups/`) y **Git** (commit, subir y traer cambios).
 - **Procesos**: qué usa la memoria y la CPU del servidor, agrupado por aplicación.
 - Tema claro y oscuro. Sin dependencias: solo Python 3.9+.
 

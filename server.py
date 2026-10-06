@@ -1273,6 +1273,80 @@ def read_file(svc, rel):
             "binary": binary, "truncated": truncated, "text": text}
 
 
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+BACKUPS_PER_SERVICE = 50
+
+
+def _check_writable(root, full):
+    rel = os.path.relpath(full, root)
+    if rel == "." or rel.split(os.sep)[0] == ".git" or f"{os.sep}.git{os.sep}" in f"{os.sep}{rel}{os.sep}":
+        raise ApiError(403, "No se pueden editar archivos internos de git (.git)")
+    return rel
+
+
+def backup_file(sid, rel, full):
+    """Guarda la versión anterior en data/backups/<servicio>/ (se conservan las últimas 50)."""
+    folder = os.path.join(BACKUP_DIR, sid)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")  # con microsegundos: dos guardados seguidos no se pisan
+    shutil.copy2(full, os.path.join(folder, f"{stamp}__{rel.replace(os.sep, '__')}"))
+    old = sorted(os.listdir(folder))
+    for name in old[:-BACKUPS_PER_SERVICE]:
+        try:
+            os.remove(os.path.join(folder, name))
+        except OSError:
+            pass
+
+
+def write_file(sid, svc, rel, data):
+    """Guarda un archivo de texto (o lo crea). Escritura atómica, conserva permisos y saltos de línea,
+    y avisa si el archivo cambió desde que se abrió (salvo que se fuerce)."""
+    root = service_root(svc)
+    content = data.get("content")
+    if not isinstance(content, str):
+        raise ApiError(400, "Falta el contenido del archivo")
+    if len(content.encode("utf-8")) > FILE_VIEW_MAX:
+        raise ApiError(413, f"El archivo es demasiado grande para editarlo aquí (máximo {FILE_VIEW_MAX // 1024} KB)")
+    create = bool(data.get("create"))
+    full = safe_path(root, rel)
+    rel = _check_writable(root, full)
+    if create:
+        if os.path.lexists(full):
+            raise ApiError(409, "Ya existe un archivo con ese nombre")
+        if not os.path.isdir(os.path.dirname(full)):
+            raise ApiError(400, "La carpeta donde quieres crearlo no existe")
+        mode, crlf = 0o644, False
+    else:
+        if not os.path.isfile(full):
+            raise ApiError(404, "El archivo no existe")
+        info = read_file(svc, rel)
+        if info["binary"] or info["truncated"]:
+            raise ApiError(400, "Este archivo no se puede editar aquí (es binario o demasiado grande)")
+        expected = data.get("mtime")
+        if expected is not None and not data.get("force") and abs(os.path.getmtime(full) - float(expected)) > 0.001:
+            raise ApiError(409, "El archivo ha cambiado desde que lo abriste (quizá desde otro editor)")
+        mode = stat.S_IMODE(os.stat(full).st_mode)
+        crlf = "\r\n" in info["text"]
+        backup_file(sid, rel, full)
+    text = content.replace("\r\n", "\n")
+    if crlf:
+        text = text.replace("\n", "\r\n")  # respeta el estilo de saltos de línea del archivo original
+    tmp = os.path.join(os.path.dirname(full), f".{os.path.basename(full)}.novahub-tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, full)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return read_file(svc, rel)
+
+
 # ───────────────────────────── git de un servicio ─────────────────────────────
 
 GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}  # sin preguntas: falla en vez de colgarse
@@ -3239,6 +3313,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(read_file(svc, self.query("path")))
         if method == "GET" and action == "file/download":
             return self.download_file(svc, self.query("path"))
+        if method == "PUT" and action == "file":
+            return self.send_json(write_file(sid, svc, self.query("path"), self.read_body()))
         if method == "GET" and action == "git":
             return self.send_json(git_status(svc))
         if method == "POST" and action == "mode":

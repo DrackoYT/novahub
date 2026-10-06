@@ -1145,9 +1145,10 @@ function viewDetail(id) {
 function setupTabs(id) {
   const term = $("#term");
   const loaded = new Set();
-  term.querySelector(".tabs").addEventListener("click", (e) => {
+  term.querySelector(".tabs").addEventListener("click", async (e) => {
     const tab = e.target.closest("[data-tab]")?.dataset.tab;
     if (!tab) return;
+    if (tab !== "files" && !(await leaveEditor())) return;
     term.querySelectorAll("[data-tab]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
     term.querySelectorAll("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== tab; });
     term.querySelector("[data-for=console]").hidden = tab !== "console";
@@ -1158,10 +1159,15 @@ function setupTabs(id) {
       if (tab === "git") loadGit(id);
     }
   });
-  $("#files").addEventListener("click", (e) => {
+  $("#files").addEventListener("click", async (e) => {
+    const act = e.target.closest("[data-fact]")?.dataset.fact;
+    if (act === "edit") return editFile(id, ui.file);
+    if (act === "save") return saveFile(id);
+    if (act === "new") return newFile(id, e.target.closest("[data-fact]").dataset.dir);
     const el = e.target.closest("[data-path]");
     if (!el) return;
     e.preventDefault();
+    if (!(await leaveEditor())) return;
     if (el.dataset.kind === "file") openFile(id, el.dataset.path);
     else loadFiles(id, el.dataset.path);
   });
@@ -1208,7 +1214,8 @@ async function loadFiles(id, path) {
       </button>`;
     }).join("");
     pane.innerHTML = `
-      <div class="pane-bar">${crumbsHTML(d.root, d.path)}<span class="lcd">${d.total} elemento${d.total === 1 ? "" : "s"}</span></div>
+      <div class="pane-bar">${crumbsHTML(d.root, d.path)}<span class="lcd">${d.total} elemento${d.total === 1 ? "" : "s"}</span>
+        <button type="button" class="btn sm" data-fact="new" data-dir="${esc(d.path)}">${ICON.plus}Nuevo archivo</button></div>
       <div class="flist">
         ${d.path ? `<button type="button" class="frow up" data-path="${esc(parent)}" data-kind="dir"><span class="ficon">${ICON.back}</span><span class="fname">Subir un nivel</span></button>` : ""}
         ${rows || '<div class="pane-msg">Carpeta vacía.</div>'}
@@ -1219,32 +1226,208 @@ async function loadFiles(id, path) {
   }
 }
 
+// ───────────────────────── resaltado de código (sin dependencias) ─────────────────────────
+
+const HL_KEYWORDS = {
+  js: "const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|import|from|export|default|async|await|try|catch|finally|throw|typeof|instanceof|in|of|this|super|null|undefined|true|false|yield|static|get|set|as|interface|type|enum|implements",
+  py: "def|class|return|if|elif|else|for|while|break|continue|import|from|as|with|try|except|finally|raise|pass|lambda|yield|global|nonlocal|in|is|not|and|or|None|True|False|async|await|self",
+  sh: "if|then|else|elif|fi|for|while|do|done|case|esac|function|return|in|export|local|echo|exit",
+};
+const HL_RULES = (() => {
+  const str = String.raw`"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'`;
+  const num = String.raw`\b\d+(?:\.\d+)?\b`;
+  const kw = (k) => String.raw`\b(?:${HL_KEYWORDS[k]})\b`;
+  const tq = '"""[\\s\\S]*?"""|' + "'''[\\s\\S]*?'''";  // cadenas de triple comilla de Python
+  return {
+    js: [["c", String.raw`\/\/[^\n]*|\/\*[\s\S]*?\*\/`], ["s", `${str}|` + "`(?:\\\\.|[^`\\\\])*`"], ["t", String.raw`<\/?[A-Za-z][\w.-]*|\/?>`],
+         ["k", kw("js")], ["n", num], ["f", String.raw`\b[A-Za-z_$][\w$]*(?=\s*\()`]],
+    css: [["c", String.raw`\/\*[\s\S]*?\*\/`], ["s", str], ["k", String.raw`@[\w-]+|!important`],
+          ["n", String.raw`#[0-9a-fA-F]{3,8}\b|-?\b\d+(?:\.\d+)?(?:px|rem|em|%|vh|vw|s|ms|deg|fr)?\b`], ["a", String.raw`[\w-]+(?=\s*:[^;{]*[;}])`]],
+    html: [["c", String.raw`<!--[\s\S]*?-->`], ["t", String.raw`<\/?[\w-]+|\/?>`], ["a", String.raw`\b[\w:-]+(?==)`], ["s", str]],
+    json: [["a", String.raw`"(?:\\.|[^"\\])*"(?=\s*:)`], ["s", str], ["k", String.raw`\b(?:true|false|null)\b`], ["n", String.raw`-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b`]],
+    py: [["c", String.raw`#[^\n]*`], ["s", `${tq}|[rbfu]?(?:${str})`], ["k", kw("py") + String.raw`|@[\w.]+`], ["n", num], ["f", String.raw`\b[A-Za-z_]\w*(?=\s*\()`]],
+    sh: [["c", String.raw`#[^\n]*`], ["s", str], ["k", kw("sh")], ["a", String.raw`\$\{?[\w@#?*]+\}?`]],
+    yaml: [["c", String.raw`#[^\n]*`], ["a", String.raw`^[ \t-]*[\w.-]+(?=:)`], ["s", str], ["k", String.raw`\b(?:true|false|null|yes|no)\b`], ["n", num]],
+    md: [["k", String.raw`^#{1,6} [^\n]*`], ["s", "`[^`\\n]+`|```[\\s\\S]*?```"], ["f", String.raw`\*\*[^*\n]+\*\*|\[[^\]\n]+\]\([^)\n]+\)`], ["c", String.raw`^>[^\n]*`]],
+  };
+})();
+const HL_RE = {};
+function langOf(path) {
+  const ext = path.split(".").pop().toLowerCase();
+  const map = { js: "js", jsx: "js", mjs: "js", cjs: "js", ts: "js", tsx: "js", css: "css", scss: "css", html: "html", htm: "html", svg: "html", xml: "html",
+    vue: "html", json: "json", py: "py", sh: "sh", bash: "sh", env: "sh", yml: "yaml", yaml: "yaml", toml: "yaml", md: "md", markdown: "md" };
+  if (/(^|\/)\.env(\.|$)/.test(path) || /(^|\/)(Dockerfile|Makefile)$/.test(path)) return "sh";
+  return map[ext] || null;
+}
+// HTML coloreado: cada token en un <span class="tk-…">; todo el texto se escapa.
+function highlight(code, lang) {
+  const rules = HL_RULES[lang];
+  if (!rules) return esc(code);
+  const re = HL_RE[lang] ||= new RegExp(rules.map(([, r]) => `(${r})`).join("|"), "gm");
+  let out = "", last = 0, m;
+  re.lastIndex = 0;
+  while ((m = re.exec(code))) {
+    if (!m[0]) { re.lastIndex++; continue; }
+    const i = m.slice(1).findIndex((g) => g !== undefined);
+    out += esc(code.slice(last, m.index)) + `<span class="tk-${rules[i][0]}">${esc(m[0])}</span>`;
+    last = re.lastIndex;
+  }
+  return out + esc(code.slice(last));
+}
+const gutter = (text) => Array.from({ length: (text.match(/\n/g) || []).length + 1 }, (_, i) => i + 1).join("\n");
+
+// ───────────────────────── ficha: ver y editar archivos ─────────────────────────
+
 async function openFile(id, path) {
   const pane = $("#files");
   pane.innerHTML = `<div class="pane-msg">Abriendo…</div>`;
+  ui.editing = false;
   try {
     const f = await api("GET", fileUrl(id, path));
+    ui.file = f;
     const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    const editable = !f.binary && !f.truncated;
     let body;
     if (f.binary) {
       body = `<div class="pane-msg">Es un archivo binario (${fmtBytes(f.size)}): no se puede mostrar como texto. Puedes descargarlo.</div>`;
     } else {
-      const lines = f.text.split("\n");
-      if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-      body = `<div class="code">${lines.map((l) => `<span class="ln">${esc(l) || " "}</span>`).join("")}</div>
-        ${f.truncated ? `<div class="pane-msg">Se muestran los primeros ${fmtBytes(f.text.length)} de ${fmtBytes(f.size)}. Descárgalo para verlo entero.</div>` : ""}`;
+      const text = f.text.endsWith("\n") ? f.text.slice(0, -1) : f.text;
+      body = `<div class="editor readonly"><pre class="ed-gutter" aria-hidden="true">${gutter(text)}</pre>
+        <pre class="ed-view">${highlight(text, langOf(f.path))}\n</pre></div>
+        ${f.truncated ? `<div class="pane-msg">Se muestran los primeros ${fmtBytes(f.text.length)} de ${fmtBytes(f.size)}. Es demasiado grande para editarlo aquí; descárgalo para verlo entero.</div>` : ""}`;
     }
     pane.innerHTML = `
       <div class="pane-bar">
         <button type="button" class="btn sm" data-path="${esc(dir)}" data-kind="dir">${ICON.back}Volver</button>
         <span class="fpath mono">${esc(f.path)}</span>
         <span class="lcd">${fmtBytes(f.size)} · ${fmtAgo(f.mtime)}</span>
+        ${editable ? `<button type="button" class="btn sm primary" data-fact="edit">${ICON.edit}Editar</button>` : ""}
         <a class="btn sm icon" href="${fileUrl(id, path, "file/download")}" download title="Descargar" aria-label="Descargar">${ICON.download}</a>
       </div>
       ${body}`;
   } catch (e) {
     pane.innerHTML = `<div class="pane-msg bad-text">${esc(e.message)}</div>`;
   }
+}
+
+function editFile(id, f) {
+  const pane = $("#files");
+  const lang = langOf(f.path);
+  pane.innerHTML = `
+    <div class="pane-bar">
+      <button type="button" class="btn sm" data-path="${esc(f.path)}" data-kind="file">${ICON.back}Salir del editor</button>
+      <span class="fpath mono">${esc(f.path)}</span>
+      <span class="ed-state" id="ed-state">Sin cambios</span>
+      <button type="button" class="btn sm primary" data-fact="save" id="ed-save" disabled>Guardar <kbd>Ctrl+S</kbd></button>
+    </div>
+    <div class="editor">
+      <pre class="ed-gutter" aria-hidden="true"></pre>
+      <div class="ed-main">
+        <pre class="ed-hl" aria-hidden="true"></pre>
+        <textarea class="ed-input" id="ed-input" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" aria-label="Contenido de ${esc(f.path)}"></textarea>
+      </div>
+    </div>`;
+  const ta = $("#ed-input"), hl = pane.querySelector(".ed-hl"), gut = pane.querySelector(".ed-gutter");
+  ta.value = f.text;
+  ui.editing = true;
+  ui.editOriginal = f.text;
+  let queued = false;
+  const sync = () => { hl.scrollTop = gut.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; };
+  const paint = () => {
+    queued = false;
+    hl.innerHTML = highlight(ta.value, lang) + "\n ";  // el espacio final iguala la altura con el textarea
+    gut.textContent = gutter(ta.value);
+    const dirty = ta.value !== ui.editOriginal;
+    $("#ed-save").disabled = !dirty;
+    $("#ed-state").textContent = dirty ? "● Cambios sin guardar" : "Sin cambios";
+    $("#ed-state").classList.toggle("dirty", dirty);
+    sync();
+  };
+  ta.addEventListener("input", () => { if (!queued) { queued = true; requestAnimationFrame(paint); } });
+  ta.addEventListener("scroll", sync);
+  ui.editingId = id;
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Tab" && !e.ctrlKey && !e.altKey) {  // el tabulador sangra en vez de saltar de campo
+      e.preventDefault();
+      const indent = lang === "py" ? "    " : "  ";
+      const { selectionStart: a, selectionEnd: b } = ta;
+      if (a === b && !e.shiftKey) ta.setRangeText(indent, a, b, "end");
+      else {
+        const lineStart = ta.value.lastIndexOf("\n", a - 1) + 1;
+        const block = ta.value.slice(lineStart, b);
+        const changed = e.shiftKey ? block.replace(new RegExp(`^(\\t| {1,${indent.length}})`, "gm"), "")
+                                   : block.replace(/^/gm, indent);
+        ta.setRangeText(changed, lineStart, b, "select");
+      }
+      ta.dispatchEvent(new Event("input"));
+    }
+  });
+  paint();
+  ta.focus();
+  ta.setSelectionRange(0, 0);
+}
+
+async function saveFile(id, force = false) {
+  const ta = $("#ed-input");
+  if (!ta || !ui.file) return;
+  const btn = $("#ed-save");
+  if (btn) btn.disabled = true;
+  try {
+    const f = await api("PUT", fileUrl(id, ui.file.path), { content: ta.value, mtime: ui.file.mtime, force });
+    ui.file = f;
+    ui.editOriginal = ta.value;
+    ta.dispatchEvent(new Event("input"));
+    const svc = ui.current;
+    toast(svc?.status === "running" && svc.mode !== "prod" ? "Guardado" : "Guardado. Reinicia o recompila el servicio para aplicar el cambio.", "ok");
+  } catch (e) {
+    if (/ha cambiado desde que lo abriste/.test(e.message)) {
+      const ok = await confirmDialog("El archivo ha cambiado",
+        "Alguien (u otro editor) ha modificado este archivo desde que lo abriste. Si lo guardas, sus cambios se perderán. La versión actual se guardará como copia de seguridad.",
+        "Sobrescribir");
+      if (ok) return saveFile(id, true);
+    } else toast(e.message, "error");
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function newFile(id, dir) {
+  const dlg = modal(`
+    <form id="nf-form" novalidate>
+      <header><h2>Nuevo archivo</h2><button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
+      <div class="body">
+        <div class="form-error" id="nf-error"></div>
+        <label class="field"><span>Nombre</span>
+          <div class="affix rev"><span>${esc(dir ? dir + "/" : "./")}</span><input id="nf-name" class="mono" spellcheck="false" autocomplete="off" placeholder="componente.jsx"></div>
+          <small>Se crea vacío en esta carpeta y se abre en el editor.</small></label>
+      </div>
+      <footer><button type="button" class="btn ghost" data-close>Cancelar</button><button type="submit" class="btn primary">Crear</button></footer>
+    </form>`, "small");
+  $("#nf-name", dlg).focus();
+  $("#nf-form", dlg).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = $("#nf-name", dlg).value.trim();
+    if (!name || /(^|\/)\.\.(\/|$)/.test(name) || name.startsWith("/")) {
+      $("#nf-error", dlg).textContent = "Escribe un nombre de archivo válido";
+      return;
+    }
+    const path = dir ? `${dir}/${name}` : name;
+    try {
+      const f = await api("PUT", fileUrl(id, path), { content: "", create: true });
+      dlg.close();
+      toast(`Creado ${f.path}`, "ok");
+      ui.file = f;
+      editFile(id, f);
+    } catch (err) { $("#nf-error", dlg).textContent = err.message; }
+  });
+}
+
+// Con cambios sin guardar en el editor, pregunta antes de salir. true = se puede salir.
+async function leaveEditor() {
+  const ta = $("#ed-input");
+  if (!ui.editing || !ta || ta.value === ui.editOriginal) { ui.editing = false; return true; }
+  const ok = await confirmDialog("Cambios sin guardar", "Si sales del editor, perderás los cambios que no has guardado.", "Salir sin guardar");
+  if (ok) ui.editing = false;
+  return ok;
 }
 
 // ───────────────────────── ficha: git ─────────────────────────
@@ -1793,5 +1976,27 @@ document.addEventListener("keydown", (e) => {
   if (nav) location.hash = nav[1];
   else if (e.key === "m") location.hash = "#/mejoras";
 });
-window.addEventListener("hashchange", () => { if ($("#main")) route(); });
+let currentHash = location.hash;
+window.addEventListener("hashchange", async () => {
+  if (!$("#main")) return;
+  if (ui.skipHash) { ui.skipHash = false; return; }
+  if (!(await leaveEditor())) {  // se queda donde estaba: deshace el cambio de dirección
+    ui.skipHash = true;
+    location.hash = currentHash;
+    return;
+  }
+  currentHash = location.hash;
+  route();
+});
+// Ctrl+S guarda mientras el editor está abierto, tenga el foco o no (p. ej. tras cerrar un diálogo)
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s" && ui.editing && $("#ed-input")) {
+    e.preventDefault();
+    if (!document.querySelector("dialog[open]")) saveFile(ui.editingId);
+  }
+});
+window.addEventListener("beforeunload", (e) => {
+  const ta = $("#ed-input");
+  if (ui.editing && ta && ta.value !== ui.editOriginal) { e.preventDefault(); e.returnValue = ""; }
+});
 start();
