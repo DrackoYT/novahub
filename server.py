@@ -21,6 +21,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shlex
 import shutil
 import queue
 import signal
@@ -444,6 +445,8 @@ class Manager:
         if svc.get("subdomain") and PUBLISHER.domain:
             # Vite rechaza dominios que no conoce: así acepta el suyo sin tocar vite.config.js.
             env.setdefault("__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS", PUBLISHER.host(svc["subdomain"]))
+        if svc.get("port"):
+            env.setdefault("NOVAHUB_SERVICE_PORT", str(svc["port"]))
 
         self.log(sid, f"iniciando \x1b[2m$ {svc['command']}\x1b[0m")
         # O_RDWR: el hijo mantiene un escritor abierto, así nunca recibe EOF
@@ -773,6 +776,7 @@ class Manager:
             updating=bool(st.get("updating")), last_update=st.get("last_update"),
             mem_restarts=len([t for t in st.get("mem_restarts", []) if time.time() - t < 3600]),
             health_mode=health_mode(svc), health=st.get("health"),
+            mode=svc.get("mode", "dev"), can_build=build_info(svc) is not None,
             listening=(svc["port"] in ports) if svc.get("port") else None,
             cpu=None, memory=None, processes=None,
         )
@@ -2457,6 +2461,8 @@ class Deployer:
             for cmd, what in steps:
                 MANAGER.log(sid, what + "…")
                 self._logged(sid, cmd, root, 900)
+            if MANAGER.services[sid].get("mode") == "prod":
+                self._build(sid, root)
             if MANAGER.running(sid):
                 MANAGER.log(sid, f"{len(changed)} archivo(s) nuevos: reiniciando")
                 MANAGER.restart(sid)
@@ -2475,6 +2481,101 @@ class Deployer:
                 st["updating"] = False
                 st["last_update"] = {"at": time.time(), "ok": ok, "msg": msg}
                 MANAGER.save_state()
+
+    # ── modo producción: compilar la web y servirla con serve.py ──
+    def _build(self, sid, root):
+        info = build_info(MANAGER.services[sid])
+        if not info:
+            raise RuntimeError("este proyecto no tiene script «build» en package.json")
+        if not os.path.isdir(os.path.join(root, "node_modules")):
+            for cmd, what in install_steps(root):
+                MANAGER.log(sid, what + "…")
+                self._logged(sid, cmd, root, 900)
+        MANAGER.log(sid, "\x1b[35mcompilando para producción (npm run build)…\x1b[0m")
+        t0 = time.time()
+        self._logged(sid, ["npm", "run", "build"], root, 900)
+        if not os.path.isfile(os.path.join(root, info["dir"], "index.html")):
+            raise RuntimeError(f"la compilación no ha generado {info['dir']}/index.html")
+        MANAGER.log(sid, f"\x1b[32mcompilado en {time.time() - t0:.0f} s → {info['dir']}/\x1b[0m")
+        return info
+
+    def set_mode(self, sid, mode):
+        if mode not in ("dev", "prod"):
+            raise ApiError(400, "Modo desconocido")
+        svc = MANAGER.services[sid]
+        if mode == "dev":
+            if svc.get("mode") != "prod":
+                return
+            with MANAGER.lock:
+                svc = MANAGER.services[sid]
+                svc.update(mode="dev", command=svc.get("dev_command") or svc["command"])
+                MANAGER.save_services()
+                MANAGER.log(sid, "\x1b[35mmodo desarrollo\x1b[0m")
+                if MANAGER.running(sid):
+                    MANAGER.restart(sid)
+            return
+        if not build_info(svc):
+            raise ApiError(400, "Este servicio no tiene un script «build» en package.json")
+        if not svc.get("port"):
+            raise ApiError(400, "Para servir la web en producción, el servicio necesita un puerto")
+        root = service_root(svc)
+        with MANAGER.lock:
+            st = MANAGER.st(sid)
+            if st.get("updating"):
+                raise ApiError(409, "Ya se está actualizando o compilando")
+            st["updating"] = True
+        threading.Thread(target=self._to_prod, args=(sid, root), name="compilar", daemon=True).start()
+
+    def _to_prod(self, sid, root):
+        ok, msg = False, ""
+        try:
+            info = self._build(sid, root)
+            with MANAGER.lock:
+                svc = MANAGER.services[sid]
+                if svc.get("mode") != "prod":
+                    svc["dev_command"] = svc["command"]  # para poder volver a desarrollo tal cual
+                svc.update(mode="prod", command=f"exec python3 {shlex.quote(SERVE_PY)} {shlex.quote(info['dir'])} "
+                                                f'--port "$NOVAHUB_SERVICE_PORT"' + (" --spa" if info["spa"] else ""))
+                MANAGER.save_services()
+                if MANAGER.running(sid):
+                    MANAGER.log(sid, "reiniciando con la versión compilada")
+                    MANAGER.restart(sid)
+                else:
+                    MANAGER.log(sid, "listo: enciende el servicio para servir la versión compilada")
+            ok, msg = True, "Compilado para producción"
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            MANAGER.log(sid, f"\x1b[31mno se pudo compilar: {e}\x1b[0m")
+            name = MANAGER.services[sid]["name"]
+            NOTIFIER.notify("update", sid, f"No se pudo compilar {name}",
+                            f"La compilación para producción de «{name}» ha fallado: {e}", log=True)
+        finally:
+            with MANAGER.lock:
+                st = MANAGER.st(sid)
+                st["updating"] = False
+                st["last_update"] = {"at": time.time(), "ok": ok, "msg": msg}
+                MANAGER.save_state()
+
+
+SERVE_PY = os.path.join(BASE_DIR, "serve.py")
+
+
+def build_info(svc):
+    """Si el servicio es una web con «npm run build»: carpeta de salida y si es una SPA. Si no, None."""
+    try:
+        root = os.path.realpath(os.path.expanduser(svc.get("cwd") or "~"))
+        with open(os.path.join(root, "package.json"), encoding="utf-8") as f:
+            pkg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not (pkg.get("scripts") or {}).get("build"):
+        return None
+    deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
+    if "next" in deps:
+        return None  # Next.js necesita su propio servidor («next start»), no archivos estáticos
+    out = "build" if "react-scripts" in deps else "dist"
+    spa = any(d in deps for d in ("react", "vue", "svelte", "preact", "solid-js", "@angular/core"))
+    return {"dir": out, "spa": spa}
 
 
 DEPLOYER = Deployer()
@@ -2836,7 +2937,7 @@ def _template_job(job, t, dest, values, service, start):
 JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
-                           r"|files|file|file/download|git|git/commit|git/push|git/pull|update))?")
+                           r"|files|file|file/download|git|git/commit|git/push|git/pull|update|mode))?")
 KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
 
 
@@ -3072,6 +3173,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.download_file(svc, self.query("path"))
         if method == "GET" and action == "git":
             return self.send_json(git_status(svc))
+        if method == "POST" and action == "mode":
+            DEPLOYER.set_mode(sid, str(self.read_body().get("mode") or ""))
+            return self.send_json(MANAGER.get_public(sid), 202)
         if method == "POST" and action == "update":
             DEPLOYER.update(sid)
             return self.send_json(MANAGER.get_public(sid), 202)

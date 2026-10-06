@@ -443,6 +443,12 @@ main { max-width: 1260px; margin: 0 auto; padding: 30px 24px 64px; }
 .gh-desc { flex-basis: 100%; color: var(--soft); font-size: 13px; }
 .gh-log { max-height: 340px; min-height: 160px; }
 
+/* modo desarrollo / producción */
+.mode-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
+.mode-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.status.prod { background: var(--nova-soft); color: var(--nova-text); }
+.readout > div.wide dd small { display: block; margin-top: 6px; font-weight: 400; font-size: 12.5px; }
+
 /* avisos por correo */
 .nt-ok { margin: 0; padding: 10px 12px; border-radius: var(--r-sm); background: var(--ok-bg); color: var(--ok); font-weight: 600; font-size: 14px; }
 .git-note.bad { background: var(--err-bg); color: var(--err); }

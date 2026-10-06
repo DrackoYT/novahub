@@ -575,6 +575,7 @@ function cardHTML(s) {
       `<span class="v ${s.listening ? "ok-text" : "dim-text"}">${s.port}</span></span>`);
   }
   if (!foot.length) foot.push(`<span class="dim-text">Detenido</span>`);
+  if (s.mode === "prod") foot.push(`<span><span class="k">Modo</span><span class="v">producción</span></span>`);
   if (s.status === "running" && s.health?.state === "failing") foot.unshift(`<span class="bad-text"><b>No responde</b></span>`);
   const url = s.status === "running" ? openUrl(s) : null;
   const link = url
@@ -685,6 +686,35 @@ async function removeService(s) {
     const res = await api("DELETE", `/api/services/${s.id}`);
     toast(res.notice ? `Servicio eliminado. ${res.notice}` : "Servicio eliminado", "ok");
     location.hash = "#/servicios";
+  } catch (e) { toast(e.message, "error"); }
+}
+
+// Modo de una web: desarrollo (npm run dev) o producción (compilada y servida por serve.py).
+function modeHTML(s) {
+  const busy = s.updating ? "disabled" : "";
+  if (s.mode === "prod") {
+    return `<div class="mode-row"><span class="status prod">Producción</span>
+      <span class="mode-btns"><button class="btn sm" data-act="mode-prod" ${busy}>${s.updating ? "Compilando…" : "Recompilar"}</button>
+      <button class="btn sm" data-act="mode-dev" ${busy}>Volver a desarrollo</button></span></div>
+      <small class="dim-text">Versión compilada: ligera y estable. Los cambios en el código no se ven hasta recompilar.</small>`;
+  }
+  return `<div class="mode-row"><span class="status">Desarrollo</span>
+    <span class="mode-btns"><button class="btn sm primary" data-act="mode-prod" ${busy}>${s.updating ? "Compilando…" : "Pasar a producción"}</button></span></div>
+    <small class="dim-text">Recarga al instante mientras programas, pero gasta más memoria. Para una web publicada, mejor producción.</small>`;
+}
+
+async function setMode(s, mode) {
+  if (mode === "prod" && s.mode !== "prod") {
+    const ok = await confirmDialog("Pasar a producción",
+      `Se compilará «${s.name}» (npm run build) y se servirá la versión compilada. Tardará unos segundos y el progreso sale en la consola. Podrás volver a desarrollo cuando quieras.`,
+      "Compilar y pasar");
+    if (!ok) return;
+  }
+  try {
+    await api("POST", `/api/services/${s.id}/mode`, { mode });
+    toast(mode === "prod" ? "Compilando: el progreso sale en la consola" : "Vuelve a modo desarrollo", "ok");
+    $('[data-tab="console"]')?.click();
+    refreshDetail(s.id);
   } catch (e) { toast(e.message, "error"); }
 }
 
@@ -1028,6 +1058,7 @@ document.addEventListener("click", async (e) => {
   else if (!s) return;
   else if (act === "restart") restart(s.id);
   else if (act === "update") updateService(s.id);
+  else if (act === "mode-prod" || act === "mode-dev") setMode(s, act === "mode-prod" ? "prod" : "dev");
   else if (act === "edit") openForm(s);
   else if (act === "delete") removeService(s);
   else if (act === "clear-log") {
@@ -1360,6 +1391,7 @@ function drawDetail(s) {
         ${cell("Autoarranque", s.autostart ? "Sí" : "No")}
         ${cell("Si falla", s.restart_on_crash ? "Reinicia" : "Se para")}
         ${cell("Parada", s.stop_command ? `<code>${esc(s.stop_command)}</code>` : "SIGTERM")}
+        ${s.can_build || s.mode === "prod" ? cell("Modo", modeHTML(s), "wide") : ""}
         ${cell("Límite de memoria", s.memory_limit ? `${fmtBytes(s.memory_limit * 2 ** 20)} · reinicia si lo pasa` : "Sin límite")}
         ${cell("Comprobación de salud", { http: `Web · GET ${esc(s.health_path || "/")}`, tcp: "Puerto abierto", off: "Desactivada" }[s.health_mode])}
       </dl>

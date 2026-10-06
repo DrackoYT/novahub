@@ -84,6 +84,15 @@ Opcionales: `NOVAHUB_TUNNEL` (si no, se usa el `tunnel:` del config) y `NOVAHUB_
 del túnel, pero **el registro DNS se queda** en Cloudflare (cloudflared no puede borrarlo): bórralo
 a mano en *DNS → Records* si ya no lo quieres.
 
+## Modo producción para webs
+
+En la ficha de un servicio con `npm run build` (Vite, React, Vue…), **Modo → Pasar a producción**:
+NovaHub compila la web y la sirve con `serve.py`, un servidor estático propio (sin dependencias) con
+soporte para rutas de SPA, caché larga para los archivos con huella y compresión gzip. Gasta una
+fracción de la memoria del modo desarrollo (≈20 MB frente a ≈300 MB en una web Vite). «Recompilar»
+aplica los cambios del código; «Actualizar» desde GitHub recompila solo; «Volver a desarrollo»
+recupera el comando original. El puerto llega por la variable `NOVAHUB_SERVICE_PORT`.
+
 ## Fiabilidad de NovaHub
 
 - **Watchdog de systemd** (`Type=notify`, `WatchdogSec=30` en `novahub.service`): NovaHub avisa a systemd
