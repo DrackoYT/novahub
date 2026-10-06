@@ -558,6 +558,7 @@ details.adv .inner { display: flex; flex-direction: column; gap: 14px; }
 .login form { display: flex; flex-direction: column; gap: 12px; }
 .login input { height: 44px; }
 .login .btn { height: 44px; }
+.login-note { background: var(--nova-soft); color: var(--nova-text); }
 
 /* ───────── avisos ───────── */
 #toasts { position: fixed; right: 20px; bottom: 20px; z-index: 100; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }

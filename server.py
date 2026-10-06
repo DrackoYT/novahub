@@ -51,10 +51,11 @@ STATE_FILE = os.path.join(DATA_DIR, "state.json")
 AUTH_FILE = os.path.join(DATA_DIR, "auth.json")
 ROADMAP_FILE = os.path.join(DATA_DIR, "roadmap.json")
 NOTIFY_FILE = os.path.join(DATA_DIR, "notify.json")
+SESSION_FILE = os.path.join(DATA_DIR, "session.json")
 
 LOG_MAX_BYTES = 5 * 1024 * 1024    # al superarlo, el log se rota a <id>.log.1
 LOG_TAIL_BYTES = 64 * 1024         # lo que se envía al abrir la consola
-SESSION_TTL = 30 * 24 * 3600
+SESSION_DEFAULTS = {"idle_minutes": 15, "max_hours": 12, "lock_on_reload": True}
 MAX_AUTO_RESTARTS = 5              # reinicios rápidos seguidos; después se reintenta en modo lento
 SLOW_RETRY = 300                   # modo lento: un intento cada 5 min, sin rendirse nunca
 BOOT_WINDOW = 300                  # primeros 5 min tras encender el servidor: fallos pasajeros sin correo
@@ -810,7 +811,8 @@ class Auth:
 
     def __init__(self):
         self.data = read_json(AUTH_FILE, {})
-        self.fails = {}  # ip -> [timestamps]
+        self.fails = {}    # ip -> [timestamps]
+        self.revoked = {}  # firma de token -> caducidad (sesiones cerradas antes de caducar)
 
     def configured(self):
         return bool(self.data.get("password"))
@@ -834,17 +836,61 @@ class Auth:
     def _sign(self, payload):
         return hmac.new(self.data["secret"].encode(), payload.encode(), hashlib.sha256).hexdigest()
 
-    def make_token(self):
-        payload = str(int(time.time()) + SESSION_TTL)
+    # ── sesiones: caducan tras X min sin actividad del usuario y, en todo caso, a las N horas ──
+    @staticmethod
+    def settings():
+        cfg = {**SESSION_DEFAULTS, **read_json(SESSION_FILE, {})}
+        return {"idle_minutes": int(cfg["idle_minutes"]), "max_hours": int(cfg["max_hours"]),
+                "lock_on_reload": bool(cfg["lock_on_reload"])}
+
+    @staticmethod
+    def save_settings(data):
+        cfg = Auth.settings()
+        try:
+            idle = int(data.get("idle_minutes", cfg["idle_minutes"]))
+            max_hours = int(data.get("max_hours", cfg["max_hours"]))
+        except (TypeError, ValueError):
+            raise ApiError(400, "Los tiempos de la sesión deben ser números")
+        if not 1 <= idle <= 24 * 60:
+            raise ApiError(400, "El cierre por inactividad debe estar entre 1 minuto y 24 horas")
+        if not 1 <= max_hours <= 24 * 30:
+            raise ApiError(400, "La duración máxima de la sesión debe estar entre 1 hora y 30 días")
+        cfg.update(idle_minutes=idle, max_hours=max_hours,
+                   lock_on_reload=bool(data.get("lock_on_reload", cfg["lock_on_reload"])))
+        write_json(SESSION_FILE, cfg)
+        return cfg
+
+    def make_token(self, issued=None):
+        """Token «emitido:caduca.firma». Caduca tras la inactividad, nunca después del máximo absoluto."""
+        cfg, now = self.settings(), int(time.time())
+        issued = issued or now
+        expires = min(now + cfg["idle_minutes"] * 60, issued + cfg["max_hours"] * 3600)
+        payload = f"{issued}:{expires}"
         return f"{payload}.{self._sign(payload)}"
 
-    def valid_token(self, token):
+    def parse_token(self, token):
+        """(emitido, caduca) si el token es auténtico, vigente y no se ha cerrado la sesión; si no, None."""
         if not token or "." not in token or not self.configured():
-            return False
+            return None
         payload, sig = token.rsplit(".", 1)
-        if not hmac.compare_digest(sig, self._sign(payload)):
-            return False
-        return payload.isdigit() and int(payload) > time.time()
+        if not hmac.compare_digest(sig, self._sign(payload)) or sig in self.revoked:
+            return None
+        try:
+            issued, expires = (int(x) for x in payload.split(":"))
+        except ValueError:
+            return None
+        return (issued, expires) if expires > time.time() else None
+
+    def valid_token(self, token):
+        return self.parse_token(token) is not None
+
+    def revoke(self, token):
+        """Cerrar sesión invalida el token en el servidor, no solo en el navegador."""
+        parsed = self.parse_token(token)
+        if parsed:
+            now = time.time()
+            self.revoked = {s: exp for s, exp in self.revoked.items() if exp > now}  # limpia los caducados
+            self.revoked[token.rsplit(".", 1)[1]] = parsed[1]
 
     def throttled(self, ip):
         now = time.time()
@@ -2986,6 +3032,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        cookie = cookie if cookie is not None else getattr(self, "renewed_cookie", None)
         if cookie is not None:
             self.send_header("Set-Cookie", cookie)
         self.common_headers()
@@ -3011,19 +3058,33 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, "Se esperaba un objeto JSON")
         return data
 
-    def session_cookie(self, value, max_age):
-        parts = [f"nh_session={value}", "Path=/", "HttpOnly", "SameSite=Strict", f"Max-Age={max_age}"]
+    def session_cookie(self, value, max_age=None):
+        parts = [f"nh_session={value}", "Path=/", "HttpOnly", "SameSite=Strict"]
+        if max_age is not None:  # sin Max-Age es una cookie de sesión: se borra al cerrar el navegador
+            parts.append(f"Max-Age={max_age}")
         if self.is_https():
             parts.append("Secure")
         return "; ".join(parts)
 
+    def session_token(self):
+        morsel = SimpleCookie(self.headers.get("Cookie") or "").get("nh_session")
+        return morsel.value if morsel else None
+
     def authed(self):
-        cookie = SimpleCookie(self.headers.get("Cookie") or "")
-        morsel = cookie.get("nh_session")
-        return AUTH.valid_token(morsel.value if morsel else None)
+        """Valida la sesión. Si el usuario está activo (cabecera de la interfaz), alarga la caducidad:
+        las peticiones automáticas de la pantalla no cuentan, así una pestaña olvidada se bloquea sola."""
+        token = self.session_token()
+        parsed = AUTH.parse_token(token)
+        if not parsed:
+            return False
+        issued, expires = parsed
+        if self.headers.get("X-NovaHub-Activity") == "1" and expires - time.time() < AUTH.settings()["idle_minutes"] * 60 - 30:
+            self.renewed_cookie = self.session_cookie(AUTH.make_token(issued))
+        return True
 
     # ── enrutado ──
     def route(self, method):
+        self.renewed_cookie = None  # la conexión puede reutilizarse: nada de la petición anterior
         path = urlparse(self.path).path
         try:
             if path.startswith("/api/"):
@@ -3075,15 +3136,22 @@ class Handler(BaseHTTPRequestHandler):
             if not AUTH.check_password(str(self.read_body().get("password") or "")):
                 AUTH.failed(ip)
                 raise ApiError(401, "Contraseña incorrecta")
-            return self.send_json({"ok": True}, cookie=self.session_cookie(AUTH.make_token(), SESSION_TTL))
+            return self.send_json({"ok": True}, cookie=self.session_cookie(AUTH.make_token()))
         if path == "/api/logout" and method == "POST":
+            AUTH.revoke(self.session_token())
             return self.send_json({"ok": True}, cookie=self.session_cookie("", 0))
 
         if not self.authed():
             raise ApiError(401, "No autorizado")
 
         if path == "/api/me":
-            return self.send_json({"ok": True})
+            return self.send_json({"ok": True, **AUTH.settings()})
+        if path == "/api/session-settings":
+            if method == "GET":
+                return self.send_json(AUTH.settings())
+            if method == "PUT":
+                return self.send_json(AUTH.save_settings(self.read_body()))
+            raise ApiError(405, "Método no permitido")
         if path == "/api/system":
             return self.send_json(system_info())
         if path == "/api/notify":

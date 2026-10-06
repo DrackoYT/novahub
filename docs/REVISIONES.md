@@ -5,11 +5,11 @@ Sirve para que cada revisión nueva cubra solo lo que ha cambiado desde la anter
 
 ## Cómo saber qué hay que revisar
 
-La última revisión termina en el commit que modificó este archivo por última vez. Para ver lo que ha
-cambiado desde entonces:
+**Revisado hasta el commit: `92ee43d`** (se actualiza al cerrar cada revisión; editar este documento
+por otros motivos no cambia este valor). Para ver lo que ha cambiado desde entonces:
 
 ```bash
-BASE=$(git log -1 --format=%h -- docs/REVISIONES.md)
+BASE=92ee43d
 git diff --stat "$BASE"..HEAD        # qué archivos han cambiado
 git diff "$BASE"..HEAD -- server.py  # el detalle de un archivo
 ```
@@ -22,13 +22,14 @@ pieza marcada como *invariante de seguridad*, hay que revisar esa pieza entera, 
 | # | Fecha | Alcance | Commits cubiertos | Hallazgos |
 |---|---|---|---|---|
 | 1 | 2026-10-05 | **Completa**: todo el código | hasta `cad7b13` (incluido) | 9 corregidos |
-| 2 | 2026-10-06 | **Incremental**: solo lo cambiado | `cad7b13..90b2975` + el commit que añade este archivo | 5 corregidos |
+| 2 | 2026-10-06 | **Incremental**: solo lo cambiado | `cad7b13..92ee43d` | 5 corregidos |
 
 ---
 
 ## Inventario: qué está revisado
 
-Estado de cada pieza tras la revisión 2. «R1» = revisada entera en la revisión 1 y sin cambios
+Estado de cada pieza tras la revisión 2. Lo añadido después de `92ee43d` (modo producción, `serve.py`,
+sesiones con caducidad por inactividad) está **pendiente de revisar**. «R1» = revisada entera en la revisión 1 y sin cambios
 desde entonces; «R2» = cambiada después de R1 y revisada en la revisión 2.
 
 ### `server.py` (backend, ~3.200 líneas)
@@ -78,7 +79,7 @@ desde entonces; «R2» = cambiada después de R1 y revisada en la revisión 2.
 Son propiedades que se verificaron con pruebas reales. Si un cambio toca su código, hay que volver
 a comprobarlas.
 
-1. **Autenticación**: sin cookie o con token falsificado, toda la API responde 401. Los tokens se
+1. **Autenticación**: sin cookie, con token falsificado, caducado o de una sesión cerrada, toda la API responde 401. Los tokens se
    firman con HMAC-SHA256 y un secreto de `data/auth.json`. La contraseña usa PBKDF2 con 600.000
    iteraciones. Máximo 5 intentos de login por IP cada 5 minutos.
 2. **CSRF**: toda petición que no sea GET exige la cabecera `X-NovaHub: 1`, y la cookie es
@@ -100,9 +101,9 @@ a comprobarlas.
 
 ## Riesgos aceptados (decisiones conscientes)
 
-- **Cerrar sesión no invalida el token en el servidor**: solo se borra la cookie. Un token robado
-  valdría hasta 30 días, pero para llegar al panel hace falta además la cuenta de Google de
-  Cloudflare Access.
+- **Las sesiones cerradas solo se recuerdan en memoria**: si NovaHub se reinicia, un token cerrado
+  antes de caducar volvería a valer hasta su caducidad (como mucho, el tiempo de inactividad: 15 min
+  por defecto). Para llegar al panel hace falta además la cuenta de Google de Cloudflare Access.
 - **El panel ejecuta comandos arbitrarios** y deja ver cualquier carpeta que se ponga como carpeta
   de un servicio. Es su función: la protección está en la entrada (Access y contraseña).
 - **Los correos incluyen las últimas líneas de la consola**: si un servicio imprime secretos en su
@@ -172,8 +173,9 @@ Los anoto para no buscarlos otra vez: ya están corregidos.
 
 ## Lista para la próxima revisión
 
-- [ ] Ejecutar el diff desde el último commit de este archivo (arriba) y revisar solo eso.
+- [ ] Ejecutar el diff desde el commit «revisado hasta» (arriba) y revisar solo eso.
 - [ ] Si el diff toca un invariante de seguridad, revisar la pieza entera y repetir su prueba.
 - [ ] `pyflakes` y ESLint sin avisos.
 - [ ] Regresión: rutas, protecciones y recorrido de la interfaz.
-- [ ] Añadir aquí una fila al historial, actualizar el inventario y apuntar los hallazgos.
+- [ ] Añadir aquí una fila al historial, actualizar el inventario, apuntar los hallazgos y
+  **actualizar «Revisado hasta el commit»** al último commit revisado.

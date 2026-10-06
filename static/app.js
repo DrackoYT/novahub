@@ -144,6 +144,7 @@ async function checkAccessSession() {
 
 async function api(method, url, body) {
   const headers = { "X-NovaHub": "1" };
+  if (Date.now() - ui.lastActivity < 60000) headers["X-NovaHub-Activity"] = "1";
   if (body !== undefined) headers["Content-Type"] = "application/json";
   let res;
   try {
@@ -154,7 +155,7 @@ async function api(method, url, body) {
   }
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && url !== "/api/login") {
-    showLogin();
+    if (!ui.locked) showLogin(ui.unlocked ? "La sesión se ha cerrado por inactividad. Vuelve a entrar." : "");
     throw new Error("Sesión caducada");
   }
   if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
@@ -165,6 +166,9 @@ async function api(method, url, body) {
 
 const app = $("#app");
 const ui = {
+  lastActivity: 0,   // último clic o tecla del usuario
+  unlocked: false,   // contraseña introducida en esta carga de la página
+  locked: false,     // pantalla de contraseña a la vista
   services: [],
   tag: null,
   q: "",
@@ -187,14 +191,16 @@ function every(ms, fn) { ui.timers.push(setInterval(fn, ms)); }
 
 // ───────────────────────── login ─────────────────────────
 
-function showLogin() {
+function showLogin(reason = "") {
   clearView();
+  ui.locked = true;
   app.innerHTML = `
     <div class="login-wrap">
       <div class="login module">
         <div class="brand">${BRAND}</div>
         <p class="sub">Panel de servicios de tu servidor</p>
         <form id="login-form">
+          ${reason ? `<p class="nt-ok login-note">${esc(reason)}</p>` : ""}
           <div class="form-error" id="login-error"></div>
           <label class="field"><span>Contraseña</span><input id="pw" type="password" name="password" autocomplete="current-password" required autofocus></label>
           <button class="btn primary" type="submit">Entrar</button>
@@ -207,6 +213,9 @@ function showLogin() {
     btn.disabled = true;
     try {
       await api("POST", "/api/login", { password: e.target.password.value });
+      ui.unlocked = true;
+      ui.locked = false;
+      ui.lastActivity = Date.now();
       start();
     } catch (err) {
       $("#login-error").textContent = err.message;
@@ -233,7 +242,7 @@ function shell() {
       <div class="top-actions">
         <span class="lcd host-chip" id="host-chip"></span>
         <button class="btn primary" data-act="new">${ICON.plus}<span>Nuevo servicio</span></button>
-        <button class="btn icon" data-act="settings" title="Ajustes: avisos por correo" aria-label="Ajustes">${ICON.settings}</button>
+        <button class="btn icon" data-act="settings" title="Ajustes: avisos, vigilancia y sesión" aria-label="Ajustes">${ICON.settings}</button>
         <button class="btn icon" data-act="theme" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema">${currentTheme() === "dark" ? ICON.sun : ICON.moon}</button>
         <button class="btn icon" data-act="poweroff" title="Apagar el servidor" aria-label="Apagar el servidor">${ICON.power}</button>
         <button class="btn icon ghost" data-act="logout" title="Cerrar sesión" aria-label="Cerrar sesión">${ICON.logout}</button>
@@ -948,7 +957,7 @@ async function openGithub() {
 async function openSettings() {
   const dlg = modal(`
     <form id="nt-form" novalidate>
-      <header><h2>Avisos y vigilancia</h2><button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
+      <header><h2>Ajustes</h2><button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
       <div class="body" id="nt-body"><div class="pane-msg">Cargando…</div></div>
       <footer>
         <button type="button" class="btn ghost" data-close>Cancelar</button>
@@ -957,6 +966,7 @@ async function openSettings() {
       </footer>
     </form>`);
   const body = $("#nt-body", dlg);
+  let sess = { lock_on_reload: true, idle_minutes: 15, max_hours: 12 };
   const draw = (n) => {
     const status = n.last_error ? `<p class="git-note bad">Último error: ${esc(n.last_error)}</p>`
       : n.last_sent ? `<p class="nt-ok">Último correo enviado ${fmtAgo(n.last_sent)}.</p>`
@@ -983,7 +993,15 @@ async function openSettings() {
           sin internet, servidor colgado), <a href="https://healthchecks.io" target="_blank" rel="noopener">healthchecks.io</a> te avisa.
           Configura allí el check con periodo de 1 minuto y 3 de gracia.</small></label>
       ${n.heartbeat_error ? `<p class="git-note bad">Señal de vida: ${esc(n.heartbeat_error)}</p>`
-        : n.heartbeat_last ? `<p class="nt-ok">Última señal de vida ${fmtAgo(n.heartbeat_last)}.</p>` : ""}`;
+        : n.heartbeat_last ? `<p class="nt-ok">Última señal de vida ${fmtAgo(n.heartbeat_last)}.</p>` : ""}
+      <p class="label">Sesión</p>
+      <div class="checks"><label><input type="checkbox" id="ss-reload" ${sess.lock_on_reload ? "checked" : ""}>
+        <span><strong>Pedir la contraseña al recargar la página</strong><small>También al abrir el panel en una pestaña nueva.</small></span></label></div>
+      <div class="row2">
+        <label class="field"><span>Cerrar sesión tras… sin usarlo (min)</span><input id="ss-idle" inputmode="numeric" value="${sess.idle_minutes}">
+          <small>Sin clics ni teclas en el panel. Las actualizaciones automáticas de la pantalla no cuentan.</small></label>
+        <label class="field"><span>Máximo (horas)</span><input id="ss-max" inputmode="numeric" value="${sess.max_hours}"></label>
+      </div>`;
   };
   const values = () => {
     const events = {};
@@ -994,6 +1012,9 @@ async function openSettings() {
   const busy = (on) => dlg.querySelectorAll("footer .btn").forEach((b) => { b.disabled = on; });
   const save = async () => {
     $("#nt-error", dlg).textContent = "";
+    sess = await api("PUT", "/api/session-settings", {
+      lock_on_reload: $("#ss-reload", dlg).checked, idle_minutes: $("#ss-idle", dlg).value.trim(), max_hours: $("#ss-max", dlg).value.trim(),
+    });
     return api("PUT", "/api/notify", values());
   };
   $("#nt-form", dlg).addEventListener("submit", async (e) => {
@@ -1014,7 +1035,7 @@ async function openSettings() {
     }
     busy(false);
   });
-  try { draw(await api("GET", "/api/notify")); }
+  try { sess = await api("GET", "/api/session-settings"); draw(await api("GET", "/api/notify")); }
   catch (err) { body.innerHTML = `<div class="pane-msg bad-text">${esc(err.message)}</div>`; }
 }
 
@@ -1053,7 +1074,8 @@ document.addEventListener("click", async (e) => {
   else if (act === "settings") openSettings();
   else if (act === "logout") {
     await api("POST", "/api/logout").catch(() => {});
-    showLogin();
+    ui.unlocked = false;
+    showLogin("Has cerrado la sesión.");
   }
   else if (!s) return;
   else if (act === "restart") restart(s.id);
@@ -1744,11 +1766,23 @@ function route() {
 }
 
 async function start() {
+  let me;
   try {
-    await api("GET", "/api/me");
+    me = await api("GET", "/api/me");
   } catch { return; } // showLogin ya se ha mostrado
+  if (me.lock_on_reload && !ui.unlocked) {
+    // «pedir la contraseña al recargar»: se cierra la sesión que quedara de la carga anterior
+    await api("POST", "/api/logout").catch(() => {});
+    showLogin();
+    return;
+  }
+  ui.locked = false;
   shell();
   route();
+}
+
+for (const ev of ["pointerdown", "keydown", "wheel", "touchstart"]) {
+  document.addEventListener(ev, () => { ui.lastActivity = Date.now(); }, { passive: true, capture: true });
 }
 
 document.addEventListener("keydown", (e) => {
