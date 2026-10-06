@@ -155,6 +155,11 @@ def group_usage():
         pgid = int(st[2])
         ticks, rss, n = usage.get(pgid, (0, 0, 0))
         usage[pgid] = (ticks + int(st[11]) + int(st[12]), rss + int(st[21]) * PAGE_SIZE, n + 1)
+    for sid, (t, r, n) in CONTAINERS.usage().items():  # los contenedores cuentan como parte de su servicio
+        pid = (MANAGER.state.get(sid) or {}).get("pid")
+        if pid:
+            a = usage.get(pid, (0, 0, 0))
+            usage[pid] = (a[0] + t, a[1] + r, a[2] + n)
     return usage
 
 
@@ -215,6 +220,159 @@ def slugify(text):
     return re.sub(r"[^a-z0-9]+", "-", text).strip("-")[:32] or "servicio"
 
 
+# ───────────────────────────── contenedores (Podman) ─────────────────────────────
+# Un servicio puede ser un programa (comando), un contenedor (una imagen) o un proyecto docker-compose.
+# Se usa Podman sin root: los contenedores corren como el usuario, no hay servicio de root ni grupo «docker».
+# El contenedor se lanza en primer plano (podman run / podman-compose up), así encaja con el resto:
+# la salida va a la consola, la entrada (stdin) llega al proceso y NovaHub lo vigila como a cualquier servicio.
+
+SERVICE_KINDS = ("process", "container", "compose")
+CONTAINER_KINDS = ("container", "compose")
+IMAGE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}")
+COMPOSE_FILES = ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")
+
+
+def container_name(sid):
+    return f"novahub-{sid}"
+
+
+def full_image(image):
+    """docker.io/… explícito: sin TTY, Podman no puede preguntar en qué registro buscar un nombre corto."""
+    first = image.split("/")[0]
+    if "/" in image and ("." in first or ":" in first or first == "localhost"):
+        return image
+    return "docker.io/" + (image if "/" in image else f"library/{image}")
+
+
+def parse_volumes(text):
+    """«carpeta:/ruta/en/el/contenedor[:ro]» por línea → [(carpeta, ruta, solo_lectura)]."""
+    out = []
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(":")
+        ro = len(parts) == 3 and parts[2] == "ro"
+        if len(parts) not in (2, 3) or (len(parts) == 3 and parts[2] not in ("ro", "rw")) or not parts[1].startswith("/") or not parts[0]:
+            raise ApiError(400, f"Carpeta inválida: «{line}». Formato: carpeta:/ruta/en/el/contenedor (o …:ro)")
+        out.append((parts[0], parts[1], ro))
+    return out
+
+
+def container_command(sid, svc):
+    """La orden real con la que arranca un servicio de tipo contenedor o compose."""
+    q = shlex.quote
+    if svc.get("kind") == "compose":
+        base = f"podman-compose -p {q(container_name(sid))}" + (f" -f {q(svc['compose_file'])}" if svc.get("compose_file") else "")
+        # down primero: si NovaHub se cerró de golpe, los contenedores anteriores no estorban
+        return f"{base} down >/dev/null 2>&1; exec {base} up"
+    parts = ["exec podman run --rm --replace -i", f"--name {q(container_name(sid))}", f"--label novahub.service={q(sid)}"]
+    if svc.get("port"):
+        parts.append(f"-p {svc['port']}:{svc.get('cport') or svc['port']}")
+    root = os.path.realpath(os.path.expanduser(svc.get("cwd") or "~"))
+    for host, path, ro in parse_volumes(svc.get("volumes")):
+        host = os.path.join(root, os.path.expanduser(host)) if not os.path.isabs(os.path.expanduser(host)) else os.path.expanduser(host)
+        parts.append(f"-v {q(host + ':' + path + (':ro' if ro else ''))}")
+    for k in (svc.get("env") or {}):
+        parts.append(f"-e {q(k)}")  # sin valor: Podman lo toma del entorno del proceso (no aparece en «ps»)
+    if svc.get("cargs"):
+        parts += [q(a) for a in shlex.split(svc["cargs"])]
+    parts.append(q(full_image(svc["image"])))
+    if svc.get("ccmd"):
+        parts += [q(a) for a in shlex.split(svc["ccmd"])]
+    return " ".join(parts)
+
+
+def prepare_container(sid, svc, cwd):
+    """Antes de arrancar: Podman instalado, carpetas de datos creadas y fichero compose presente."""
+    if not shutil.which("podman") or (svc.get("kind") == "compose" and not shutil.which("podman-compose")):
+        raise ApiError(400, "Podman no está instalado: sudo apt install podman podman-compose passt uidmap")
+    if svc.get("kind") == "compose":
+        name = svc.get("compose_file")
+        if not any(os.path.isfile(os.path.join(cwd, n)) for n in ([name] if name else COMPOSE_FILES)):
+            raise ApiError(400, f"No hay {name or 'compose.yaml / docker-compose.yml'} en {cwd}")
+        return
+    for host, _, _ in parse_volumes(svc.get("volumes")):
+        full = os.path.join(cwd, os.path.expanduser(host)) if not os.path.isabs(os.path.expanduser(host)) else os.path.expanduser(host)
+        os.makedirs(full, exist_ok=True)
+
+
+def stop_containers(sid, svc, timeout):
+    """Parada ordenada: el contenedor recibe SIGTERM y su tiempo de espera; al acabar, el proceso de
+    NovaHub (podman run / compose up) termina solo."""
+    q = [] if svc.get("kind") != "compose" else ["-f", svc["compose_file"]] if svc.get("compose_file") else []
+    cmd = (["podman", "stop", "-t", str(timeout), container_name(sid)] if svc.get("kind") == "container"
+           else ["podman-compose", "-p", container_name(sid), *q, "down", "-t", str(timeout)])
+    try:
+        with open(log_path(sid), "ab") as logf:
+            subprocess.run(cmd, cwd=os.path.expanduser(svc.get("cwd") or "~"), stdout=logf, stderr=subprocess.STDOUT,
+                           stdin=subprocess.DEVNULL, timeout=timeout + 30)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+class Containers:
+    """CPU y memoria de los contenedores. Sus procesos no son hijos de NovaHub (los lanza conmon), así que se
+    buscan por su cgroup (libpod-<id>.scope) y se suman al servicio al que pertenecen."""
+
+    REFRESH = 15
+
+    def __init__(self):
+        self.ids, self.at = {}, 0   # id de contenedor → servicio
+        self.lock = threading.Lock()
+
+    def _refresh(self):
+        try:
+            res = subprocess.run(["podman", "ps", "--no-trunc", "--format", "json"], capture_output=True, text=True, timeout=10)
+            items = json.loads(res.stdout or "[]")
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return
+        ids = {}
+        for c in items:
+            labels = c.get("Labels") or {}
+            sid = labels.get("novahub.service")
+            project = labels.get("io.podman.compose.project") or labels.get("com.docker.compose.project") or ""
+            if not sid and project.startswith("novahub-"):
+                sid = project[len("novahub-"):]
+            if sid:
+                ids[c.get("Id", "")] = sid
+        self.ids = ids
+
+    def usage(self):
+        """{servicio: (ticks de CPU, bytes RSS, nº procesos)} de los servicios de tipo contenedor en marcha."""
+        if MANAGER is None or not any(s.get("kind") in CONTAINER_KINDS for s in list(MANAGER.services.values())):
+            return {}
+        with self.lock:
+            if time.time() - self.at > self.REFRESH:
+                self.at = time.time()
+                self._refresh()
+            ids = dict(self.ids)
+        if not ids:
+            return {}
+        out = {}
+        for name in os.listdir("/proc"):
+            if not name.isdigit():
+                continue
+            try:
+                with open(f"/proc/{name}/cgroup") as f:
+                    cg = f.read()
+            except OSError:
+                continue
+            m = re.search(r"libpod-(?:conmon-)?([0-9a-f]{64})", cg)
+            if not m or m.group(1) not in ids or "conmon" in m.group(0):
+                continue
+            st = proc_stat(name)
+            if not st:
+                continue
+            sid = ids[m.group(1)]
+            t, r, n = out.get(sid, (0, 0, 0))
+            out[sid] = (t + int(st[11]) + int(st[12]), r + int(st[21]) * PAGE_SIZE, n + 1)
+        return out
+
+
+CONTAINERS = Containers()
+
+
 # ───────────────────────────── validación ─────────────────────────────
 
 ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -258,7 +416,13 @@ def normalize_service(data: dict) -> dict:
 
     cwd = text("cwd", 500)
     if cwd and not os.path.isdir(os.path.expanduser(cwd)):
-        raise ApiError(400, f"El directorio no existe: {cwd}")
+        if data.get("kind") == "container":  # la carpeta de datos de un contenedor nuevo se crea sola
+            try:
+                os.makedirs(os.path.expanduser(cwd), mode=0o755)
+            except OSError as e:
+                raise ApiError(400, f"No se pudo crear la carpeta {cwd}: {e.strerror}")
+        else:
+            raise ApiError(400, f"El directorio no existe: {cwd}")
 
     port = data.get("port")
     if port in ("", None):
@@ -287,6 +451,42 @@ def normalize_service(data: dict) -> dict:
     if not health_path.startswith("/"):
         raise ApiError(400, "La ruta de la comprobación de salud debe empezar por /")
 
+    kind = str(data.get("kind") or "process")
+    if kind not in SERVICE_KINDS:
+        raise ApiError(400, "Tipo de servicio desconocido")
+    extra = {"kind": kind}
+    if kind == "container":
+        image = text("image", 255, required=True)
+        if not IMAGE_RE.fullmatch(image):
+            raise ApiError(400, "Nombre de imagen inválido (p. ej. louislam/uptime-kuma:1)")
+        cport = data.get("cport")
+        if cport in ("", None):
+            cport = None
+        else:
+            try:
+                cport = int(cport)
+            except (TypeError, ValueError):
+                raise ApiError(400, "El puerto del contenedor debe ser un número")
+            if not 1 <= cport <= 65535:
+                raise ApiError(400, "Puerto del contenedor fuera de rango (1-65535)")
+        volumes = str(data.get("volumes") or "").strip()[:4000]
+        parse_volumes(volumes)  # valida el formato
+        cargs, ccmd = text("cargs", 1000), text("ccmd", 1000)
+        for label, val in (("Opciones de podman", cargs), ("Comando del contenedor", ccmd)):
+            try:
+                shlex.split(val)
+            except ValueError as e:
+                raise ApiError(400, f"{label}: {e}")
+        extra.update(image=image, cport=cport, volumes=volumes, cargs=cargs, ccmd=ccmd)
+    elif kind == "compose":
+        compose_file = text("compose_file", 200)
+        if compose_file and (os.sep in compose_file or compose_file.startswith(".")):
+            raise ApiError(400, "Pon solo el nombre del archivo compose, dentro del directorio del servicio")
+        extra.update(compose_file=compose_file)
+    if kind in CONTAINER_KINDS and not cwd:
+        raise ApiError(400, "Indica el directorio del servicio: ahí se guardan los datos del contenedor"
+                            + (" y está el compose.yaml" if kind == "compose" else ""))
+
     memory_limit = data.get("memory_limit")
     if memory_limit in ("", None, 0, "0"):
         memory_limit = None
@@ -302,7 +502,7 @@ def normalize_service(data: dict) -> dict:
         "name": text("name", 60, required=True),
         "description": text("description", 500),
         "tags": clean_tags[:12],
-        "command": text("command", 4000, required=True),
+        "command": text("command", 4000, required=kind == "process"),
         "cwd": cwd,
         "env": {str(k): str(v) for k, v in env.items()},
         "port": port,
@@ -314,6 +514,7 @@ def normalize_service(data: dict) -> dict:
         "memory_limit": memory_limit,
         "health_check": health_check,
         "health_path": health_path,
+        **extra,
     }
 
 
@@ -451,14 +652,18 @@ class Manager:
         if svc.get("port"):
             env.setdefault("NOVAHUB_SERVICE_PORT", str(svc["port"]))
 
-        self.log(sid, f"iniciando \x1b[2m$ {svc['command']}\x1b[0m")
+        command = svc["command"]
+        if svc.get("kind") in CONTAINER_KINDS:
+            prepare_container(sid, svc, cwd)
+            command = container_command(sid, svc)
+        self.log(sid, f"iniciando \x1b[2m$ {command}\x1b[0m")
         # O_RDWR: el hijo mantiene un escritor abierto, así nunca recibe EOF
         # y el panel puede escribir en el FIFO cuando quiera.
         stdin_fd = os.open(fifo, os.O_RDWR)
         try:
             with open(path, "ab") as logf:
                 proc = subprocess.Popen(
-                    [SHELL, "-lc", svc["command"]],
+                    [SHELL, "-lc", command],
                     cwd=cwd, env=env, stdin=stdin_fd, stdout=logf, stderr=subprocess.STDOUT,
                     start_new_session=True, close_fds=True,
                 )
@@ -535,6 +740,10 @@ class Manager:
                     done = wait(timeout)
                 except OSError:
                     pass
+            if not done and svc.get("kind") in CONTAINER_KINDS:
+                self.log(sid, "deteniendo el contenedor…")
+                stop_containers(sid, svc, timeout)
+                done = wait(10)
             if not done:
                 self.log(sid, "deteniendo (SIGTERM)…")
                 kill(signal.SIGTERM)
@@ -730,6 +939,8 @@ class Manager:
             while sid in self.services:
                 sid = f"{base}-{secrets.token_hex(2)}"
             svc = {"id": sid, **svc, "created_at": time.time()}
+            if svc.get("kind") in CONTAINER_KINDS:
+                svc["command"] = container_command(sid, svc)  # para verlo en la ficha; al arrancar se recalcula
             self.services[sid] = svc
             self.save_services()
             return sid
@@ -737,7 +948,10 @@ class Manager:
     def update(self, sid, data, extra=None):
         svc = {**normalize_service(data), **(extra or {})}
         with self.lock:
-            self.services[sid] = {**self.services[sid], **svc}
+            merged = {**self.services[sid], **svc}
+            if merged.get("kind") in CONTAINER_KINDS:
+                merged["command"] = container_command(sid, merged)
+            self.services[sid] = merged
             self.save_services()
 
     def delete(self, sid):
@@ -2858,6 +3072,14 @@ class Deployer:
     # ── actualizar un servicio: pull + dependencias + reinicio ──
     def update(self, sid):
         svc = MANAGER.services[sid]
+        if svc.get("kind") in CONTAINER_KINDS:
+            with MANAGER.lock:
+                st = MANAGER.st(sid)
+                if st.get("updating"):
+                    raise ApiError(409, "Ya se está actualizando")
+                st["updating"] = True
+            threading.Thread(target=self._update_container, args=(sid,), daemon=True).start()
+            return
         root = git_repo(svc)
         with MANAGER.lock:
             st = MANAGER.st(sid)
@@ -2865,6 +3087,44 @@ class Deployer:
                 raise ApiError(409, "Ya se está actualizando")
             st["updating"] = True
         threading.Thread(target=self._update, args=(sid, root), daemon=True).start()
+
+    def _update_container(self, sid):
+        """«Actualizar» de un contenedor: descarga la versión nueva de la imagen y, si cambió, reinicia."""
+        ok, msg = False, ""
+        svc = MANAGER.services[sid]
+        cwd = os.path.expanduser(svc.get("cwd") or "~")
+        try:
+            MANAGER.log(sid, "\x1b[35mbuscando una versión nueva de la imagen…\x1b[0m")
+            if svc.get("kind") == "compose":
+                f = ["-f", svc["compose_file"]] if svc.get("compose_file") else []
+                self._logged(sid, ["podman-compose", "-p", container_name(sid), *f, "pull"], cwd, 1800)
+                changed = True  # compose no dice si ha cambiado algo: se reinicia
+            else:
+                image = full_image(svc["image"])
+                before = subprocess.run(["podman", "image", "inspect", "--format", "{{.Id}}", image], capture_output=True, text=True, timeout=30).stdout.strip()
+                self._logged(sid, ["podman", "pull", image], cwd, 1800)
+                after = subprocess.run(["podman", "image", "inspect", "--format", "{{.Id}}", image], capture_output=True, text=True, timeout=30).stdout.strip()
+                changed = before != after
+            if not changed:
+                ok, msg = True, "Ya tenía la última versión de la imagen"
+                MANAGER.log(sid, "ya tenía la última versión: no hace falta reiniciar")
+            elif MANAGER.running(sid):
+                MANAGER.log(sid, "imagen nueva: reiniciando")
+                MANAGER.restart(sid)
+                ok, msg = True, "Imagen actualizada"
+            else:
+                ok, msg = True, "Imagen actualizada (el servicio está parado)"
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            MANAGER.log(sid, f"\x1b[31mno se pudo actualizar la imagen: {e}\x1b[0m")
+            NOTIFIER.notify("update", sid, f"No se pudo actualizar {svc['name']}",
+                            f"La actualización de la imagen de «{svc['name']}» ha fallado: {e}", log=True)
+        finally:
+            with MANAGER.lock:
+                st = MANAGER.st(sid)
+                st["updating"] = False
+                st["last_update"] = {"at": time.time(), "ok": ok, "msg": msg}
+                MANAGER.save_state()
 
     def _logged(self, sid, cmd, cwd, timeout):
         with open(log_path(sid), "ab") as logf:

@@ -490,6 +490,19 @@ kbd { font: 500 10.5px var(--f-mono); padding: 1px 5px; border-radius: 4px; back
 .git-last { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-weight: 600; }
 .git-out { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--screen); color: var(--screen-ink); font: 12px/1.55 var(--f-mono); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
 
+/* tipo de servicio y contenedores */
+.kind-pick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.kind-pick label { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: var(--r-sm); border: 1px solid var(--line-hi);
+  background: var(--module); cursor: pointer; }
+.kind-pick label:has(input:checked) { border-color: var(--nova); background: var(--nova-soft); }
+.kind-pick input { margin-top: 3px; accent-color: var(--nova); }
+.kind-pick strong { display: block; font-size: 14px; }
+.kind-pick small { display: block; color: var(--soft); font-size: 12px; margin-top: 2px; }
+.kind-block { display: flex; flex-direction: column; gap: 14px; }
+.presets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); }
+.presets .chip { height: 30px; font-size: 12.5px; }
+@media (max-width: 640px) { .kind-pick { grid-template-columns: 1fr; } }
+
 /* ajustes */
 .btn.icon.active { background: var(--ink); color: var(--module); box-shadow: none; }
 .settings { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 18px; align-items: start; }

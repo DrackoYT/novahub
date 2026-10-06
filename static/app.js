@@ -26,6 +26,7 @@ const ICON = {
   git: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 8.5v7M18 10.5c0 4-6 3-11 6"/></svg>',
   upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9M7 14l5-5 5 5M5 3h14"/></svg>',
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg>',
   mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg>',
@@ -1030,6 +1031,7 @@ function openNew() {
         <div class="choices">
           <button type="button" class="choice" data-choice="github">${ICON.git}<strong>Desde GitHub</strong><small>Clona uno de tus repositorios, instala sus dependencias y te propone el comando y el puerto.</small></button>
           <button type="button" class="choice" data-choice="template">${ICON.grid}<strong>Desde una plantilla</strong><small>Empieza un proyecto nuevo (web, API, bot…) con los archivos de inicio ya creados y funcionando.</small></button>
+          <button type="button" class="choice" data-choice="container">${ICON.box}<strong>Contenedor</strong><small>Una app ya empaquetada de Docker Hub (Uptime Kuma, Jellyfin, Minecraft…) o un proyecto con docker-compose, con Podman.</small></button>
           <button type="button" class="choice" data-choice="blank">${ICON.plus}<strong>En blanco</strong><small>Rellena tú el comando y la carpeta de un programa que ya está en el servidor.</small></button>
         </div>
       </div>
@@ -1040,6 +1042,7 @@ function openNew() {
     dlg.close();
     if (c === "github") openGithub();
     else if (c === "template") openTemplates();
+    else if (c === "container") openForm(null, { name: "", kind: "container" });
     else openForm(null);
   });
 }
@@ -2346,7 +2349,9 @@ function drawDetail(s) {
       </div>
       <div class="d-actions">
         ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Abrir ↗</a>` : ""}
-        ${ui.gitRepo === s.id ? `<button class="btn" data-act="update" ${s.updating ? "disabled" : ""} title="Traer cambios de GitHub, instalar dependencias y reiniciar">${ICON.download}${s.updating ? "Actualizando…" : "Actualizar"}</button>` : ""}
+        ${s.kind === "container" || s.kind === "compose"
+    ? `<button class="btn" data-act="update" ${s.updating ? "disabled" : ""} title="Descargar la versión nueva de la imagen y reiniciar si ha cambiado">${ICON.download}${s.updating ? "Actualizando…" : "Actualizar imagen"}</button>`
+    : ui.gitRepo === s.id ? `<button class="btn" data-act="update" ${s.updating ? "disabled" : ""} title="Traer cambios de GitHub, instalar dependencias y reiniciar">${ICON.download}${s.updating ? "Actualizando…" : "Actualizar"}</button>` : ""}
         <button class="btn" data-act="restart" ${s.status === "running" ? "" : "disabled"}>${ICON.restart}Reiniciar</button>
         <button class="btn" data-act="edit">${ICON.edit}Editar</button>
         <button class="btn danger" data-act="delete" ${isOn(s) || busy ? "disabled title=\"Detén el servicio para eliminarlo\"" : ""}>${ICON.trash}Eliminar</button>
@@ -2697,12 +2702,33 @@ function openForm(svc, prefill = null) {
         <label class="field"><span>Nombre *</span><input name="name" maxlength="60" placeholder="Bot de Discord"></label>
         <label class="field"><span>Descripción</span><input name="description" maxlength="500" placeholder="Para qué sirve este servicio"></label>
         <label class="field"><span>Etiquetas</span><input name="tags" placeholder="bot, discord, producción"><small>Separadas por comas. Sirven para filtrar en la pantalla principal.</small></label>
-        <label class="field"><span>Comando *</span><textarea name="command" rows="3" class="mono" spellcheck="false" placeholder="npm start"></textarea>
+        <div class="field"><span>Tipo</span>
+          <div class="kind-pick" role="radiogroup" aria-label="Tipo de servicio">
+            <label><input type="radio" name="kind" value="process" checked><span><strong>Programa</strong><small>Un comando: npm, python, java…</small></span></label>
+            <label><input type="radio" name="kind" value="container"><span><strong>Contenedor</strong><small>Una imagen de Docker Hub</small></span></label>
+            <label><input type="radio" name="kind" value="compose"><span><strong>Compose</strong><small>Un docker-compose.yml</small></span></label>
+          </div></div>
+        <label class="field" data-kind="process"><span>Comando *</span><textarea name="command" rows="3" class="mono" spellcheck="false" placeholder="npm start"></textarea>
           <small>Se ejecuta con bash: puedes usar <code>&amp;&amp;</code>, variables, activar un venv, etc.</small></label>
+        <div data-kind="container" class="kind-block">
+          <div class="presets"><span>Ejemplos:</span>
+            <button type="button" class="chip" data-preset="kuma">Uptime Kuma</button>
+            <button type="button" class="chip" data-preset="nginx">Web estática (nginx)</button>
+            <button type="button" class="chip" data-preset="minecraft">Minecraft (Paper)</button>
+          </div>
+          <label class="field"><span>Imagen *</span><input name="image" class="mono" spellcheck="false" autocapitalize="off" placeholder="louislam/uptime-kuma:1">
+            <small>Como en Docker Hub. Se descarga sola la primera vez (puede tardar unos minutos).</small></label>
+          <label class="field"><span>Carpetas</span><textarea name="volumes" rows="2" class="mono" spellcheck="false" placeholder="data:/app/data"></textarea>
+            <small>Una por línea: <code>carpeta:/ruta/en/el/contenedor</code> (añade <code>:ro</code> para solo lectura). Las rutas relativas van dentro del directorio del servicio; ahí quedan los datos, también para las copias de seguridad.</small></label>
+        </div>
+        <label class="field" data-kind="compose"><span>Archivo compose</span><input name="compose_file" class="mono" spellcheck="false" placeholder="compose.yaml (se busca solo)">
+          <small>Vacío = busca <code>compose.yaml</code> o <code>docker-compose.yml</code> en el directorio del servicio.</small></label>
         <div class="row2">
-          <label class="field"><span>Directorio de trabajo</span><input name="cwd" class="mono" spellcheck="false" placeholder="~/mi-proyecto"></label>
+          <label class="field"><span id="cwd-label">Directorio de trabajo</span><input name="cwd" class="mono" spellcheck="false" placeholder="~/mi-proyecto"></label>
           <label class="field"><span>Puerto</span><input name="port" inputmode="numeric" placeholder="3000"></label>
         </div>
+        <label class="field" data-kind="container"><span>Puerto dentro del contenedor</span><input name="cport" inputmode="numeric" placeholder="igual que el puerto">
+          <small>El que usa la app dentro de la imagen (p. ej. 80 en nginx). El «Puerto» de arriba es el del servidor.</small></label>
         ${ui.publishDomain ? `<label class="field"><span>Publicar en internet</span>
           <div class="affix"><input name="subdomain" class="mono" spellcheck="false" autocapitalize="off" placeholder="mi-app"><span>.${esc(ui.publishDomain)}</span></div>
           <small>Crea el DNS en Cloudflare y la ruta del túnel hacia el puerto. Vacío = solo en la red local.</small></label>` : ""}
@@ -2715,6 +2741,11 @@ function openForm(svc, prefill = null) {
           <summary>Opciones avanzadas</summary>
           <div class="inner">
             <label class="field"><span>Variables de entorno</span><textarea name="env" rows="3" class="mono" spellcheck="false" placeholder="NODE_ENV=production&#10;TOKEN=..."></textarea><small>Una por línea: CLAVE=valor</small></label>
+            <div data-kind="container" class="kind-block">
+              <label class="field"><span>Opciones de podman</span><input name="cargs" class="mono" spellcheck="false" placeholder="--device /dev/dri --shm-size 1g">
+                <small>Se añaden tal cual a <code>podman run</code>.</small></label>
+              <label class="field"><span>Comando del contenedor</span><input name="ccmd" class="mono" spellcheck="false" placeholder="(el de la imagen)"></label>
+            </div>
             <div class="row2">
               <label class="field"><span>Comprobación de salud</span>
                 <select name="health_check">
@@ -2744,11 +2775,40 @@ function openForm(svc, prefill = null) {
   const form = dlg.querySelector("form");
   const f = form.elements;
   const src = svc || prefill;
+  const KIND_CWD = { process: ["Directorio de trabajo", "~/mi-proyecto"], container: ["Carpeta de datos *", "~/contenedores/mi-app"],
+    compose: ["Carpeta del proyecto *", "~/mi-proyecto (con compose.yaml)"] };
+  const showKind = () => {
+    const k = f.kind.value;
+    form.querySelectorAll("[data-kind]").forEach((el) => { el.hidden = el.dataset.kind !== k; });
+    $("#cwd-label", dlg).textContent = KIND_CWD[k][0];
+    f.cwd.placeholder = KIND_CWD[k][1];
+  };
+  form.querySelectorAll('[name="kind"]').forEach((r) => r.addEventListener("change", showKind));
+  const PRESETS = {
+    kuma: { name: "Uptime Kuma", image: "louislam/uptime-kuma:1", port: 3001, cport: 3001, volumes: "data:/app/data", cwd: "~/contenedores/uptime-kuma" },
+    nginx: { name: "Web estática", image: "nginx:alpine", port: 8080, cport: 80, volumes: "html:/usr/share/nginx/html:ro", cwd: "~/contenedores/web" },
+    minecraft: { name: "Minecraft", image: "itzg/minecraft-server", port: 25565, cport: 25565, volumes: "data:/data", cwd: "~/contenedores/minecraft",
+      env: "EULA=TRUE\nTYPE=PAPER\nMEMORY=2G", stop_timeout: 60 },
+  };
+  form.addEventListener("click", (e) => {
+    const p = PRESETS[e.target.closest("[data-preset]")?.dataset.preset];
+    if (!p) return;
+    for (const [k, v] of Object.entries(p)) if (f[k] && (k !== "name" || !f.name.value)) f[k].value = v;
+    if (p.env) dlg.querySelector("details").open = true;
+    toast("Rellenado. Revisa los datos y pulsa «Crear servicio»", "ok");
+  });
   if (src) {
     f.name.value = src.name;
+    f.kind.value = src.kind || "process";
+    f.image.value = src.image || "";
+    f.cport.value = src.cport ?? "";
+    f.volumes.value = src.volumes || "";
+    f.cargs.value = src.cargs || "";
+    f.ccmd.value = src.ccmd || "";
+    f.compose_file.value = src.compose_file || "";
     f.description.value = src.description || "";
     f.tags.value = (src.tags || []).join(", ");
-    f.command.value = src.command;
+    f.command.value = src.kind && src.kind !== "process" ? "" : src.command;
     f.cwd.value = src.cwd || "";
     f.port.value = src.port ?? "";
     f.url.value = src.url || "";
@@ -2763,6 +2823,7 @@ function openForm(svc, prefill = null) {
     f.health_path.value = src.health_path && src.health_path !== "/" ? src.health_path : "";
     if (f.env.value || f.stop_command.value || f.memory_limit.value || f.health_check.value !== "auto") dlg.querySelector("details").open = true;
   }
+  showKind();
   f.name.focus();
 
   form.addEventListener("submit", async (e) => {
@@ -2774,6 +2835,8 @@ function openForm(svc, prefill = null) {
       env: f.env.value, stop_command: f.stop_command.value, stop_timeout: f.stop_timeout.value.trim(),
       memory_limit: f.memory_limit.value.trim(),
       health_check: f.health_check.value, health_path: f.health_path.value.trim(),
+      kind: f.kind.value, image: f.image.value.trim(), cport: f.cport.value.trim(), volumes: f.volumes.value,
+      cargs: f.cargs.value.trim(), ccmd: f.ccmd.value.trim(), compose_file: f.compose_file.value.trim(),
     };
     if (f.subdomain) body.subdomain = f.subdomain.value.trim();
     const btn = form.querySelector("[type=submit]");
