@@ -43,6 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+mimetypes.add_type("application/manifest+json", ".webmanifest")  # manifiesto de la app (PWA)
 DATA_DIR = os.path.abspath(os.environ.get("NOVAHUB_DATA", os.path.join(BASE_DIR, "data")))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 LOG_DIR = os.path.join(DATA_DIR, "logs")

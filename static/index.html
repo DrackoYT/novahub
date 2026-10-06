@@ -7,6 +7,15 @@
   <script src="/theme.js"></script>
   <title>NovaHub</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <!-- app para el móvil (PWA); use-credentials: con Cloudflare Access delante, el manifiesto necesita la cookie -->
+  <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="theme-color" content="#f7f5fa" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1d1a24" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="NovaHub">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>

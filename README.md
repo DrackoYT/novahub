@@ -103,6 +103,19 @@ recupera el comando original. El puerto llega por la variable `NOVAHUB_SERVICE_P
 Se sirve una copia de la compilación (`data/builds/<servicio>/current`), no la carpeta `dist/`: mientras se
 recompila, o si la compilación falla, la web publicada sigue funcionando con la versión anterior.
 
+## App para el móvil
+
+NovaHub se instala como app (PWA): icono en la pantalla de inicio y se abre a pantalla completa, sin la barra
+del navegador. Sigue yendo por el túnel (https://novahub.novaasist.dev), con Cloudflare Access y la contraseña.
+
+- **Android (Chrome):** Ajustes → «Instalar NovaHub», o menú ⋮ → «Instalar aplicación».
+- **iPhone (Safari):** Compartir → «Añadir a pantalla de inicio».
+
+La interfaz queda guardada en el móvil (`static/sw.js`), así que abre aunque no haya conexión y avisa de que
+no puede hablar con el servidor; reintenta sola. Los datos (la API) nunca se guardan: siempre vienen del
+servidor. Con «Pedir la contraseña al recargar» activado, la app la pide cada vez que se abre.
+Los iconos se generan con `python3 tools/make_icons.py`.
+
 ## Vista de red
 
 Pestaña **Red** (tecla `4`):
@@ -211,7 +224,10 @@ Se habla con el enchufe por la red local: no hace falta Alexa ni la nube.
 
 ```
 server.py          backend (API + gestor de procesos + consola por SSE)
-static/            interfaz web (HTML/CSS/JS sin frameworks)
+static/            interfaz web (HTML/CSS/JS sin frameworks) y app para el móvil (manifiesto, sw.js, iconos)
+serve.py           servidor estático del modo producción
+tapo.py            control del enchufe Tapo
+tools/             utilidades (generar los iconos de la app)
 novahub.service    unidad de systemd
 data/              se crea al arrancar (no subir a git)
 ```

@@ -151,9 +151,11 @@ async function api(method, url, body) {
   try {
     res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, credentials: "same-origin" });
   } catch {
+    setOffline(true);
     await checkAccessSession();
     throw new Error("Sin conexión con el servidor");
   }
+  if ($("#offline") && !$("#offline").hidden) setOffline(false);
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && url !== "/api/login") {
     if (!ui.locked) showLogin(ui.unlocked ? "La sesión se ha cerrado por inactividad. Vuelve a entrar." : "");
@@ -192,6 +194,23 @@ function clearView() {
 function every(ms, fn) { ui.timers.push(setInterval(fn, ms)); }
 
 // ───────────────────────── login ─────────────────────────
+
+// Sin red al abrir (sobre todo en la app): pantalla de espera que reintenta sola al volver la conexión.
+function showOffline() {
+  clearView();
+  app.innerHTML = `
+    <div class="login-wrap">
+      <div class="login module">
+        <div class="brand">${BRAND}</div>
+        <p class="sub">No hay conexión con el servidor</p>
+        <p class="offline-text">Comprueba que tienes internet. Si el servidor está apagado o sin red, NovaHub no puede responder.</p>
+        <button class="btn primary" type="button" id="retry">Reintentar</button>
+      </div>
+    </div>`;
+  $("#retry").addEventListener("click", () => start());
+  every(15000, () => navigator.onLine && start());
+}
+window.addEventListener("online", () => { if ($("#retry")) start(); });
 
 function showLogin(reason = "") {
   clearView();
@@ -1260,7 +1279,9 @@ async function openSettings() {
         <label class="field"><span>Cerrar sesión tras… sin usarlo (min)</span><input id="ss-idle" inputmode="numeric" value="${sess.idle_minutes}">
           <small>Sin clics ni teclas en el panel. Las actualizaciones automáticas de la pantalla no cuentan.</small></label>
         <label class="field"><span>Máximo (horas)</span><input id="ss-max" inputmode="numeric" value="${sess.max_hours}"></label>
-      </div>`;
+      </div>
+      <p class="label">App para el móvil</p>
+      ${appInstallHTML()}`;
   };
   const values = () => {
     const events = {};
@@ -1268,6 +1289,12 @@ async function openSettings() {
     return { user: $("#nt-user", dlg).value.trim(), app_password: $("#nt-pass", dlg).value, to: $("#nt-to", dlg).value.trim(), events,
       heartbeat_url: $("#nt-hb", dlg).value.trim() };
   };
+  body.addEventListener("click", async (e) => {
+    if (!e.target.closest("#app-install") || !ui.installPrompt) return;
+    ui.installPrompt.prompt();
+    const { outcome } = await ui.installPrompt.userChoice;
+    if (outcome === "accepted") { ui.installPrompt = null; toast("NovaHub instalada: ábrela desde la pantalla de inicio", "ok"); dlg.close(); }
+  });
   const busy = (on) => dlg.querySelectorAll("footer .btn").forEach((b) => { b.disabled = on; });
   const save = async () => {
     $("#nt-error", dlg).textContent = "";
@@ -1297,6 +1324,43 @@ async function openSettings() {
   try { sess = await api("GET", "/api/session-settings"); draw(await api("GET", "/api/notify")); }
   catch (err) { body.innerHTML = `<div class="pane-msg bad-text">${esc(err.message)}</div>`; }
 }
+
+// ───────────────────────── app para el móvil (PWA) ─────────────────────────
+
+const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+
+function appInstallHTML() {
+  if (standalone()) return '<p class="nt-ok">Ya estás usando NovaHub como app.</p>';
+  if (ui.installPrompt) {
+    return `<p>Ábrela desde la pantalla de inicio, a pantalla completa y sin la barra del navegador.</p>
+      <button type="button" class="btn" id="app-install">${ICON.download}Instalar NovaHub</button>`;
+  }
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  return ios
+    ? "<p>En el iPhone, desde <strong>Safari</strong>: botón <strong>Compartir</strong> → <strong>Añadir a pantalla de inicio</strong>.</p>"
+    : "<p>En Android, desde <strong>Chrome</strong>: menú <strong>⋮</strong> → <strong>Instalar aplicación</strong> (o «Añadir a pantalla de inicio»).</p>";
+}
+
+window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); ui.installPrompt = e; });  // se ofrece en Ajustes
+window.addEventListener("appinstalled", () => { ui.installPrompt = null; });
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
+
+// Aviso de «sin conexión» (útil sobre todo en la app: la interfaz abre aunque no haya red)
+function setOffline(off) {
+  let bar = $("#offline");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "offline";
+    bar.setAttribute("role", "status");
+    bar.textContent = "Sin conexión con el servidor: los datos no se actualizan";
+    document.body.appendChild(bar);
+  }
+  bar.hidden = !off;
+}
+window.addEventListener("offline", () => setOffline(true));
+window.addEventListener("online", () => setOffline(false));
 
 async function powerOff() {
   try {
@@ -2351,7 +2415,10 @@ async function start() {
   let me;
   try {
     me = await api("GET", "/api/me");
-  } catch { return; } // showLogin ya se ha mostrado
+  } catch (e) {
+    if (e.message === "Sin conexión con el servidor") showOffline();
+    return; // si no, es un 401 y showLogin ya se ha mostrado
+  }
   if (me.lock_on_reload && !ui.unlocked) {
     // «pedir la contraseña al recargar»: se cierra la sesión que quedara de la carga anterior
     await api("POST", "/api/logout").catch(() => {});
