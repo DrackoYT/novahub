@@ -25,6 +25,7 @@
   --nova-deep: #3d1bb0;
   --nova-text: #5a2fe0;        /* morado legible como texto */
   --nova-soft: rgba(108, 63, 245, .1);
+  --chart: #6c3ff5;            /* línea de las gráficas */
 
   --lcd: #24212c;
   --lcd-ink: #c3a8ff;
@@ -52,7 +53,7 @@
     --bg: #121017; --module: #1d1a24; --module-hi: rgba(255, 255, 255, .05); --edge: #09080c; --hover: #26222f;
     --line: #2a2633; --line-hi: #3a3545; --sunk: #16141c;
     --ink: #ece8f4; --soft: #a49db3; --faint: #6f6880;
-    --nova: #7b4dff; --nova-edge: #5a30e6; --nova-deep: #3a1aa8; --nova-text: #b39bff; --nova-soft: rgba(123, 77, 255, .16);
+    --nova: #7b4dff; --nova-edge: #5a30e6; --nova-deep: #3a1aa8; --nova-text: #b39bff; --nova-soft: rgba(123, 77, 255, .16); --chart: #8c66ff;
     --lcd: #0c0a10; --lcd-ink: #b99bff;
     --ok: #5fe39a; --ok-bg: rgba(95, 227, 154, .12);
     --err: #ff7a7f; --err-bg: rgba(255, 122, 127, .12);
@@ -66,7 +67,7 @@
   --bg: #121017; --module: #1d1a24; --module-hi: rgba(255, 255, 255, .05); --edge: #09080c; --hover: #26222f;
   --line: #2a2633; --line-hi: #3a3545; --sunk: #16141c;
   --ink: #ece8f4; --soft: #a49db3; --faint: #6f6880;
-  --nova: #7b4dff; --nova-edge: #5a30e6; --nova-deep: #3a1aa8; --nova-text: #b39bff; --nova-soft: rgba(123, 77, 255, .16);
+  --nova: #7b4dff; --nova-edge: #5a30e6; --nova-deep: #3a1aa8; --nova-text: #b39bff; --nova-soft: rgba(123, 77, 255, .16); --chart: #8c66ff;
   --lcd: #0c0a10; --lcd-ink: #b99bff;
   --ok: #5fe39a; --ok-bg: rgba(95, 227, 154, .12);
   --err: #ff7a7f; --err-bg: rgba(255, 122, 127, .12);
@@ -213,6 +214,34 @@ main { max-width: 1260px; margin: 0 auto; padding: 30px 24px 64px; }
 .meter i { display: block; height: 100%; border-radius: inherit; background: var(--nova); transition: width .4s ease; }
 .meter.hot i { background: #e8a200; }
 .meter.crit i { background: var(--err); }
+
+/* gráficas de uso */
+.usage-head { margin-top: 22px; }
+.seg { display: flex; gap: 6px; }
+.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.chart { padding: 14px 16px 10px; min-width: 0; }
+.chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.chart-now { font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chart-now b { font-size: 17px; font-weight: 750; }
+.chart-plot { position: relative; height: 150px; }
+.chart-plot svg { display: block; touch-action: pan-y; }
+.ch-grid { stroke: var(--line); stroke-width: 1; }
+.ch-axis { fill: var(--faint); font: 400 10.5px var(--f-mono); }
+.ch-area { fill: var(--chart); opacity: .13; }
+.ch-line { fill: none; stroke: var(--chart); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.ch-dot { fill: var(--chart); }
+.ch-limit { stroke: var(--err); stroke-width: 1.5; stroke-dasharray: 4 4; opacity: .7; }
+.ch-cross { stroke: var(--soft); stroke-width: 1; stroke-dasharray: 3 3; }
+.ch-mark { fill: var(--chart); stroke: var(--module); stroke-width: 2; }
+.ch-tip {
+  position: absolute; transform: translate(-50%, -100%); pointer-events: none; white-space: nowrap;
+  display: flex; gap: 8px; align-items: baseline; padding: 5px 9px; border-radius: 8px;
+  background: var(--ink); color: var(--module); font-size: 13px; box-shadow: 0 4px 14px rgba(0, 0, 0, .18);
+}
+.ch-tip span { opacity: .7; font: 400 11.5px var(--f-mono); }
+.chart-empty { position: absolute; inset: 0 0 22px 40px; display: grid; place-items: center; text-align: center; color: var(--soft); font-size: 13.5px; }
+.d-kpis ~ .charts { margin-bottom: 18px; }
+@media (max-width: 760px) { .charts { grid-template-columns: 1fr; } }
 
 /* lista del resumen */
 .rows { overflow: hidden; }

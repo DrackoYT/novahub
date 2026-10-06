@@ -268,6 +268,147 @@ async function refreshSystem() {
   } catch { /* silencioso */ }
 }
 
+// ───────────────────────── gráficas de uso ─────────────────────────
+// SVG a mano: una serie por gráfica (CPU o memoria), un solo eje, huecos donde no hay datos
+// (servicio parado o NovaHub apagado) y una línea con la lectura al pasar el ratón o el dedo.
+
+const CHART_H = 150, CHART_PAD = { r: 10, t: 10, b: 22 };
+// Techo «redondo» para el eje: 1, 2, 2,5, 5 o 10 × 10ⁿ (300 MB, 500 MB… en lugar de 324 MB)
+const niceCeil = (v) => { const e = 10 ** Math.floor(Math.log10(v)); return [1, 2, 2.5, 5, 10].find((m) => m * e >= v) * e; };
+
+function usageRange() {
+  try { return localStorage.getItem("nh-range") === "24h" ? "24h" : "1h"; } catch { return "1h"; }
+}
+
+// Bloque con las dos gráficas; `key` es «system» o el id de un servicio.
+function usageHTML(key) {
+  const r = usageRange();
+  return `
+    <div class="section-title usage-head">
+      <h2>${key === "system" ? "Uso del servidor" : "Uso"}</h2>
+      <div class="seg" role="group" aria-label="Periodo">
+        <button type="button" class="chip ${r === "1h" ? "active" : ""}" data-range="1h" aria-pressed="${r === "1h"}">1 h</button>
+        <button type="button" class="chip ${r === "24h" ? "active" : ""}" data-range="24h" aria-pressed="${r === "24h"}">24 h</button>
+      </div>
+    </div>
+    <section class="charts" id="charts" data-key="${esc(key)}">
+      <div class="module chart" data-metric="cpu"><div class="chart-head"><span class="label">CPU</span><span class="chart-now"></span></div><div class="chart-plot"></div></div>
+      <div class="module chart" data-metric="mem"><div class="chart-head"><span class="label">Memoria</span><span class="chart-now"></span></div><div class="chart-plot"></div></div>
+    </section>`;
+}
+
+function setupUsage() {
+  const box = $("#charts");
+  if (!box) return;
+  ui.usage = null;
+  box.parentElement.querySelector(".usage-head .seg").addEventListener("click", (e) => {
+    const r = e.target.closest("[data-range]")?.dataset.range;
+    if (!r) return;
+    try { localStorage.setItem("nh-range", r); } catch { /* sin almacenamiento: solo esta vez */ }
+    e.currentTarget.querySelectorAll("[data-range]").forEach((b) => {
+      b.classList.toggle("active", b.dataset.range === r);
+      b.setAttribute("aria-pressed", String(b.dataset.range === r));
+    });
+    refreshUsage();
+  });
+  refreshUsage();
+  every(10000, refreshUsage);
+  window.addEventListener("resize", ui.onResize = ui.onResize || (() => ui.usage && drawUsage(ui.usage)));
+}
+
+async function refreshUsage() {
+  const box = $("#charts");
+  if (!box) return;
+  try {
+    const d = await api("GET", `/api/metrics?range=${usageRange()}&service=${encodeURIComponent(box.dataset.key)}`);
+    if ($("#charts") !== box) return;
+    ui.usage = d;
+    drawUsage(d);
+  } catch { /* silencioso: se reintenta en 10 s */ }
+}
+
+function drawUsage(d) {
+  const box = $("#charts");
+  if (!box) return;
+  const sys = box.dataset.key === "system";
+  const last = d.points[d.points.length - 1];
+  const fresh = last && d.to - last[0] < d.step * 2.5;
+  const memMax = sys ? d.mem_total : niceCeil(Math.max(2 ** 20, (d.memory_limit || 0) * 2 ** 20 * 1.05, ...d.points.map((p) => p[2] * 1.15)) / 2 ** 20) * 2 ** 20;
+  const cpuMax = sys ? 100 : Math.max(100, Math.ceil(Math.max(0, ...d.points.map((p) => p[1])) / 50) * 50);
+  const specs = {
+    cpu: { i: 1, max: cpuMax, fmt: (v) => `${v.toFixed(v < 10 ? 1 : 0)} %`, axis: (v) => `${Math.round(v)}%`,
+      now: fresh ? `${last[1].toFixed(1)} %` : "—", note: sys ? `de ${d.cpus} núcleos` : "100 % = 1 núcleo" },
+    mem: { i: 2, max: memMax || 1, fmt: fmtBytes, axis: fmtBytes, limit: !sys && d.memory_limit ? d.memory_limit * 2 ** 20 : null,
+      now: fresh ? fmtBytes(last[2]) : "—", note: sys ? `de ${fmtBytes(d.mem_total)}` : (d.memory_limit ? `límite ${fmtBytes(d.memory_limit * 2 ** 20)}` : "") },
+  };
+  box.querySelectorAll(".chart").forEach((el) => {
+    const sp = specs[el.dataset.metric];
+    el.querySelector(".chart-now").innerHTML = `<b>${sp.now}</b>${sp.note ? ` <span class="dim-text">${esc(sp.note)}</span>` : ""}`;
+    drawChart(el.querySelector(".chart-plot"), d, sp);
+  });
+}
+
+function drawChart(plot, d, sp) {
+  const labels = [0, 0.5, 1].map((f) => sp.axis(sp.max * f));
+  const P = { ...CHART_PAD, l: Math.max(30, Math.max(...labels.map((t) => t.length)) * 6.6 + 12) };  // sitio para el rótulo más largo
+  const W = Math.max(240, plot.clientWidth), H = CHART_H;
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  const x = (t) => P.l + ((t - d.from) / (d.to - d.from)) * iw;
+  const y = (v) => P.t + ih - (Math.min(v, sp.max) / sp.max) * ih;
+  const pts = d.points;
+  // tramos continuos: un salto de más de 2,5 pasos es un hueco (parado o sin datos)
+  const segs = [];
+  pts.forEach((p, k) => {
+    if (!k || p[0] - pts[k - 1][0] > d.step * 2.5) segs.push([]);
+    segs[segs.length - 1].push(p);
+  });
+  const line = (s) => s.map((p, k) => `${k ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[sp.i]).toFixed(1)}`).join("");
+  const area = (s) => `${line(s)}L${x(s[s.length - 1][0]).toFixed(1)},${P.t + ih}L${x(s[0][0]).toFixed(1)},${P.t + ih}Z`;
+  const grid = [0, 0.5, 1].map((f, k) => {
+    const gy = P.t + ih - f * ih;
+    return `<line x1="${P.l}" x2="${W - P.r}" y1="${gy}" y2="${gy}" class="ch-grid"/>` +
+      `<text x="${P.l - 8}" y="${gy + 4}" class="ch-axis" text-anchor="end">${esc(labels[k])}</text>`;
+  }).join("");
+  const span = d.to - d.from, ticks = [];
+  for (let k = 0; k <= 4; k++) ticks.push(d.from + (span * k) / 4);
+  const hhmm = (t) => new Date(t * 1000).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  const xAxis = ticks.map((t, k) => `<text x="${x(t)}" y="${H - 5}" class="ch-axis" text-anchor="${k === 0 ? "start" : k === 4 ? "end" : "middle"}">${k === 4 ? "ahora" : hhmm(t)}</text>`).join("");
+  const limit = sp.limit ? `<line x1="${P.l}" x2="${W - P.r}" y1="${y(sp.limit)}" y2="${y(sp.limit)}" class="ch-limit"/>` +
+    `<text x="${W - P.r}" y="${y(sp.limit) - 5}" class="ch-axis" text-anchor="end">límite</text>` : "";
+  const vals = pts.map((p) => p[sp.i]);
+  const summary = vals.length
+    ? `mínimo ${sp.fmt(Math.min(...vals))}, media ${sp.fmt(vals.reduce((a, b) => a + b, 0) / vals.length)}, máximo ${sp.fmt(Math.max(...vals))}`
+    : "sin datos";
+  plot.innerHTML = `
+    <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(summary)}">
+      ${grid}${limit}
+      ${segs.map((s) => `<path d="${area(s)}" class="ch-area"/><path d="${line(s)}" class="ch-line"/>`).join("")}
+      ${segs.filter((s) => s.length === 1).map((s) => `<circle cx="${x(s[0][0])}" cy="${y(s[0][sp.i])}" r="2.5" class="ch-dot"/>`).join("")}
+      ${xAxis}
+      <g class="ch-hover" hidden><line y1="${P.t}" y2="${P.t + ih}" class="ch-cross"/><circle r="4.5" class="ch-mark"/></g>
+    </svg>
+    ${pts.length ? "" : `<div class="chart-empty">Recogiendo datos: una muestra cada 10 s${d.range === "24h" ? " (la de 24 h es una media cada 5 min)" : ""}</div>`}
+    <div class="ch-tip" hidden></div>`;
+  if (!pts.length) return;
+  const svg = plot.querySelector("svg"), hover = svg.querySelector(".ch-hover"), tip = plot.querySelector(".ch-tip");
+  const move = (e) => {
+    const r = svg.getBoundingClientRect(), mx = e.clientX - r.left;
+    let best = pts[0];
+    for (const p of pts) if (Math.abs(x(p[0]) - mx) < Math.abs(x(best[0]) - mx)) best = p;
+    if (Math.abs(x(best[0]) - mx) > Math.max(24, (iw / (span / d.step)) * 3)) { hover.hidden = tip.hidden = true; return; }  // en un hueco
+    const px = x(best[0]), py = y(best[sp.i]);
+    hover.hidden = tip.hidden = false;
+    hover.querySelector("line").setAttribute("x1", px); hover.querySelector("line").setAttribute("x2", px);
+    hover.querySelector("circle").setAttribute("cx", px); hover.querySelector("circle").setAttribute("cy", py);
+    tip.innerHTML = `<b>${esc(sp.fmt(best[sp.i]))}</b><span>${new Date(best[0] * 1000).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}</span>`;
+    tip.style.left = `${Math.min(Math.max(px, 50), W - 50)}px`;
+    tip.style.top = `${Math.max(py - 12, 0)}px`;
+  };
+  svg.addEventListener("pointermove", move);
+  svg.addEventListener("pointerdown", move);
+  svg.addEventListener("pointerleave", () => { hover.hidden = tip.hidden = true; });
+}
+
 // ───────────────────────── vista: resumen ─────────────────────────
 
 function viewOverview() {
@@ -279,9 +420,11 @@ function viewOverview() {
       </div>
     </section>
     <section class="kpis" id="kpis"></section>
+    ${usageHTML("system")}
     <div class="section-title"><h2>Servicios</h2><a href="#/servicios">Ver todos →</a></div>
     <section class="module rows" id="ov-rows"></section>`;
   drawKpis();
+  setupUsage();
   refreshOverview();
   every(3000, refreshOverview);
 }
@@ -1102,6 +1245,7 @@ function viewDetail(id) {
     <a class="back" href="#/servicios">${ICON.back}Servicios</a>
     <div id="d-head"></div>
     <section class="kpis d-kpis" id="d-kpis"></section>
+    ${usageHTML(id)}
     <div class="d-body">
       <section class="term module" id="term">
         <div class="term-bar">
@@ -1145,6 +1289,7 @@ function viewDetail(id) {
   openConsole(id);
   setupInput(id);
   setupTabs(id);
+  setupUsage();
 }
 
 // ───────────────────────── ficha: pestañas ─────────────────────────

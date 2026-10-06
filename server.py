@@ -34,6 +34,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import deque
 from functools import partial
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -91,11 +92,11 @@ def read_json(path, default):
         return default
 
 
-def write_json(path, data, mode=0o600):  # privados: services.json guarda variables como tokens
+def write_json(path, data, mode=0o600, indent=2):  # privados: services.json guarda variables como tokens
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, indent=indent, ensure_ascii=False, separators=None if indent else (",", ":"))
     os.replace(tmp, path)
 
 
@@ -2705,6 +2706,115 @@ DEPLOYER = Deployer()
 
 # ───────────────────────────── copias de seguridad ─────────────────────────────
 
+# ───────────────────────────── gráficas de uso ─────────────────────────────
+
+METRICS_FILE = os.path.join(DATA_DIR, "metrics.json")
+METRICS_STEP = 10           # una muestra cada 10 s → 1 h = 360 puntos
+METRICS_COARSE = 300        # y una media cada 5 min → 24 h = 288 puntos
+METRICS_RANGES = {"1h": (METRICS_STEP, 3600), "24h": (METRICS_COARSE, 86400)}
+
+
+def cpu_times():
+    """(ticks totales, ticks en reposo) de todo el servidor, de /proc/stat."""
+    with open("/proc/stat") as f:
+        vals = [int(v) for v in f.readline().split()[1:]]
+    return sum(vals[:8]), vals[3] + vals[4]  # sin guest (ya va dentro de user); reposo = idle + iowait
+
+
+class Metrics:
+    """Historial de CPU y RAM del servidor («system») y de cada servicio en marcha.
+    Puntos [t, cpu %, memoria en bytes]; la CPU del servidor es % del total y la de un servicio,
+    % de un núcleo (como en top). Un servicio parado no tiene puntos: en la gráfica sale un hueco."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.fine, self.coarse = {}, {}   # clave -> deque de puntos
+        self.prev_sys, self.prev_svc = None, {}
+        self.last_coarse = time.time()
+        data = read_json(METRICS_FILE, {})
+        now = time.time()
+        for store, name, (step, span) in ((self.fine, "fine", METRICS_RANGES["1h"]), (self.coarse, "coarse", METRICS_RANGES["24h"])):
+            for key, pts in (data.get(name) or {}).items():
+                store[key] = deque((p for p in pts if isinstance(p, list) and len(p) == 3 and p[0] > now - span),
+                                   maxlen=span // step)
+
+    def sample(self):
+        now = time.time()
+        total, idle = cpu_times()
+        mem = meminfo()["used"]
+        points = {}
+        if self.prev_sys and total > self.prev_sys[0]:
+            busy = 1 - (idle - self.prev_sys[1]) / (total - self.prev_sys[0])
+            points["system"] = [round(now), round(max(0.0, busy) * 100, 1), mem]
+        self.prev_sys = (total, idle)
+        usage, mono = group_usage(), time.monotonic()
+        with MANAGER.lock:
+            running = {sid: MANAGER.state[sid]["pid"] for sid in MANAGER.services if MANAGER.running(sid)}
+        for sid, pid in running.items():
+            ticks, rss, _ = usage.get(pid, (0, 0, 0))
+            prev = self.prev_svc.get(sid)
+            if prev and prev[0] == pid and mono > prev[2]:
+                points[sid] = [round(now), round(max(0, ticks - prev[1]) / CLK_TCK / (mono - prev[2]) * 100, 1), rss]
+            self.prev_svc[sid] = (pid, ticks, mono)
+        for sid in set(self.prev_svc) - set(running):
+            del self.prev_svc[sid]
+        with self.lock:
+            for key, p in points.items():
+                self.fine.setdefault(key, deque(maxlen=3600 // METRICS_STEP)).append(p)
+            if now - self.last_coarse >= METRICS_COARSE:
+                self._roll_up(now)
+
+    def _roll_up(self, now):
+        """Media de los últimos 5 min para la gráfica de 24 h, y se guarda en disco."""
+        since = self.last_coarse
+        self.last_coarse = now
+        for key, pts in self.fine.items():
+            recent = [p for p in pts if p[0] > since]
+            if recent:
+                self.coarse.setdefault(key, deque(maxlen=86400 // METRICS_COARSE)).append(
+                    [round(now), round(sum(p[1] for p in recent) / len(recent), 1),
+                     round(sum(p[2] for p in recent) / len(recent))])
+        live = set(MANAGER.services) | {"system"}
+        for store in (self.fine, self.coarse):  # servicios borrados
+            for key in set(store) - live:
+                del store[key]
+        self._dump()
+
+    def _dump(self):
+        write_json(METRICS_FILE, {"fine": {k: list(v) for k, v in self.fine.items()},
+                                  "coarse": {k: list(v) for k, v in self.coarse.items()}}, indent=None)
+
+    def series(self, key, rng):
+        step, span = METRICS_RANGES[rng]
+        with self.lock:
+            pts = list((self.fine if rng == "1h" else self.coarse).get(key) or ())
+            if rng == "24h":  # el tramo de los últimos minutos aún sin media, para que llegue hasta ahora
+                cut = pts[-1][0] if pts else 0
+                tail = [p for p in self.fine.get(key) or () if p[0] > cut]
+                if tail:
+                    pts.append([tail[-1][0], round(sum(p[1] for p in tail) / len(tail), 1),
+                                round(sum(p[2] for p in tail) / len(tail))])
+        now = time.time()
+        return {"range": rng, "step": step, "from": round(now - span), "to": round(now),
+                "points": [p for p in pts if p[0] > now - span]}
+
+    def loop(self):
+        while True:
+            time.sleep(METRICS_STEP)
+            SUPERVISOR.beat("graficas")
+            try:
+                self.sample()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+
+    def save(self):
+        with self.lock:
+            self._dump()
+
+
+METRICS = Metrics()
+
+
 # Las copias van al disco duro de datos (HDD), no al SSD del sistema: si el SSD muere, las copias siguen ahí.
 BACKUP_MOUNT = os.environ.get("NOVAHUB_BACKUP_MOUNT", "/mnt/dades")   # "" = no exigir disco montado (pruebas)
 SNAPSHOT_DIR = os.path.abspath(os.environ.get("NOVAHUB_BACKUP_DIR", os.path.join(BACKUP_MOUNT or DATA_DIR, "novahub-copias")))
@@ -2895,6 +3005,7 @@ class Backups:
         if (disk["free"] or 0) < BACKUP_MIN_FREE:
             raise ApiError(507, "Queda menos de 1 GB libre en el disco de copias: no se hace la copia")
         folder = self.folder(sid)
+        os.makedirs(SNAPSHOT_DIR, mode=0o700, exist_ok=True)  # privada también la carpeta común (.env, claves…)
         os.makedirs(folder, mode=0o700, exist_ok=True)
         now = datetime.now()
         while True:  # dos copias en el mismo segundo (p. ej. la previa a restaurar justo tras otra)
@@ -3577,6 +3688,15 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(405, "Método no permitido")
         if path == "/api/system":
             return self.send_json(system_info())
+        if path == "/api/metrics" and method == "GET":
+            rng, key = self.query("range") or "1h", self.query("service") or "system"
+            if rng not in METRICS_RANGES:
+                raise ApiError(400, "Rango desconocido (1h o 24h)")
+            if key != "system" and key not in MANAGER.services:
+                raise ApiError(404, "Servicio no encontrado")
+            extra = ({"mem_total": meminfo()["total"], "cpus": os.cpu_count()} if key == "system"
+                     else {"memory_limit": MANAGER.services[key].get("memory_limit")})
+            return self.send_json({**METRICS.series(key, rng), **extra})
         if path == "/api/notify":
             if method == "GET":
                 return self.send_json(NOTIFIER.public())
@@ -3889,6 +4009,7 @@ def main():
     startup_notice(prev, failed)
     SUPERVISOR.spawn("vigilancia", MANAGER.monitor)
     SUPERVISOR.spawn("copias", BACKUPS.loop)
+    SUPERVISOR.spawn("graficas", METRICS.loop)
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
@@ -3902,6 +4023,7 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    METRICS.save()
     mark_run("stopped")
     print("NovaHub detenido (los servicios siguen en marcha).")
 

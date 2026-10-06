@@ -101,6 +101,17 @@ fracción de la memoria del modo desarrollo (≈20 MB frente a ≈300 MB en una 
 aplica los cambios del código; «Actualizar» desde GitHub recompila solo; «Volver a desarrollo»
 recupera el comando original. El puerto llega por la variable `NOVAHUB_SERVICE_PORT`.
 
+## Gráficas de uso
+
+En **Resumen** (todo el servidor) y en la ficha de cada servicio hay dos gráficas, CPU y memoria, con
+selector **1 h / 24 h**. Al pasar el ratón (o el dedo) se ve el valor de cada momento.
+
+- Una muestra cada 10 s para la gráfica de 1 h y una media cada 5 min para la de 24 h. Se guardan en
+  `data/metrics.json` cada 5 min y al cerrar NovaHub, así que sobreviven a un reinicio.
+- La CPU del servidor es el % del total; la de un servicio, % de un núcleo (como en `top`: 200 % = dos
+  núcleos llenos). En la memoria de un servicio con límite se dibuja el límite como línea roja.
+- Los huecos son ratos en que el servicio estaba parado (o NovaHub apagado).
+
 ## Copias de seguridad
 
 Pestaña **Copias** en la ficha de cada servicio:
