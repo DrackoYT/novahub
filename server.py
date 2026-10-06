@@ -2047,6 +2047,52 @@ def strip_ansi(text):
     return re.sub(r"\x1b\[[0-9;?]*[@-~]", "", text)
 
 
+# ───────────────────────────── buscar en los logs ─────────────────────────────
+
+LOG_ERROR_WORDS = re.compile(
+    r"\b(errors?|err|fail(?:ed|s|ure)?|fallo|fallad[oa]|ha fallado|rechazad[oa]|denegad[oa]|no se pudo|"
+    r"fatal|exception|traceback|panic|critical|"
+    r"denied|refused|crash(?:ed)?|unhandled|uncaught|segfault|killed|timeout|timed out)\b", re.I)
+LOG_RED = re.compile(r"\x1b\[(?:[0-9;]*;)?(?:31|91|1;31)m")   # lo que NovaHub (y muchos programas) pintan en rojo
+LOG_SEARCH_MAX = 500
+
+
+def search_log(sid, q="", errors=False, regex=False, case=False):
+    """Busca en el log del servicio (el actual y el anterior rotado). Devuelve las últimas coincidencias,
+    con el número de línea y dónde resaltar cada una."""
+    q = q[:200]
+    if not q and not errors:
+        raise ApiError(400, "Escribe qué buscar o activa «Solo errores»")
+    flags = 0 if case else re.I
+    try:
+        pattern = re.compile(q if regex else re.escape(q), flags) if q else None
+    except re.error as e:
+        raise ApiError(400, f"Expresión regular no válida: {e}")
+    lines = []
+    for path, label in ((log_path(sid) + ".1", "anterior"), (log_path(sid), "actual")):
+        try:
+            with open(path, "rb") as f:
+                for n, raw in enumerate(f.read().decode("utf-8", "replace").splitlines(), 1):
+                    lines.append((label, n, raw))
+        except FileNotFoundError:
+            pass
+    matches, total = [], 0
+    for label, n, raw in lines:
+        text = strip_ansi(raw).replace("\r", "")
+        if errors and not (LOG_RED.search(raw) or LOG_ERROR_WORDS.search(text)):
+            continue
+        spans = [m.span() for m in pattern.finditer(text) if m.end() > m.start()] if pattern else []
+        if pattern and not spans:
+            continue
+        if not pattern:
+            spans = [m.span() for m in LOG_ERROR_WORDS.finditer(text)]
+        total += 1
+        matches.append({"file": label, "n": n, "text": text[:2000], "spans": [s for s in spans if s[1] <= 2000][:20]})
+        if len(matches) > LOG_SEARCH_MAX:
+            matches.pop(0)  # se quedan las más recientes
+    return {"matches": matches, "total": total, "shown": len(matches), "lines": len(lines)}
+
+
 def log_tail(sid, lines=20):
     try:
         with open(log_path(sid), "rb") as f:
@@ -3863,7 +3909,7 @@ JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
                            r"|files|file|file/download|git|git/commit|git/push|git/pull|update|mode"
-                           r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run))?")
+                           r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run|logs/search))?")
 KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
 
 
@@ -4121,6 +4167,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if action == "logs/stream" and method == "GET":
             return self.stream_logs(sid)
+        if action == "logs/search" and method == "GET":
+            return self.send_json(search_log(sid, self.query("q"), self.query("errors") == "1",
+                                             self.query("regex") == "1", self.query("case") == "1"))
         if action == "logs/download" and method == "GET":
             return self.download_log(sid)
         svc = MANAGER.services[sid]

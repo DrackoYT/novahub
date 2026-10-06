@@ -377,6 +377,30 @@ a.net-card:hover { background: var(--hover); }
 }
 .term-out::selection, .term-out *::selection { background: rgba(123, 77, 255, .6); color: #fff; }
 .term-out:empty::before { content: "Sin salida todavía."; color: var(--screen-dim); }
+/* buscar en el log */
+.lsearch { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; flex: none; border-bottom: 1px solid rgba(255, 255, 255, .07); color: var(--screen-dim); }
+.lsearch svg { width: 15px; height: 15px; flex: none; }
+.lsearch input { flex: 1; min-width: 0; height: 30px; border: 0; background: transparent; color: var(--screen-ink); font: 12.5px var(--f-mono); outline: none; }
+.lsearch input::placeholder { color: var(--screen-dim); }
+.lsearch input::-webkit-search-cancel-button { display: none; }
+.ls-chip { height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid rgba(255, 255, 255, .12); background: transparent; color: var(--screen-dim);
+  font: 600 12px var(--f-ui); cursor: pointer; white-space: nowrap; }
+.ls-chip.mono { font-family: var(--f-mono); }
+.ls-chip:hover { color: var(--screen-ink); border-color: rgba(255, 255, 255, .25); }
+.ls-chip.on { background: var(--nova); border-color: var(--nova); color: #fff; }
+.ls-x { display: none; }
+.lsearch.on .ls-x { display: inline-block; }
+.lsearch.on { background: rgba(123, 77, 255, .12); }
+.found { padding: 6px 0 10px; }
+.found .hits-head { margin: 0; padding: 4px 14px 8px; color: var(--screen-dim); font: 12px var(--f-ui); }
+.found .hits-head.bad { color: #ff8a8a; }
+.hit { display: flex; gap: 12px; padding: 1px 14px; }
+.hit:hover { background: rgba(255, 255, 255, .04); }
+.hit .ln { flex: none; min-width: 42px; text-align: right; color: var(--screen-dim); opacity: .7; user-select: none; }
+.hit .tx { min-width: 0; }
+.hit mark { background: rgba(255, 196, 0, .32); color: #fff3c4; border-radius: 3px; padding: 0 1px; }
+.hit-sep { padding: 6px 14px; color: var(--screen-dim); font: 11.5px var(--f-mono); opacity: .8; }
+
 .term-in { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px; flex: none; border-top: 1px solid rgba(255, 255, 255, .07); font: 12.5px/1.5 var(--f-mono); }
 .term-in .prompt { color: var(--screen-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
 .term-in .prompt b { color: #7ff0b0; font-weight: 600; }

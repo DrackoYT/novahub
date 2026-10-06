@@ -140,6 +140,17 @@ selector **1 h / 24 h**. Al pasar el ratón (o el dedo) se ve el valor de cada m
   núcleos llenos). En la memoria de un servicio con límite se dibuja el límite como línea roja.
 - Los huecos son ratos en que el servicio estaba parado (o NovaHub apagado).
 
+## Buscar en los logs
+
+En la consola de cada servicio, el campo **Buscar en todo el log** (o la tecla `/`) busca en el log entero,
+el actual y el anterior rotado, no solo en lo que hay en pantalla. Muestra las coincidencias con su número de
+línea y resaltadas (las 500 más recientes), y se actualiza solo mientras está abierta.
+
+- **Solo errores:** líneas con palabras de error (error, failed, exception, traceback, rechazada…) o que el
+  programa pinta en rojo, como los fallos que anota NovaHub.
+- **`.*`** para expresiones regulares y **Aa** para distinguir mayúsculas.
+- `Esc` o ✕ vuelven a la consola en directo.
+
 ## Tareas programadas
 
 Pestaña **Tareas** en la ficha de cada servicio. Cada tarea es una acción a una hora, ciertos días de la semana:

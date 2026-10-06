@@ -1440,7 +1440,16 @@ function viewDetail(id) {
           </div>
         </div>
         <div class="screen" data-pane="console">
+          <div class="lsearch" id="lsearch">
+            ${ICON.search}
+            <input id="lq" type="search" placeholder="Buscar en todo el log…  ( / )" autocomplete="off" spellcheck="false" aria-label="Buscar en el log">
+            <button type="button" class="ls-chip" data-ls="errors" aria-pressed="false" title="Mostrar solo las líneas con errores">Solo errores</button>
+            <button type="button" class="ls-chip mono" data-ls="regex" aria-pressed="false" title="Expresión regular">.*</button>
+            <button type="button" class="ls-chip" data-ls="case" aria-pressed="false" title="Distinguir mayúsculas y minúsculas">Aa</button>
+            <button type="button" class="ls-chip ls-x" data-lsclear title="Quitar la búsqueda (Esc)" aria-label="Quitar la búsqueda">✕</button>
+          </div>
           <pre class="term-out" id="out"></pre>
+          <div class="term-out found" id="found" hidden></div>
           <form class="term-in" id="cin">
             <span class="prompt" id="prompt"></span>
             <input id="cmd" placeholder="enviar un comando al proceso…" autocomplete="off" spellcheck="false" aria-label="Comando">
@@ -1465,6 +1474,7 @@ function viewDetail(id) {
   refreshDetail(id);
   every(2000, () => refreshDetail(id));
   openConsole(id);
+  setupLogSearch(id);
   setupInput(id);
   setupTabs(id);
   setupUsage();
@@ -2373,6 +2383,80 @@ function openConsole(id) {
   es.addEventListener("clear", () => term.clear());
   es.onerror = () => live.classList.remove("on");
   ui.es = es;
+}
+
+// ───────────────────────── consola: buscar en el log ─────────────────────────
+// Busca en todo el log del servidor (no solo lo que hay en pantalla). Mientras hay búsqueda, la consola
+// en directo se oculta y se ven los resultados; al vaciarla, vuelve.
+
+function setupLogSearch(id) {
+  const box = $("#lsearch"), q = $("#lq"), out = $("#out"), found = $("#found"), cin = $("#cin");
+  const st = { errors: false, regex: false, case: false, timer: null, seq: 0 };
+  const active = () => q.value.trim() !== "" || st.errors;
+
+  const run = async () => {
+    const on = active();
+    out.hidden = cin.hidden = on;
+    found.hidden = !on;
+    box.classList.toggle("on", on);
+    if (!on) { out.scrollTop = out.scrollHeight; return; }
+    const seq = ++st.seq;
+    const params = new URLSearchParams({ q: q.value.trim(), errors: st.errors ? "1" : "", regex: st.regex ? "1" : "", case: st.case ? "1" : "" });
+    try {
+      const d = await api("GET", `/api/services/${encodeURIComponent(id)}/logs/search?${params}`);
+      if (seq !== st.seq) return;  // ya hay una búsqueda más nueva
+      drawLogHits(found, d, q.value.trim() ? "" : "errores");
+    } catch (e) {
+      if (seq === st.seq) found.innerHTML = `<p class="hits-head bad">${esc(e.message)}</p>`;
+    }
+  };
+  const later = () => { clearTimeout(st.timer); st.timer = setTimeout(run, 280); };
+
+  q.addEventListener("input", later);
+  q.addEventListener("keydown", (e) => { if (e.key === "Escape") { q.value = ""; st.errors = false; syncChips(); run(); q.blur(); } });
+  const syncChips = () => box.querySelectorAll("[data-ls]").forEach((b) => {
+    b.classList.toggle("on", !!st[b.dataset.ls]);
+    b.setAttribute("aria-pressed", String(!!st[b.dataset.ls]));
+  });
+  box.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-ls]");
+    if (b) { st[b.dataset.ls] = !st[b.dataset.ls]; syncChips(); run(); }
+    if (e.target.closest("[data-lsclear]")) { q.value = ""; st.errors = false; syncChips(); run(); }
+  });
+  every(5000, () => { if (active() && !$("#found").hidden && document.activeElement !== q) run(); });  // lo nuevo también aparece
+  // «/» abre la búsqueda, como en muchas herramientas (salvo escribiendo en otro campo)
+  document.addEventListener("keydown", ui.onSlash = ui.onSlash || ((e) => {
+    if (e.key === "/" && $("#lq") && !e.target.closest("input, textarea, select, dialog") && !$('[data-pane="console"]').hidden) {
+      e.preventDefault();
+      $("#lq").focus();
+    }
+  }));
+}
+
+function drawLogHits(el, d, mode) {
+  const mark = (h) => {
+    let html = "", last = 0;
+    for (const [a, b] of h.spans) {
+      if (a < last) continue;
+      html += esc(h.text.slice(last, a)) + `<mark>${esc(h.text.slice(a, b))}</mark>`;
+      last = b;
+    }
+    return html + esc(h.text.slice(last));
+  };
+  const head = d.total
+    ? `${d.total.toLocaleString("es-ES")} ${mode ? "líneas con errores" : `coincidencia${d.total === 1 ? "" : "s"}`}` +
+      (d.total > d.shown ? ` · se ven las ${d.shown} más recientes` : "") + ` · en ${d.lines.toLocaleString("es-ES")} líneas de log`
+    : `Nada${mode ? " que parezca un error" : ""} en ${d.lines.toLocaleString("es-ES")} líneas de log`;
+  let prev = null;
+  const rows = d.matches.map((h) => {
+    const sep = prev && prev !== h.file ? '<div class="hit-sep">— log actual —</div>' : "";
+    prev = h.file;
+    return `${sep}<div class="hit"><span class="ln" title="Línea ${h.n} del log ${h.file}">${h.n}</span><span class="tx">${mark(h)}</span></div>`;
+  }).join("");
+  const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  el.innerHTML = `<p class="hits-head">${head}</p>${d.matches[0]?.file === "anterior" ? '<div class="hit-sep">— log anterior —</div>' : ""}${rows}`;
+  if (stick || !el._shown) el.scrollTop = el.scrollHeight;  // como la consola: lo más reciente abajo
+  el._shown = true;
 }
 
 // ───────────────────────── modales ─────────────────────────
