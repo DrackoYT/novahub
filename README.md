@@ -295,6 +295,13 @@ Bitwarden, 2FAS…) y confirmas con un primer código. Desde entonces, al entrar
   códigos: `python3 server.py reset-totp <usuario>` en el servidor.
 - Las llaves de acceso entre paneles (Acceso remoto) no la piden: ya son secretos largos.
 
+## Registro de actividad
+
+Ajustes → **Actividad** (solo administradores): quién encendió, apagó, editó, borró o restauró qué y cuándo, y las
+entradas al panel (también los intentos fallidos), con buscador y filtros por usuario y tipo. En la ficha de cada
+servicio sale su actividad reciente. Nunca se guardan contraseñas, valores de variables ni lo que se escribe en las
+consolas. Va en `data/activity.jsonl` (permisos 600; al pasar de 5 MB se guarda como `.1`).
+
 ## Usuarios y permisos
 
 Cada persona entra con su **usuario y contraseña**. Ajustes → **Usuarios** (solo administradores) para crearlos,

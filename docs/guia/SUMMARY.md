@@ -29,6 +29,7 @@
 * [Usuarios y permisos](usuarios.md)
 * [Verificación en dos pasos](dos-pasos.md)
 * [Sesión](sesion.md)
+* [Registro de actividad](actividad.md)
 
 ## Mantenimiento
 * [Centro de actualizaciones](actualizaciones.md)

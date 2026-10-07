@@ -1830,6 +1830,7 @@ const SETTINGS = [
   ["avisos", "Avisos", "Móvil (ntfy) y correo", ICON.mail, "admin"],
   ["vigilante", "Vigilante externo", "Si el servidor cae del todo", ICON.activity, "admin"],
   ["sesion", "Sesión", "Contraseña e inactividad", ICON.lock, "admin"],
+  ["actividad", "Actividad", "Quién hizo qué y cuándo", ICON.activity, "admin"],
   ["git", "Git", "Autor de los commits", ICON.git, "admin"],
   ["app", "App para el móvil", "Instalar NovaHub", ICON.phone, null],
 ];
@@ -1847,7 +1848,7 @@ function viewSettings(cat) {
       <section class="module set-body" id="set-body"><div class="pane-msg">Cargando…</div></section>
     </div>`;
   $(".set-nav a.active").scrollIntoView({ block: "nearest", inline: "center" });  // en el móvil la lista se desliza
-  ({ cuenta: setAccount, actualizaciones: setUpdates, fuera: setOffsite, usuarios: setUsers, servidores: setServers, remoto: setTokens, avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, git: setGit, app: setApp })[cat]($("#set-body"));
+  ({ cuenta: setAccount, actualizaciones: setUpdates, fuera: setOffsite, usuarios: setUsers, servidores: setServers, remoto: setTokens, avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, actividad: setActivity, git: setGit, app: setApp })[cat]($("#set-body"));
 }
 
 // Pie con «Guardar» y el error, común a todas las categorías
@@ -1989,6 +1990,70 @@ async function setSession(body) {
     </div>`, async (f) => {
     await api("PUT", "/api/session-settings", { lock_on_reload: f.reload.checked, admin_totp: f.admin_totp.checked, idle_minutes: f.idle.value.trim(), max_hours: f.max.value.trim() });
   });
+}
+
+// Registro de actividad: filtros arriba y la lista por días, de lo más nuevo a lo más antiguo
+function activityRows(entries, { service = false, exists = null } = {}) {
+  let day = "";
+  return entries.map((e) => {
+    const d = new Date(e.at * 1000);
+    const key = d.toDateString();
+    const today = new Date().toDateString(), yest = new Date(Date.now() - 86400000).toDateString();
+    const head = key !== day ? `<p class="act-day">${key === today ? "Hoy" : key === yest ? "Ayer"
+      : d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" })}</p>` : "";
+    day = key;
+    return `${head}<div class="act-row${e.ok === false ? " fail" : ""}">
+      <span class="act-time mono">${d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}</span>
+      <span class="act-who" title="${esc(e.user)}">${esc((e.user || "?")[0].toUpperCase())}</span>
+      <span class="act-text"><b>${esc(e.user)}</b> ${esc(e.text.charAt(0).toLowerCase() + e.text.slice(1))}
+        ${!service && e.service && (!exists || exists.has(e.service)) ? ` <a href="#/s/${esc(e.service)}" class="act-link">ver ficha</a>` : ""}</span>
+      <span class="act-meta dim-text">${esc(ACT_KIND[e.kind] || e.kind)}${e.ip ? ` · <span class="mono">${esc(e.ip)}</span>` : ""}${e.via ? ` · ${esc(e.via)}` : ""}</span>
+    </div>`;
+  }).join("");
+}
+const ACT_KIND = { servicio: "Servicios", config: "Configuración", copias: "Copias", acceso: "Acceso", usuarios: "Usuarios", sistema: "Sistema", apps: "Apps" };
+
+async function setActivity(body) {
+  const [{ users }, svcs] = await Promise.all([api("GET", "/api/users").catch(() => ({ users: [] })), api("GET", "/api/services").catch(() => ({ services: [] }))]);
+  const exists = new Set(svcs.services.map((x) => x.id));  // «ver ficha» solo si el servicio sigue existiendo
+  const st = { q: "", user: "", kind: "", entries: [], more: false };
+  body.innerHTML = `
+    <h2 class="set-title">Actividad</h2>
+    <p class="set-sub">Quién encendió, apagó, editó, borró o restauró qué y cuándo, y las entradas al panel. No se guardan contraseñas,
+      valores de variables ni lo que se escribe en las consolas.</p>
+    <div class="act-filters">
+      <label class="docs-search act-q">${ICON.search}<input id="act-q" type="search" placeholder="Buscar: «restauró», «vaultwarden», una IP…" autocomplete="off" aria-label="Buscar en la actividad"></label>
+      <select id="act-user" aria-label="Usuario"><option value="">Todos los usuarios</option>${users.map((u) => `<option value="${esc(u.username)}">${esc(u.name)} (${esc(u.username)})</option>`).join("")}</select>
+    </div>
+    <div class="act-kinds" id="act-kinds"><button type="button" class="chip active" data-kind="">Todo</button>
+      ${Object.entries(ACT_KIND).map(([k, v]) => `<button type="button" class="chip" data-kind="${k}">${v}</button>`).join("")}</div>
+    <div class="act-list" id="act-list"><p class="pane-msg">Cargando…</p></div>
+    <div class="act-more"><button type="button" class="btn sm" id="act-more" hidden>Cargar más</button></div>`;
+  const load = async (append = false) => {
+    const qs = new URLSearchParams({ q: st.q, user: st.user, kind: st.kind });
+    if (append && st.entries.length) qs.set("before", st.entries[st.entries.length - 1].at);
+    try {
+      const d = await api("GET", `/api/activity?${qs}`);
+      if ($("#set-body") !== body) return;
+      st.entries = append ? st.entries.concat(d.entries) : d.entries;
+      st.more = d.more;
+      $("#act-list", body).innerHTML = st.entries.length ? activityRows(st.entries, { exists })
+        : `<p class="dim-text act-empty">${st.q || st.user || st.kind ? "Nada con esos filtros." : "Todavía no hay actividad."}</p>`;
+      $("#act-more", body).hidden = !st.more;
+    } catch (err) { $("#act-list", body).innerHTML = `<p class="bad-text">${esc(err.message)}</p>`; }
+  };
+  let timer;
+  $("#act-q", body).addEventListener("input", (e) => { clearTimeout(timer); timer = setTimeout(() => { st.q = e.target.value.trim(); load(); }, 250); });
+  $("#act-user", body).addEventListener("change", (e) => { st.user = e.target.value; load(); });
+  $("#act-kinds", body).addEventListener("click", (e) => {
+    const b = e.target.closest("[data-kind]");
+    if (!b) return;
+    st.kind = b.dataset.kind;
+    $("#act-kinds", body).querySelectorAll(".chip").forEach((c) => c.classList.toggle("active", c === b));
+    load();
+  });
+  $("#act-more", body).addEventListener("click", () => load(true));
+  await load();
 }
 
 async function setGit(body) {
@@ -2678,7 +2743,10 @@ function viewDetail(id) {
         <div class="pane" data-pane="tasks" id="tasks" hidden></div>
         <div class="pane" data-pane="env" id="envpane" hidden></div>
       </section>
-      <aside class="side" id="d-info"></aside>
+      <aside class="side"><div class="side-info" id="d-info"></div>
+        <div class="module act-svc" data-perm="admin"><span class="label">Actividad reciente</span>
+          <div id="act-svc" class="act-list compact"><p class="dim-text">Cargando…</p></div>
+          <a href="#/ajustes/actividad" class="act-all">Ver toda la actividad →</a></div></aside>
     </div>`;
 
   const term = $("#term");
@@ -2695,6 +2763,17 @@ function viewDetail(id) {
   setupInput(id);
   setupTabs(id);
   setupUsage();
+  if (can("admin")) {
+    const loadAct = async () => {
+      try {
+        const d = await api("GET", `/api/activity?service=${encodeURIComponent(id)}`);
+        const el = $("#act-svc");
+        if (el) el.innerHTML = d.entries.length ? activityRows(d.entries.slice(0, 6), { service: true }) : '<p class="dim-text">Nadie lo ha tocado todavía.</p>';
+      } catch { /* sin permiso */ }
+    };
+    loadAct();
+    every(30000, loadAct);
+  }
 }
 
 // ───────────────────────── ficha: pestañas ─────────────────────────

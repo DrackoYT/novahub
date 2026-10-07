@@ -6,6 +6,12 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- **Registro de actividad** (Ajustes → Actividad): quién hizo qué, cuándo y desde qué IP, apuntado en un único punto del
+  servidor para todas las acciones que salen bien, más las entradas y los intentos fallidos de entrar. Buscador, filtros
+  por usuario y tipo, «Cargar más» y la actividad reciente en la ficha de cada servicio. Sin secretos: ni contraseñas,
+  ni valores de variables, ni lo escrito en las consolas.
+- En el móvil caben las cinco pestañas de abajo (con Docs).
+
 ## 1.0.13 — 2026-10-07
 
 - **Documentación al estilo GitBook** (pestaña **Docs**): 26 páginas por temas en `docs/guia/`, con el índice en

@@ -6836,6 +6836,158 @@ def _template_job(job, t, dest, values, service, start):
 JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 TODO_ROUTE = re.compile(r"/api/roadmap/todo/([0-9a-f]{8})")
+# ───────────────────────────── registro de actividad ─────────────────────────────
+# Quién hizo qué y cuándo: cada petición que cambia algo y sale bien, más las entradas al panel. Una línea JSON por
+# acción en data/activity.jsonl (al pasar de 5 MB se guarda como .1 y se empieza otro). Nunca se apuntan secretos:
+# ni contraseñas, ni valores de variables, ni lo que se escribe en las consolas.
+
+ACTIVITY_FILE = os.path.join(DATA_DIR, "activity.jsonl")
+ACTIVITY_MAX = 5 * 1024 * 1024
+ACTIVITY_KINDS = {"servicio": "Servicios", "config": "Configuración", "copias": "Copias", "acceso": "Acceso",
+                  "usuarios": "Usuarios", "sistema": "Sistema", "apps": "Apps"}
+
+# (método, ruta, tipo, frase). En la frase: {svc} nombre del servicio, {1}… grupos de la ruta, {b:campo} del cuerpo
+# (solo campos que no son secretos) y {q:campo} de la consulta. None = no se apunta (consultas, pruebas, listas personales).
+ACTIVITY_RULES = [
+    ("POST", r"/api/services/([a-z0-9-]+)/start", "servicio", "Encendió «{svc}»"),
+    ("POST", r"/api/services/([a-z0-9-]+)/stop", "servicio", "Apagó «{svc}»"),
+    ("POST", r"/api/services/([a-z0-9-]+)/restart", "servicio", "Reinició «{svc}»"),
+    ("POST", r"/api/services/([a-z0-9-]+)/input", "servicio", "Escribió en la consola de «{svc}»"),
+    ("POST", r"/api/services/([a-z0-9-]+)/logs/clear", "servicio", "Limpió la consola de «{svc}»"),
+    ("POST", r"/api/services/([a-z0-9-]+)/update", "servicio", "Actualizó «{svc}»"),
+    ("POST", r"/api/services/([a-z0-9-]+)/mode", "servicio", "Cambió «{svc}» a modo {b:mode}"),
+    ("POST", r"/api/services/([a-z0-9-]+)/signups", "config", "Cambió el registro de cuentas de «{svc}»"),
+    ("POST", r"/api/services", "config", "Creó el servicio «{b:name}»"),
+    ("PUT", r"/api/services/([a-z0-9-]+)", "config", "Editó «{svc}»"),
+    ("DELETE", r"/api/services/([a-z0-9-]+)", "config", "Borró el servicio «{svc}»"),
+    ("PUT", r"/api/services/([a-z0-9-]+)/env", "config", "Cambió las variables (.env) de «{svc}»"),
+    ("PUT", r"/api/services/([a-z0-9-]+)/file", "config", "Editó el archivo {q:path} de «{svc}»"),
+    ("PUT", r"/api/services/([a-z0-9-]+)/tasks", "config", "Cambió las tareas programadas de «{svc}»"),
+    ("POST", r"/api/services/([a-z0-9-]+)/tasks/run", "servicio", "Ejecutó una tarea de «{svc}»"),
+    ("POST", r"/api/services/([a-z0-9-]+)/git/(commit|push|pull)", "config", "Git {2} en «{svc}»"),
+    ("PUT", r"/api/services/([a-z0-9-]+)/backups", "copias", "Cambió las copias de seguridad de «{svc}»"),
+    ("POST", r"/api/services/([a-z0-9-]+)/backups/run", "copias", "Hizo una copia de seguridad de «{svc}»"),
+    ("POST", r"/api/services/([a-z0-9-]+)/backups/restore", "copias", "Restauró la copia {b:name} de «{svc}»"),
+    ("POST", r"/api/services/([a-z0-9-]+)/backups/delete", "copias", "Borró la copia {b:name} de «{svc}»"),
+    ("POST", r"/api/catalog/install", "apps", "Instaló {b:app} desde el catálogo"),
+    ("POST", r"/api/deploy/clone", "apps", "Desplegó {b:repo} desde GitHub"),
+    ("POST", r"/api/templates/create", "apps", "Creó un servicio desde la plantilla {b:template}"),
+    ("POST", r"/api/users", "usuarios", "Creó el usuario {b:username}"),
+    ("PUT", r"/api/users/([a-z0-9._-]+)", "usuarios", "Editó el usuario {1}"),
+    ("DELETE", r"/api/users/([a-z0-9._-]+)", "usuarios", "Borró el usuario {1}"),
+    ("PUT", r"/api/account", "acceso", "Cambió su contraseña"),
+    ("POST", r"/api/account/totp/enable", "acceso", "Activó la verificación en dos pasos"),
+    ("POST", r"/api/account/totp/disable", "acceso", "Desactivó la verificación en dos pasos"),
+    ("POST", r"/api/account/totp/recovery", "acceso", "Creó códigos de recuperación nuevos"),
+    ("POST", r"/api/account/totp/setup", None, None),
+    ("POST", r"/api/logout", "acceso", "Salió del panel"),
+    ("PUT", r"/api/session-settings", "acceso", "Cambió los ajustes de sesión"),
+    ("POST", r"/api/tokens", "acceso", "Creó la llave de acceso remoto «{b:name}»"),
+    ("DELETE", r"/api/tokens/([0-9a-f]+)", "acceso", "Revocó una llave de acceso remoto"),
+    ("POST", r"/api/servers", "sistema", "Añadió el servidor «{b:name}»"),
+    ("DELETE", r"/api/servers/([a-z0-9-]+)", "sistema", "Quitó el servidor {1}"),
+    ("POST", r"/api/power/off", "sistema", "Apagó el servidor"),
+    ("POST", r"/api/updates/reboot", "sistema", "Reinició el servidor"),
+    ("POST", r"/api/updates/novahub", "sistema", "Actualizó NovaHub"),
+    ("POST", r"/api/updates/system", "sistema", "Actualizó el sistema ({b:mode})"),
+    ("POST", r"/api/updates/service", "sistema", "Actualizó el servicio {b:id}"),
+    ("PUT", r"/api/updates", "sistema", "Cambió los ajustes de actualizaciones"),
+    ("POST", r"/api/processes/(\d+)/kill", "sistema", "Cerró el proceso {1}"),
+    ("PUT", r"/api/notify", "config", "Cambió los ajustes de avisos"),
+    ("POST", r"/api/notify/ntfy/setup", "config", "Protegió y conectó ntfy"),
+    ("PUT", r"/api/git-identity", "config", "Cambió la identidad de git"),
+    ("PUT", r"/api/offsite", "copias", "Cambió los ajustes de copias fuera de casa"),
+    ("POST", r"/api/offsite/destinations", "copias", "Añadió el destino de copias fuera de casa «{b:name}»"),
+    ("DELETE", r"/api/offsite/destinations/([a-z0-9-]+)", "copias", "Quitó un destino de copias fuera de casa"),
+    ("POST", r"/api/offsite/destinations/([a-z0-9-]+)/run", "copias", "Lanzó una copia fuera de casa"),
+    ("POST", r"/api/offsite/destinations/([a-z0-9-]+)/check", "copias", "Comprobó una copia fuera de casa"),
+    ("POST", r"/api/offsite/destinations/([a-z0-9-]+)/restore", "copias", "Recuperó una copia fuera de casa"),
+    ("POST", r"/api/(notify/test|notify/ntfy/test|hardware/refresh|updates/check|offsite/key)", None, None),
+    ("*", r"/api/roadmap.*", None, None),
+]
+ACTIVITY_RULES = [(m, re.compile(r), k, t) for m, r, k, t in ACTIVITY_RULES]
+
+
+def describe_action(method, path, body, query, names):
+    """(tipo, frase, servicio) de una petición, o None si no se apunta. names: servicio → nombre (antes de la acción,
+    para poder nombrar también lo que se acaba de borrar)."""
+    for m, rx, kind, tpl in ACTIVITY_RULES:
+        mt = rx.fullmatch(path)
+        if not mt or m not in (method, "*"):
+            continue
+        if tpl is None:
+            return None
+        groups = mt.groups()
+        sid = groups[0] if path.startswith("/api/services/") and groups else None
+
+        def field(src, key):
+            v = (src or {}).get(key) if isinstance(src, dict) else None
+            v = query(key) if src is None else v
+            return re.sub(r"[\x00-\x1f\x7f]", " ", str(v))[:80] if v not in (None, "") else "—"
+        text = tpl.replace("{svc}", names.get(sid) or sid or "?")
+        text = re.sub(r"\{b:(\w+)\}", lambda x: field(body, x.group(1)), text)
+        text = re.sub(r"\{q:(\w+)\}", lambda x: field(None, x.group(1)), text)
+        text = re.sub(r"\{(\d)\}", lambda x: groups[int(x.group(1)) - 1] if len(groups) >= int(x.group(1)) else "", text)
+        return kind, text, sid
+    return "config", f"{method} {path[4:]}", None  # algo nuevo sin frase todavía: mejor apuntarlo que perderlo
+
+
+class Activity:
+    def __init__(self):
+        self.lock = threading.Lock()
+
+    def record(self, user, ip, kind, text, service=None, ok=True, via=None):
+        entry = {"at": round(time.time(), 3), "user": user, "ip": ip, "kind": kind, "text": text}
+        if service:
+            entry["service"] = service
+        if not ok:
+            entry["ok"] = False
+        if via:
+            entry["via"] = via
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        with self.lock:
+            try:
+                if os.path.exists(ACTIVITY_FILE) and os.path.getsize(ACTIVITY_FILE) > ACTIVITY_MAX:
+                    os.replace(ACTIVITY_FILE, ACTIVITY_FILE + ".1")
+                fd = os.open(ACTIVITY_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                with os.fdopen(fd, "a", encoding="utf-8") as f:
+                    f.write(line)
+            except OSError:
+                traceback.print_exc()
+
+    def query(self, q="", user="", kind="", service="", before=None, limit=100):
+        """Las más nuevas primero. before: solo anteriores a ese momento (para «Cargar más»)."""
+        terms = fold(q).split()
+        out, more = [], False
+        for path in (ACTIVITY_FILE, ACTIVITY_FILE + ".1"):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    lines = f.readlines()
+            except OSError:
+                continue
+            for line in reversed(lines):
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if before and e["at"] >= before:
+                    continue
+                if (user and e.get("user") != user) or (kind and e.get("kind") != kind) or (service and e.get("service") != service):
+                    continue
+                if terms and not all(t in fold(f"{e.get('text', '')} {e.get('user', '')} {e.get('ip', '')}") for t in terms):
+                    continue
+                if len(out) >= limit:
+                    more = True
+                    break
+                out.append(e)
+            if more:
+                break
+        return {"entries": out, "more": more, "kinds": ACTIVITY_KINDS}
+
+
+ACTIVITY = Activity()
+
+
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
                            r"|files|file|file/download|git|git/commit|git/push|git/pull|update|mode"
                            r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run|logs/search|env|signups))?")
@@ -6912,6 +7064,7 @@ class Handler(BaseHTTPRequestHandler):
                          "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
     def send_json(self, data, code=200, cookie=None):
+        self._status = code
         body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -6925,6 +7078,34 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def read_body(self):
+        if getattr(self, "_body", None) is not None:
+            return self._body  # ya leído (el registro de actividad lo vuelve a mirar)
+        self._body = self._read_body()
+        return self._body
+
+    def log_activity(self, method, path, names, user_before=None):
+        """Apunta en el registro de actividad la petición que acaba de salir bien."""
+        try:
+            via = None
+            m = REMOTE_ROUTE.fullmatch(path)
+            if m:  # en otro servidor del panel: se describe lo de dentro
+                via, path = m.group(1), "/api/" + m.group(2).split("?")[0]
+                names = {}
+            if path == "/api/login":
+                return  # se apunta al entrar (con el resultado)
+            desc = describe_action(method, path, self._body if isinstance(self._body, dict) else {}, self.query, names)
+            if not desc:
+                return
+            user = (self.user or {}).get("username") or user_before or "?"
+            auth = self.headers.get("Authorization") or ""
+            if auth.startswith("Bearer "):
+                via = via or "llave de otro panel"
+            ACTIVITY.record(user, self.client_ip(), desc[0], (f"En {via}: " if m else "") + desc[1], service=desc[2] if not m else None,
+                            via=via if not m else (via if auth.startswith("Bearer ") else None))
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()  # el registro nunca debe romper la petición
+
+    def _read_body(self):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -7000,12 +7181,20 @@ class Handler(BaseHTTPRequestHandler):
     def route(self, method):
         self.renewed_cookie = None  # la conexión puede reutilizarse: nada de la petición anterior
         self.user = None
+        self._body = self._status = None
         path = urlparse(self.path).path
         try:
             if getattr(self.server, "remote_only", False) and (not path.startswith("/api/") or path in ("/api/login", "/api/logout")):
                 raise ApiError(404, "No encontrado")  # puerta solo de API: ni interfaz ni inicio de sesión
             if path.startswith("/api/"):
+                names = {sid: s.get("name") for sid, s in list(MANAGER.services.items())} if method != "GET" else None
+                user_before = None
+                if method != "GET" and path == "/api/logout":  # después ya no hay sesión: quién era, antes
+                    parsed = AUTH.parse_token(self.session_token())
+                    user_before = parsed[2] if parsed else None
                 self.api(method, path)
+                if method != "GET" and (self._status or 200) < 400:
+                    self.log_activity(method, path, names, user_before)
             elif method == "GET":
                 self.static(path)
             else:
@@ -7054,6 +7243,10 @@ class Handler(BaseHTTPRequestHandler):
             username, state = AUTH.login(body.get("username"), str(body.get("password") or ""), body.get("code"))
             if state == "falta-código":
                 return self.send_json({"totp_required": True})  # contraseña bien: falta el código de la app
+            tried = re.sub(r"[^a-z0-9._-]", "", str(body.get("username") or "").lower())[:32] or "?"
+            ACTIVITY.record(username or tried, ip, "acceso", "Entró en el panel" if username else
+                            ("Intento de entrar con un código incorrecto" if state == "código" else "Intento de entrar con usuario o contraseña incorrectos"),
+                            ok=bool(username))
             if not username:
                 AUTH.failed(ip)
                 raise ApiError(401, "Código incorrecto" if state == "código" else "Usuario o contraseña incorrectos")
@@ -7137,6 +7330,13 @@ class Handler(BaseHTTPRequestHandler):
             if method == "PUT":
                 return self.send_json(AUTH.save_settings(self.read_body(), self.user["username"]))
             raise ApiError(405, "Método no permitido")
+        if path == "/api/activity" and method == "GET":
+            try:
+                before = float(self.query("before") or 0) or None
+            except ValueError:
+                before = None
+            return self.send_json(ACTIVITY.query(self.query("q") or "", self.query("user") or "", self.query("kind") or "",
+                                                 self.query("service") or "", before))
         if path == "/api/docs" and method == "GET":
             return self.send_json(DOCS.summary())
         if path == "/api/docs/page" and method == "GET":
