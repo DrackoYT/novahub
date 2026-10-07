@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.1.2 — 2026-10-07
+
 - **Exportar e importar la configuración** (Ajustes → Traslado): archivo `.nhcfg` cifrado con una contraseña (PBKDF2-SHA256
   de 600.000 vueltas + HMAC-SHA256 en modo contador, firmado; solo biblioteca estándar) con servicios, usuarios, avisos,
   copias fuera de casa (con la llave SSH), servidores, llaves, mejoras y git. Exportar pide tu contraseña. Importar
