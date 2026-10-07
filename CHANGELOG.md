@@ -6,6 +6,12 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- **Exportar e importar la configuración** (Ajustes → Traslado): archivo `.nhcfg` cifrado con una contraseña (PBKDF2-SHA256
+  de 600.000 vueltas + HMAC-SHA256 en modo contador, firmado; solo biblioteca estándar) con servicios, usuarios, avisos,
+  copias fuera de casa (con la llave SSH), servidores, llaves, mejoras y git. Exportar pide tu contraseña. Importar
+  enseña antes qué trae y qué choca, respeta lo que ya existe (salvo «Reemplazar»), guarda una copia de lo anterior y
+  reinicia el panel si cambian ajustes. También `python3 server.py export` e `import`.
+
 ## 1.1.1 — 2026-10-07
 
 - **Invitaciones** (Ajustes → Usuarios → Invitar a alguien): enlace de un solo uso con rol, servicios y caducidad (1 a

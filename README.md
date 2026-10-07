@@ -297,6 +297,14 @@ Bitwarden, 2FAS…) y confirmas con un primer código. Desde entonces, al entrar
   códigos: `python3 server.py reset-totp <usuario>` en el servidor.
 - Las llaves de acceso entre paneles (Acceso remoto) no la piden: ya son secretos largos.
 
+## Exportar e importar la configuración
+
+Ajustes → **Traslado**: un archivo `.nhcfg` con servicios, usuarios, avisos, copias fuera de casa (con sus contraseñas y la
+llave SSH), servidores, llaves y demás ajustes, para llevar NovaHub a otro servidor o recuperarlo tras una avería. Va
+siempre cifrado (PBKDF2-SHA256 + HMAC-SHA256, solo biblioteca estándar). Al importar se ve antes qué trae, se eligen las
+partes, lo que ya existe se respeta y se guarda una copia de lo anterior. También `python3 server.py export` / `import`.
+No lleva los datos de los servicios: eso va en las copias.
+
 ## Invitaciones
 
 Ajustes → **Usuarios** → **Invitar a alguien**: rol, servicios y duración (1 a 30 días). Sale un enlace de un solo uso

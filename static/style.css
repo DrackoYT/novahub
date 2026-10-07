@@ -588,6 +588,16 @@ dialog .app-ico { width: 30px; height: 30px; border-radius: 8px; font-size: 12px
 .app-meta { font-size: 12px; color: var(--faint); margin-top: auto; }
 .signups { display: grid; gap: 10px; }
 .signups .btn { justify-self: start; }
+/* traslado (exportar e importar) */
+.xfer { display: grid; gap: 12px; }
+.xfer form { display: grid; gap: 12px; }
+.xfer-parts { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 18px; }
+.xfer-preview { margin-top: 6px; }
+.xfer-preview .xfer-parts { grid-template-columns: 1fr; }
+.xfer-part { align-items: flex-start; }
+.xfer-part > span { display: grid; gap: 2px; }
+.xfer-part small { color: var(--soft); font-size: 13px; }
+
 /* invitaciones */
 .user-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .inv-list { display: grid; gap: 0; }

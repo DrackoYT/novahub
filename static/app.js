@@ -1900,6 +1900,7 @@ const SETTINGS = [
   ["vigilante", "Vigilante externo", "Si el servidor cae del todo", ICON.activity, "admin"],
   ["sesion", "Sesión", "Contraseña e inactividad", ICON.lock, "admin"],
   ["actividad", "Actividad", "Quién hizo qué y cuándo", ICON.activity, "admin"],
+  ["traslado", "Traslado", "Exportar e importar la configuración", ICON.archive, "admin"],
   ["git", "Git", "Autor de los commits", ICON.git, "admin"],
   ["app", "App para el móvil", "Instalar NovaHub", ICON.phone, null],
 ];
@@ -1917,7 +1918,7 @@ function viewSettings(cat) {
       <section class="module set-body" id="set-body"><div class="pane-msg">Cargando…</div></section>
     </div>`;
   $(".set-nav a.active").scrollIntoView({ block: "nearest", inline: "center" });  // en el móvil la lista se desliza
-  ({ cuenta: setAccount, actualizaciones: setUpdates, fuera: setOffsite, usuarios: setUsers, servidores: setServers, remoto: setTokens, avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, actividad: setActivity, git: setGit, app: setApp })[cat]($("#set-body"));
+  ({ cuenta: setAccount, actualizaciones: setUpdates, fuera: setOffsite, usuarios: setUsers, servidores: setServers, remoto: setTokens, avisos: setNotify, vigilante: setHeartbeat, sesion: setSession, actividad: setActivity, traslado: setTransfer, git: setGit, app: setApp })[cat]($("#set-body"));
 }
 
 // Pie con «Guardar» y el error, común a todas las categorías
@@ -2123,6 +2124,112 @@ async function setActivity(body) {
   });
   $("#act-more", body).addEventListener("click", () => load(true));
   await load();
+}
+
+// Exportar e importar la configuración (archivo cifrado .nhcfg)
+async function setTransfer(body) {
+  const { parts } = await api("GET", "/api/config/parts");
+  body.innerHTML = `
+    <h2 class="set-title">Traslado</h2>
+    <p class="set-sub">Un archivo con la configuración de NovaHub para llevarlo a otro servidor o recuperarlo tras una avería. Va
+      <b>siempre cifrado</b> con una contraseña tuya, porque lleva secretos (contraseñas de las copias, llaves de los avisos,
+      la verificación en dos pasos de los usuarios). No lleva los datos de los servicios: esos van en las copias de seguridad.</p>
+    <section class="upd-card xfer">
+      <header><h3>${ICON.download}Exportar</h3></header>
+      <form id="xp-form" novalidate>
+        <div class="xfer-parts">${Object.entries(parts).map(([k, v]) => `<label class="chk-line"><input type="checkbox" name="part" value="${k}" checked> ${esc(v)}</label>`).join("")}</div>
+        <div class="set-grid">
+          <label class="field"><span>Contraseña para el archivo</span><input name="pass" type="password" autocomplete="new-password"><small>Al menos 12 caracteres. Sin ella no se puede abrir: guárdala en tu gestor de contraseñas.</small></label>
+          <label class="field"><span>Repítela</span><input name="again" type="password" autocomplete="new-password"></label>
+        </div>
+        <label class="field"><span>Tu contraseña de NovaHub</span><input name="me" type="password" autocomplete="current-password"><small>Para confirmar que eres tú: el archivo lo lleva todo.</small></label>
+        <div class="form-error" id="xp-error"></div>
+        <div class="upd-actions"><button type="submit" class="btn primary">${ICON.download}Descargar la configuración</button></div>
+      </form>
+    </section>
+    <section class="upd-card xfer">
+      <header><h3>${ICON.archive}Importar</h3></header>
+      <form id="xi-form" novalidate>
+        <label class="field"><span>Archivo (.nhcfg)</span><input name="file" type="file" accept=".nhcfg,application/json"></label>
+        <label class="field"><span>Contraseña del archivo</span><input name="pass" type="password" autocomplete="off"></label>
+        <div class="form-error" id="xi-error"></div>
+        <div class="upd-actions"><button type="submit" class="btn">Abrir y ver qué trae</button></div>
+      </form>
+      <div id="xi-preview"></div>
+    </section>`;
+  const xp = $("#xp-form", body);
+  xp.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = $("#xp-error", body);
+    err.textContent = "";
+    if (xp.pass.value !== xp.again.value) { err.textContent = "Las dos contraseñas del archivo no coinciden"; return; }
+    const btn = xp.querySelector("[type=submit]");
+    btn.disabled = true;
+    try {
+      const r = await api("POST", "/api/config/export", { parts: [...xp.querySelectorAll('[name="part"]:checked')].map((c) => c.value),
+        passphrase: xp.pass.value, password: xp.me.value });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([r.content], { type: "application/json" }));
+      a.download = r.filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      xp.pass.value = xp.again.value = xp.me.value = "";
+      toast("Configuración exportada y descargada", "ok");
+    } catch (ex) { err.textContent = ex.message; }
+    btn.disabled = false;
+  });
+  const xi = $("#xi-form", body);
+  let fileText = "", pass = "";
+  xi.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = $("#xi-error", body);
+    err.textContent = "";
+    const f = xi.file.files[0];
+    if (!f) { err.textContent = "Elige el archivo .nhcfg"; return; }
+    if (f.size > 900 * 1024) { err.textContent = "El archivo es demasiado grande"; return; }
+    fileText = await f.text();
+    pass = xi.pass.value;
+    try {
+      const pv = await api("POST", "/api/config/preview", { file: fileText, passphrase: pass });
+      const note = (p) => {
+        const bits = [];
+        if (p.count != null) bits.push(`${p.count} en el archivo`);
+        if (p.existing?.length) bits.push(`<span class="warn-text">ya existen aquí: ${p.existing.map(esc).join(", ")}</span>`);
+        if (p.missing_dirs?.length) bits.push(`<span class="warn-text">carpetas que no existen en este servidor: ${p.missing_dirs.map(esc).join(", ")}</span>`);
+        if (p.replaces?.length) bits.push(`<span class="warn-text">sustituye lo que hay ahora</span>`);
+        if (p.ssh) bits.push("incluye la llave SSH");
+        if (p.detail) bits.push(esc(p.detail));
+        return bits.join(" · ");
+      };
+      $("#xi-preview", body).innerHTML = `
+        <form id="xa-form" class="xfer-preview" novalidate>
+          <p class="nt-ok">Archivo de <b>${esc(pv.from.host)}</b>, NovaHub ${esc(pv.from.novahub)}, del ${esc(new Date(pv.from.created * 1000).toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "short" }))}.</p>
+          <div class="xfer-parts">${pv.parts.map((p) => `<label class="chk-line xfer-part"><input type="checkbox" name="part" value="${esc(p.part)}" checked>
+            <span><b>${esc(p.label)}</b><small>${note(p)}</small></span></label>`).join("")}</div>
+          ${pv.parts.some((p) => p.part === "servicios" && p.existing.length) ? '<label class="chk-line"><input type="checkbox" name="rs"> Reemplazar los servicios que ya existen (si no, se dejan como están)</label>' : ""}
+          ${pv.parts.some((p) => p.part === "usuarios" && p.existing.length) ? '<label class="chk-line"><input type="checkbox" name="ru"> Reemplazar los usuarios que ya existen (cambia su contraseña por la del archivo y cierra sus sesiones)</label>' : ""}
+          <p class="dim-text task-help">Antes de importar se guarda una copia de la configuración actual en <code>data/import-backups/</code>. Si se importan ajustes,
+            NovaHub se reinicia solo unos segundos (los servicios siguen funcionando).</p>
+          <div class="form-error" id="xa-error"></div>
+          <div class="upd-actions"><button type="submit" class="btn primary">Importar lo marcado</button></div>
+        </form>`;
+      const xa = $("#xa-form", body);
+      xa.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const chosen = [...xa.querySelectorAll('[name="part"]:checked')].map((c) => c.value);
+        if (!chosen.length) { $("#xa-error", body).textContent = "Marca al menos una parte"; return; }
+        if (!(await confirmDialog("Importar la configuración", `Se importará: ${chosen.length} parte${chosen.length === 1 ? "" : "s"}. Antes se guarda una copia de lo actual.`, "Importar"))) return;
+        try {
+          const r = await api("POST", "/api/config/import", { file: fileText, passphrase: pass, parts: chosen, replace_services: !!xa.rs?.checked, replace_users: !!xa.ru?.checked });
+          $("#xi-preview", body).innerHTML = `<div class="nt-ok"><b>Importado:</b> ${r.done.map(esc).join(", ")}.<br>Copia de lo anterior: <code>${esc(r.backup)}</code>
+            ${r.restarting ? "<br>NovaHub se está reiniciando para aplicar los ajustes: la página se recargará sola." : r.restart_needed ? "<br><b>Reinicia NovaHub</b> para aplicar los ajustes." : ""}</div>`;
+          xi.reset();
+          fileText = pass = "";
+          if (r.restarting) setTimeout(() => location.reload(), 8000);
+        } catch (ex) { $("#xa-error", body).textContent = ex.message; }
+      });
+    } catch (ex) { err.textContent = ex.message; $("#xi-preview", body).innerHTML = ""; }
+  });
 }
 
 async function setGit(body) {

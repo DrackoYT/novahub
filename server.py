@@ -6845,6 +6845,244 @@ def _template_job(job, t, dest, values, service, start):
 JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 TODO_ROUTE = re.compile(r"/api/roadmap/todo/([0-9a-f]{8})")
+# ───────────────────────────── exportar e importar la configuración ─────────────────────────────
+# Un archivo con servicios, usuarios y ajustes para llevar NovaHub a otro servidor o recuperarlo tras una avería.
+# Lleva secretos (contraseñas de restic, llaves de ntfy y Gmail, secretos de dos pasos), así que va siempre cifrado,
+# solo con la biblioteca estándar: clave con PBKDF2-SHA256 (600.000 vueltas, sal aleatoria), cifrado con HMAC-SHA256
+# en modo contador (flujo pseudoaleatorio) y cifrar-y-luego-firmar con HMAC-SHA256 y una clave aparte: una contraseña
+# mala o un archivo tocado se detectan antes de descifrar nada.
+
+CONFIG_FORMAT = "novahub-config"
+CONFIG_ITER = 600_000
+CONFIG_BACKUPS = os.path.join(DATA_DIR, "import-backups")
+CONFIG_PARTS = {  # parte → (nombre, archivos de data/)
+    "servicios": ("Servicios y sus tareas", []),
+    "usuarios": ("Usuarios (con su contraseña y verificación en dos pasos)", []),
+    "avisos": ("Avisos (ntfy, correo, vigilante externo)", ["notify.json"]),
+    "sesion": ("Sesión", ["session.json"]),
+    "actualizaciones": ("Ajustes de actualizaciones", ["updates.json"]),
+    "fuera": ("Copias fuera de casa (destinos, contraseñas y llave SSH)", ["offsite.json"]),
+    "tapo": ("Enchufe Tapo", ["tapo.json"]),
+    "servidores": ("Otros servidores y llaves de acceso remoto", ["servers.json", "tokens.json"]),
+    "mejoras": ("Mejoras y pendientes", ["roadmap.json", "roadmap-todo.json"]),
+    "git": ("Identidad de git", []),
+}
+
+
+CONFIG_SHORT = {"servicios": "servicios", "usuarios": "usuarios", "avisos": "avisos", "sesion": "sesión",
+                "actualizaciones": "actualizaciones", "fuera": "copias fuera de casa", "tapo": "enchufe Tapo",
+                "servidores": "otros servidores", "mejoras": "mejoras", "git": "identidad de git"}
+
+
+def _config_keys(passphrase, salt, iters):
+    dk = hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, iters, dklen=64)
+    return dk[:32], dk[32:]  # cifrar, firmar
+
+
+def _config_stream(key, nonce, data):
+    out = bytearray(len(data))
+    for block in range(0, len(data), 32):
+        ks = hmac.new(key, nonce + (block // 32).to_bytes(8, "big"), hashlib.sha256).digest()
+        chunk = data[block:block + 32]
+        out[block:block + len(chunk)] = bytes(a ^ b for a, b in zip(chunk, ks))
+    return bytes(out)
+
+
+def _config_header_bytes(h):
+    return json.dumps({k: h[k] for k in sorted(h) if k not in ("data", "mac")}, sort_keys=True, separators=(",", ":")).encode()
+
+
+def config_seal(obj, passphrase):
+    import zlib
+    if len(passphrase) < 12:
+        raise ApiError(400, "La contraseña del archivo debe tener al menos 12 caracteres")
+    plain = zlib.compress(json.dumps(obj, ensure_ascii=False).encode(), 9)
+    salt, nonce = secrets.token_bytes(16), secrets.token_bytes(16)
+    ek, mk = _config_keys(passphrase, salt, CONFIG_ITER)
+    ct = _config_stream(ek, nonce, plain)
+    header = {"format": CONFIG_FORMAT, "v": 1, "created": int(time.time()), "host": socket.gethostname(), "novahub": VERSION,
+              "parts": sorted(k for k in obj if k in CONFIG_PARTS), "kdf": "pbkdf2-sha256", "iter": CONFIG_ITER,
+              "salt": base64.b64encode(salt).decode(), "nonce": base64.b64encode(nonce).decode(), "cipher": "hmac-sha256-ctr"}
+    mac = hmac.new(mk, _config_header_bytes(header) + ct, hashlib.sha256).hexdigest()
+    return json.dumps({**header, "data": base64.b64encode(ct).decode(), "mac": mac}, ensure_ascii=False, indent=1)
+
+
+def config_unseal(text, passphrase):
+    import zlib
+    try:
+        h = json.loads(text)
+        assert isinstance(h, dict) and h.get("format") == CONFIG_FORMAT and h.get("v") == 1
+        iters = int(h["iter"])
+        assert 100_000 <= iters <= 5_000_000  # ni archivos débiles ni uno que deje el servidor calculando minutos
+        salt, nonce, ct = (base64.b64decode(h[k]) for k in ("salt", "nonce", "data"))
+    except (ValueError, KeyError, TypeError, AssertionError):
+        raise ApiError(400, "Ese archivo no es una configuración exportada de NovaHub")
+    ek, mk = _config_keys(str(passphrase or ""), salt, iters)
+    if not hmac.compare_digest(hmac.new(mk, _config_header_bytes(h) + ct, hashlib.sha256).hexdigest(), str(h.get("mac"))):
+        raise ApiError(400, "La contraseña no es correcta (o el archivo está dañado)")
+    d = zlib.decompressobj()
+    plain = d.decompress(_config_stream(ek, nonce, ct), 64 * 1024 * 1024)
+    if d.unconsumed_tail:
+        raise ApiError(400, "El archivo es demasiado grande")
+    return h, json.loads(plain)
+
+
+def config_collect(parts):
+    """El contenido del archivo de exportación (solo las partes pedidas)."""
+    obj = {}
+    for part in parts:
+        if part == "servicios":
+            obj[part] = [dict(svc) for svc in (MANAGER.services.values() if MANAGER else read_json(SERVICES_FILE, []))]
+        elif part == "usuarios":
+            obj[part] = read_json(USERS_FILE, {})
+        elif part == "git":
+            ident = git_identity()
+            if ident.get("name") and ident.get("email"):
+                obj[part] = ident
+        else:
+            files = {f: read_json(os.path.join(DATA_DIR, f), None) for f in CONFIG_PARTS[part][1]}
+            entry = {"files": {f: v for f, v in files.items() if v is not None}}
+            if part == "fuera" and os.path.isfile(SSH_KEY):
+                with open(SSH_KEY) as k, open(SSH_KEY + ".pub") as kp:
+                    entry["ssh"] = {"key": k.read(), "pub": kp.read()}
+            if entry["files"] or entry.get("ssh"):  # lo que no está configurado no viaja (ni sale como «importado»)
+                obj[part] = entry
+    return obj
+
+
+def config_export(data, actor):
+    if not AUTH._verify(AUTH.users[actor]["password"], str(data.get("password") or "")):
+        raise ApiError(400, "Tu contraseña de NovaHub no es correcta")
+    parts = [p for p in (data.get("parts") or list(CONFIG_PARTS)) if p in CONFIG_PARTS]
+    if not parts:
+        raise ApiError(400, "Elige al menos una parte")
+    text = config_seal(config_collect(parts), str(data.get("passphrase") or ""))
+    return {"filename": f"novahub-{socket.gethostname()}-{datetime.now():%Y%m%d-%H%M}.nhcfg", "content": text}
+
+
+def config_preview(text, passphrase):
+    h, obj = config_unseal(text, passphrase)
+    services = MANAGER.services if MANAGER else {s["id"]: s for s in read_json(SERVICES_FILE, []) if isinstance(s, dict)}
+    out = []
+    for part, (label, files) in CONFIG_PARTS.items():
+        if part not in obj:
+            continue
+        info = {"part": part, "label": label}
+        if part == "servicios":
+            svcs = obj[part]
+            info.update(count=len(svcs), existing=[x.get("id") for x in svcs if x.get("id") in services],
+                        missing_dirs=[x.get("name") for x in svcs if x.get("cwd") and not os.path.isdir(os.path.expanduser(x["cwd"]))])
+        elif part == "usuarios":
+            info.update(count=len(obj[part]), existing=[u for u in obj[part] if u in AUTH.users])
+        elif part == "git":
+            info.update(detail=f"{obj[part].get('name', '')} <{obj[part].get('email', '')}>")
+        else:
+            info.update(replaces=[f for f in obj[part].get("files", {}) if os.path.exists(os.path.join(DATA_DIR, f))],
+                        files=list(obj[part].get("files", {})), ssh=bool(obj[part].get("ssh")))
+        out.append(info)
+    return {"from": {k: h.get(k) for k in ("host", "created", "novahub")}, "parts": out}
+
+
+def config_backup():
+    """Copia de data/*.json y de la llave SSH antes de importar (las 5 últimas)."""
+    import tarfile
+    os.makedirs(CONFIG_BACKUPS, mode=0o700, exist_ok=True)
+    path = os.path.join(CONFIG_BACKUPS, f"antes-de-importar-{datetime.now():%Y%m%d-%H%M%S}.tar.gz")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz") as tar:
+        for f in glob.glob(os.path.join(DATA_DIR, "*.json")):
+            tar.add(f, arcname=os.path.basename(f))
+        if os.path.isdir(SSH_DIR):
+            tar.add(SSH_DIR, arcname="ssh")
+    for old in sorted(glob.glob(os.path.join(CONFIG_BACKUPS, "*.tar.gz")))[:-5]:
+        os.remove(old)
+    return path
+
+
+def config_import(text, passphrase, parts, replace_services=False, replace_users=False):
+    """Aplica las partes elegidas. Servicios y usuarios se fusionan (los que ya existen se dejan, salvo «reemplazar»);
+    los demás ajustes se sustituyen. Devuelve (resumen, hay_que_reiniciar)."""
+    _, obj = config_unseal(text, passphrase)
+    parts = [p for p in parts if p in obj and p in CONFIG_PARTS]
+    if not parts:
+        raise ApiError(400, "Elige al menos una parte que esté en el archivo")
+    backup = config_backup()
+    done, restart = [], False
+    if "servicios" in parts:
+        added = replaced = 0
+        incoming = [x for x in obj["servicios"] if isinstance(x, dict) and re.fullmatch(r"[a-z0-9-]{1,40}", str(x.get("id") or ""))]
+        if MANAGER:
+            with MANAGER.lock:
+                for svc in incoming:
+                    exists = svc["id"] in MANAGER.services
+                    if exists and not replace_services:
+                        continue
+                    MANAGER.services[svc["id"]] = svc
+                    replaced += exists
+                    added += not exists
+                MANAGER.save_services()
+            GATEWAY.sync()
+        else:
+            current = {x["id"]: x for x in read_json(SERVICES_FILE, []) if isinstance(x, dict)}
+            for svc in incoming:
+                if svc["id"] in current and not replace_services:
+                    continue
+                replaced += svc["id"] in current
+                added += svc["id"] not in current
+                current[svc["id"]] = svc
+            write_json(SERVICES_FILE, list(current.values()))
+        done.append(f"{added} servicio{'s' if added != 1 else ''} nuevo{'s' if added != 1 else ''}" + (f" y {replaced} reemplazado{'s' if replaced != 1 else ''}" if replaced else ""))
+    if "usuarios" in parts:
+        added = replaced = 0
+        with AUTH.lock:
+            AUTH._fresh()
+            for name, u in obj["usuarios"].items():
+                if not (USERNAME_RE.fullmatch(name) and isinstance(u, dict) and u.get("role") in ROLES and u.get("password")):
+                    continue
+                exists = name in AUTH.users
+                if exists and not replace_users:
+                    continue
+                AUTH.users[name] = {**u, "ver": max(u.get("ver", 0), AUTH.users.get(name, {}).get("ver", 0)) + 1}  # cierra sesiones
+                replaced += exists
+                added += not exists
+            AUTH._save_users()
+        done.append(f"{added} usuario{'s' if added != 1 else ''} nuevo{'s' if added != 1 else ''}" + (f" y {replaced} reemplazado{'s' if replaced != 1 else ''}" if replaced else ""))
+    if "git" in parts and obj["git"].get("name") and obj["git"].get("email"):
+        set_git_identity(obj["git"])
+        done.append("identidad de git")
+    for part in parts:
+        if part in ("servicios", "usuarios", "git"):
+            continue
+        wrote = False
+        for f, content in (obj[part].get("files") or {}).items():
+            if f in CONFIG_PARTS[part][1]:
+                write_json(os.path.join(DATA_DIR, f), content)
+                restart = wrote = True
+        ssh = obj[part].get("ssh")
+        if part == "fuera" and ssh and ssh.get("key", "").startswith("-----BEGIN"):
+            os.makedirs(SSH_DIR, mode=0o700, exist_ok=True)
+            for path, content in ((SSH_KEY, ssh["key"]), (SSH_KEY + ".pub", ssh.get("pub", ""))):
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(content)
+            wrote = True
+        if wrote:
+            done.append(CONFIG_SHORT[part])
+    return {"done": done, "backup": backup}, restart
+
+
+def restart_novahub_soon(delay=1.5):
+    """Reinicia el panel (con systemd) un momento después de responder: los servicios siguen funcionando."""
+    if not os.environ.get("INVOCATION_ID"):
+        return False  # no va con systemd: lo reinicia quien lo arrancó
+    def go():
+        time.sleep(delay)
+        subprocess.Popen(["systemctl", "--user", "restart", os.environ.get("NOVAHUB_UNIT", "novahub")],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    threading.Thread(target=go, name="reinicio", daemon=True).start()
+    return True
+
+
 # ───────────────────────────── invitaciones ─────────────────────────────
 # Enlace de un solo uso con rol y servicios: la persona elige su usuario y contraseña. Del enlace solo se guarda la
 # huella (SHA-256), así que nadie puede sacarlo de data/invites.json; caduca, se puede revocar y no sirve dos veces.
@@ -6983,6 +7221,9 @@ ACTIVITY_RULES = [
     ("POST", r"/api/templates/create", "apps", "Creó un servicio desde la plantilla {b:template}"),
     ("POST", r"/api/users", "usuarios", "Creó el usuario {b:username}"),
     ("POST", r"/api/invites", "usuarios", "Creó una invitación ({b:role})"),
+    ("POST", r"/api/config/export", "sistema", "Exportó la configuración ({b:parts})"),
+    ("POST", r"/api/config/import", "sistema", "Importó la configuración ({b:parts})"),
+    ("POST", r"/api/config/preview", None, None),
     ("DELETE", r"/api/invites/([0-9a-f]{8})", "usuarios", "Revocó una invitación"),
     ("*", r"/api/invite/.*", None, None),  # el enlace es secreto: nunca a la actividad (al aceptarla se apunta aparte)
     ("PUT", r"/api/users/([a-z0-9._-]+)", "usuarios", "Editó el usuario {1}"),
@@ -7039,8 +7280,10 @@ def describe_action(method, path, body, query, names):
                 return "—"
             if key == "role":
                 v = ROLE_LABELS.get(str(v), v)
+            if isinstance(v, list):
+                v = ", ".join(CONFIG_SHORT.get(str(x), str(x)) if key == "parts" else str(x) for x in v) or "todo"
             v = re.sub(r"://[^/@\s]+@", "://", str(v))  # https://usuario:llave@github.com/… → sin la llave
-            return re.sub(r"[\x00-\x1f\x7f]", " ", v)[:80]
+            return re.sub(r"[\x00-\x1f\x7f]", " ", v)[:200 if key == "parts" else 80]
         text = tpl.replace("{svc}", names.get(sid) or sid or "?")
         text = re.sub(r"\{b:(\w+)\}", lambda x: field(body, x.group(1)), text)
         text = re.sub(r"\{q:(\w+)\}", lambda x: field(None, x.group(1)), text)
@@ -7452,6 +7695,20 @@ class Handler(BaseHTTPRequestHandler):
         if m and method == "DELETE":
             TOKENS.revoke(m.group(1))
             return self.send_json({"tokens": TOKENS.public()})
+        if path == "/api/config/parts" and method == "GET":
+            return self.send_json({"parts": {k: v[0] for k, v in CONFIG_PARTS.items()}})
+        if path == "/api/config/export" and method == "POST":
+            return self.send_json(config_export(self.read_body(), self.user["username"]))
+        if path == "/api/config/preview" and method == "POST":
+            body = self.read_body()
+            return self.send_json(config_preview(str(body.get("file") or ""), str(body.get("passphrase") or "")))
+        if path == "/api/config/import" and method == "POST":
+            body = self.read_body()
+            result, restart = config_import(str(body.get("file") or ""), str(body.get("passphrase") or ""), body.get("parts") or [],
+                                            bool(body.get("replace_services")), bool(body.get("replace_users")))
+            result["restarting"] = restart and restart_novahub_soon()
+            result["restart_needed"] = restart and not result["restarting"]
+            return self.send_json(result)
         if path == "/api/invites":
             if method == "GET":
                 return self.send_json({"invites": INVITES.public()})
@@ -7979,8 +8236,8 @@ def remote_listener():
 def main():
     global MANAGER, AUTH, PUBLISHER, GATEWAY
     parser = argparse.ArgumentParser(description="NovaHub — gestor de servicios")
-    parser.add_argument("command", nargs="?", default="serve", choices=["serve", "set-password", "reset-totp"])
-    parser.add_argument("user", nargs="?", help="con set-password: el usuario (por defecto, el primer administrador)")
+    parser.add_argument("command", nargs="?", default="serve", choices=["serve", "set-password", "reset-totp", "export", "import"])
+    parser.add_argument("user", nargs="?", help="con set-password o reset-totp: el usuario; con export o import: el archivo")
     parser.add_argument("--host", default=os.environ.get("NOVAHUB_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("NOVAHUB_PORT", "8686")))
     args = parser.parse_args()
@@ -7989,6 +8246,42 @@ def main():
         os.makedirs(d, mode=0o700, exist_ok=True)
 
     AUTH = Auth()
+    if args.command in ("export", "import"):  # traslado o recuperación desde la terminal
+        try:
+            if args.command == "export":
+                pw = getpass.getpass("Contraseña para el archivo (mín. 12): ")
+                if pw != getpass.getpass("Repítela: "):
+                    sys.exit("No coinciden")
+                path = args.user or f"novahub-{socket.gethostname()}-{datetime.now():%Y%m%d-%H%M}.nhcfg"
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(config_seal(config_collect(list(CONFIG_PARTS)), pw))
+                print(f"Configuración exportada (cifrada) en {path}")
+            else:
+                prev = read_json(RUNNING_FILE, {})
+                try:
+                    with open(f"/proc/{int(prev.get('pid') or 0)}/cmdline", "rb") as f:
+                        alive = b"server.py" in f.read()
+                except (OSError, ValueError):
+                    alive = False
+                if alive:
+                    sys.exit("NovaHub está en marcha: páralo antes (systemctl --user stop novahub) o importa desde Ajustes → Traslado")
+                if not args.user or not os.path.isfile(args.user):
+                    sys.exit("Uso: python3 server.py import <archivo.nhcfg>")
+                with open(args.user, encoding="utf-8") as f:
+                    text = f.read()
+                pw = getpass.getpass("Contraseña del archivo: ")
+                info = config_preview(text, pw)
+                print(f"Archivo de {info['from']['host']} (NovaHub {info['from']['novahub']}):")
+                for p in info["parts"]:
+                    print(f"  · {p['label']}" + (f": {p['count']}" if "count" in p else ""))
+                if input("¿Importarlo todo? Lo que ya exista de servicios y usuarios se deja como está [s/N] ").strip().lower() != "s":
+                    sys.exit("Cancelado")
+                result, _ = config_import(text, pw, [p["part"] for p in info["parts"]])
+                print("Importado: " + ", ".join(result["done"]) + f". Copia de lo anterior: {result['backup']}")
+        except ApiError as e:
+            sys.exit(e.msg)
+        return
     if args.command == "reset-totp":  # móvil perdido y sin códigos de recuperación
         if not args.user:
             sys.exit("Uso: python3 server.py reset-totp <usuario>")

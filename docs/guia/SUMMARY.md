@@ -34,6 +34,7 @@
 ## Mantenimiento
 * [Centro de actualizaciones](actualizaciones.md)
 * [Varios servidores](servidores.md)
+* [Exportar e importar la configuración](traslado.md)
 * [Apagar el servidor y el enchufe Tapo](apagado.md)
 * [Solución de problemas](problemas.md)
 
