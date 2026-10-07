@@ -6,6 +6,9 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- Arreglado el 502 de Cloudflare (y las comprobaciones de salud fallidas) en servicios publicados cuyo programa solo
+  escucha en IPv4 dentro del contenedor, como Vaultwarden: la pasarela y la salud usaban «localhost», que da primero
+  ::1. Ahora prueban 127.0.0.1 y, si no, ::1.
 ## 1.0.5 — 2026-10-07
 
 - **Gestor de contraseñas propio (Vaultwarden)**: se instala desde el catálogo proponiendo publicarlo con HTTPS

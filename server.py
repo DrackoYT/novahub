@@ -2193,14 +2193,27 @@ def health_mode(svc):
     return "off" if not svc.get("port") else mode
 
 
+# Los servicios se buscan por IPv4 y, si no, por IPv6 (no «localhost»: suele dar ::1 primero, y con Podman/pasta ::1
+# acepta la conexión aunque el programa del contenedor solo escuche en IPv4, y luego la corta → 502 / «no responde»).
+LOCAL_HOSTS = ("127.0.0.1", "::1")
+
+
 def probe(mode, port, path):
     """(ok, milisegundos, detalle). HTTP sano = cualquier respuesta que no sea un error 5xx."""
+    for host in LOCAL_HOSTS:
+        res = _probe(mode, host, port, path)
+        if res[0]:
+            return res
+    return res
+
+
+def _probe(mode, host, port, path):
     t0 = time.monotonic()
     try:
         if mode == "tcp":
-            socket.create_connection(("localhost", port), timeout=5).close()
+            socket.create_connection((host, port), timeout=5).close()
             return True, round((time.monotonic() - t0) * 1000), "acepta conexiones"
-        conn = http.client.HTTPConnection("localhost", port, timeout=8)
+        conn = http.client.HTTPConnection(host, port, timeout=8)
         try:
             conn.request("GET", path, headers={"User-Agent": "NovaHub-health", "Connection": "close"})
             status = conn.getresponse().status
@@ -2472,11 +2485,21 @@ class Gateway:
         try:
             if not svc:
                 raise OSError("servicio eliminado")
-            up_reader, up_writer = await asyncio.wait_for(asyncio.open_connection("localhost", svc["port"]), 3)
+            up_reader, up_writer = await self.connect(svc["port"])
         except (OSError, asyncio.TimeoutError):
             await self.unavailable(sid, svc, reader, writer)
             return
         await asyncio.gather(self.pipe(reader, up_writer), self.pipe(up_reader, writer))
+
+    @staticmethod
+    async def connect(port):
+        err = None
+        for host in LOCAL_HOSTS:
+            try:
+                return await asyncio.wait_for(asyncio.open_connection(host, port), 3)
+            except (OSError, asyncio.TimeoutError) as e:
+                err = e
+        raise err
 
     @staticmethod
     async def pipe(reader, writer):
