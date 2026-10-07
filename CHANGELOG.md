@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.0.9 — 2026-10-07
+
 - **Salud de los discos y temperatura** (Resumen): SMART de cada disco cada 30 min con `novahub-sistema discos` (solo
   lectura, sin despertar discos dormidos), con estado Bien / Atención / Peligro y el motivo (sectores reasignados o
   pendientes, desgaste del SSD, errores…); temperaturas de CPU, gráfica y NVMe cada minuto. Avisos al móvil y al correo
