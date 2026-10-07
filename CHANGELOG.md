@@ -6,8 +6,11 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.0.11 — 2026-10-07
+
 - Copias fuera de casa: un destino en un disco de `/etc/fstab` que no está montado cuenta como «no conectado» (y no se
   puede añadir), en vez de escribir la copia en la carpeta vacía del disco del sistema.
+
 ## 1.0.10 — 2026-10-07
 
 - «Discos y temperatura» rediseñado: una sola tarjeta con las temperaturas arriba y una fila por disco (estado, temperatura,
