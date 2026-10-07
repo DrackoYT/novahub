@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import codecs
 import getpass
+import glob
 import hashlib
 import http.client
 import hmac
@@ -2712,6 +2713,7 @@ NOTIFY_EVENTS = {
     "backup": "Falla una copia de seguridad o una restauración",
     "task": "Falla una tarea programada",
     "updates": "Hay actualizaciones disponibles, o una actualización termina o falla",
+    "hardware": "Un disco da señales de fallo o algo se calienta demasiado",
 }
 NOTIFY_COOLDOWN = 600   # como mucho un correo por servicio y tipo de aviso cada 10 min
 NOTIFY_MAX_HOUR = 30    # y nunca más de 30 por hora en total
@@ -5712,6 +5714,308 @@ class Updates:
 UPDATES = Updates()
 
 
+# ───────────────────────────── salud de los discos y temperaturas ─────────────────────────────
+# Temperaturas: /sys/class/hwmon (sin root). SMART: «novahub-sistema discos» (smartctl en solo lectura, con sudo).
+
+HARDWARE_FILE = os.path.join(DATA_DIR, "hardware.json")   # última lectura SMART (para ver qué empeora entre lecturas)
+HW_SMART_EVERY = 1800     # SMART cada 30 min (no despierta a un disco dormido: smartctl -n standby)
+HW_TEMP_EVERY = 60
+HW_TEMP_STRIKES = 3       # lecturas seguidas por encima del límite antes de avisar
+HW_RANK = {"unknown": 0, "ok": 1, "warn": 2, "danger": 3}
+# Límites (aviso, peligro) en °C cuando el sensor no trae los suyos
+HW_TEMP_LIMITS = {"cpu": (85, 95), "gpu": (90, 100), "nvme": (70, 80), "ssd": (60, 70), "hdd": (50, 58)}
+HWMON_KINDS = {"k10temp": "cpu", "coretemp": "cpu", "zenpower": "cpu", "cpu_thermal": "cpu", "nvme": "nvme",
+               "drivetemp": "disk", "nouveau": "gpu", "amdgpu": "gpu", "radeon": "gpu"}
+
+
+def read_hwmon():
+    """Sensores útiles: CPU, gráfica y discos (los de placa y ACPI suelen dar valores sin sentido)."""
+    out = []
+    for h in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+        try:
+            with open(os.path.join(h, "name")) as f:
+                name = f.read().strip()
+        except OSError:
+            continue
+        kind = HWMON_KINDS.get(name)
+        if not kind:
+            continue
+        dev = os.path.realpath(os.path.join(h, "device"))
+        block = None
+        if kind == "nvme":
+            block = os.path.basename(dev) if os.path.basename(dev).startswith("nvme") else None
+        elif kind == "disk":
+            found = glob.glob(os.path.join(dev, "block", "*"))
+            block = os.path.basename(found[0]) if found else None
+        for t in sorted(glob.glob(os.path.join(h, "temp*_input")))[:1]:  # el primero es el principal (Tctl, Composite…)
+            base = t[:-len("_input")]
+
+            def val(suffix):
+                try:
+                    with open(base + suffix) as f:
+                        v = int(f.read().strip()) / 1000
+                    return v if 0 < v < 150 else None
+                except (OSError, ValueError):
+                    return None
+            temp = val("_input")
+            if temp is None:
+                continue
+            warn, danger = HW_TEMP_LIMITS["nvme" if kind == "nvme" else "hdd" if kind == "disk" else kind]
+            mx, crit = val("_max"), val("_crit")
+            if mx and mx > warn - 15:
+                warn = mx
+            if crit and crit > warn:
+                danger = crit
+            out.append({"kind": "disk" if kind in ("nvme", "disk") else kind, "sensor": name, "block": block,
+                        "temp": round(temp, 1), "warn": warn, "danger": danger})
+    return out
+
+
+def lsblk_disks():
+    """Discos físicos con su uso (puntos de montaje de sus particiones). No necesita root."""
+    try:
+        res = subprocess.run(["lsblk", "-J", "-b", "-o", "NAME,TYPE,SIZE,TRAN,MODEL,SERIAL,ROTA,MOUNTPOINTS,LABEL"],
+                             capture_output=True, text=True, timeout=10)
+        data = json.loads(res.stdout or "{}")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+    disks = []
+    for d in data.get("blockdevices", []):
+        if d.get("type") != "disk" or re.match(r"(loop|zram|sr|ram)", d.get("name", "")):
+            continue
+        mounts = []
+
+        def walk(node):
+            mounts.extend(m for m in (node.get("mountpoints") or []) if m)
+            for c in node.get("children") or []:
+                walk(c)
+        walk(d)
+        tran = d.get("tran") or ""
+        kind = "NVMe" if d["name"].startswith("nvme") or tran == "nvme" else "HDD" if d.get("rota") in (True, "1", 1) else "SSD"
+        disks.append({"name": d["name"], "size": int(d.get("size") or 0), "tran": tran, "model": (d.get("model") or "").strip(),
+                      "serial": (d.get("serial") or "").strip(), "kind": kind, "mounts": sorted(set(mounts))})
+    return disks
+
+
+def disk_role(mounts):
+    if "/" in mounts:
+        return "Sistema"
+    if BACKUP_MOUNT and BACKUP_MOUNT in mounts:
+        return "Datos y copias"
+    if "[SWAP]" in mounts and len(mounts) == 1:
+        return "Intercambio"
+    return "Datos" if mounts else "Sin montar"
+
+
+def smart_attr(sm, ident):
+    for a in (sm.get("ata_smart_attributes") or {}).get("table") or []:
+        if a.get("id") == ident:
+            return a
+    return None
+
+
+def evaluate_smart(sm, prev=None):
+    """(estado, motivos, detalles) de un disco a partir de la salida JSON de smartctl. prev = lectura anterior."""
+    reasons, details = [], {}
+    status = "ok"
+
+    def bump(level, text):
+        nonlocal status
+        reasons.append({"level": level, "text": text})
+        if HW_RANK[level] > HW_RANK[status]:
+            status = level
+
+    if (sm.get("smart_status") or {}).get("passed") is False:
+        bump("danger", "El propio disco avisa de que va a fallar (SMART: FAILED). Copia lo importante ya y cámbialo.")
+    temp = (sm.get("temperature") or {}).get("current")
+    hours = (sm.get("power_on_time") or {}).get("hours")
+    details.update(temp=temp, hours=hours)
+    nv = sm.get("nvme_smart_health_information_log")
+    if nv:
+        used, spare, spare_min = nv.get("percentage_used"), nv.get("available_spare"), nv.get("available_spare_threshold")
+        media, warnbits = nv.get("media_errors") or 0, nv.get("critical_warning") or 0
+        written = (nv.get("data_units_written") or 0) * 512000
+        details.update(wear=used, spare=spare, media_errors=media, written=written, unsafe_shutdowns=nv.get("unsafe_shutdowns"))
+        if warnbits:
+            bump("danger", "El SSD tiene un aviso crítico activo (poco espacio de reserva, solo lectura o temperatura).")
+        if spare is not None and spare_min is not None and spare < spare_min:
+            bump("danger", f"Le queda poca reserva ({spare} %, mínimo {spare_min} %): está cerca del final de su vida.")
+        if used is not None and used >= 90:
+            bump("danger", f"Desgaste del {used} %: cámbialo pronto.")
+        elif used is not None and used >= 70:
+            bump("warn", f"Desgaste del {used} %: ve pensando en cambiarlo.")
+        if media:
+            bump("warn", f"{media} error{'es' if media != 1 else ''} del medio (datos que no pudo leer bien).")
+    else:
+        failing = [a.get("name", str(a.get("id"))) for a in (sm.get("ata_smart_attributes") or {}).get("table") or []
+                   if a.get("when_failed") == "now"]
+        if failing:
+            bump("danger", f"Valores por debajo del límite del fabricante: {', '.join(failing)}.")
+
+        def raw(ident):
+            a = smart_attr(sm, ident)
+            return int((a.get("raw") or {}).get("value") or 0) if a else None
+        realloc, pending, uncorr, reported, crc = raw(5), raw(197), raw(198), raw(187), raw(199)
+        details.update(reallocated=realloc, pending=pending, uncorrectable=uncorr, crc=crc)
+        prev_d = (prev or {}).get("details") or {}
+        if pending:
+            bump("danger" if pending >= 10 or (uncorr or 0) > 0 else "warn",
+                 f"{pending} sector{'es' if pending != 1 else ''} pendiente{'s' if pending != 1 else ''} (no se pueden leer bien).")
+        if realloc:
+            grew = prev_d.get("reallocated") is not None and realloc > prev_d["reallocated"]
+            bump("danger" if realloc >= 100 or grew else "warn",
+                 f"{realloc} sector{'es' if realloc != 1 else ''} reasignado{'s' if realloc != 1 else ''}" +
+                 (f" (+{realloc - prev_d['reallocated']} desde la última lectura)" if grew else "") + ".")
+        if uncorr and not pending:
+            bump("warn", f"{uncorr} sector{'es' if uncorr != 1 else ''} sin corregir.")
+        if reported:
+            bump("warn", f"{reported} error{'es' if reported != 1 else ''} de lectura que el disco no pudo corregir.")
+        if crc and prev_d.get("crc") is not None and crc > prev_d["crc"]:
+            bump("warn", f"Errores de comunicación nuevos (+{crc - prev_d['crc']}): revisa el cable o el puerto del disco.")
+    kind = "nvme" if nv else "hdd" if sm.get("rotation_rate") else "ssd"
+    if temp:
+        warn, danger = HW_TEMP_LIMITS[kind]
+        if temp >= danger:
+            bump("danger", f"Muy caliente: {temp} °C.")
+        elif temp >= warn:
+            bump("warn", f"Caliente: {temp} °C (mejor por debajo de {warn} °C).")
+    return status, reasons, details
+
+
+class Hardware:
+    def __init__(self):
+        self.lock = threading.Lock()
+        saved = read_json(HARDWARE_FILE, {})
+        self.smart = saved.get("disks") or {}     # serie o nombre → {status, reasons, details, model, at}
+        self.smart_at = saved.get("at")
+        self.smart_error = None                   # por qué no hay SMART (falta el ayudante, smartctl…)
+        self.temps = []
+        self.temp_strikes = {}
+        self.busy = False
+
+    @staticmethod
+    def disk_key(disk):
+        return disk.get("serial") or disk.get("name")
+
+    def read_smart(self):
+        """Lee el SMART de todos los discos con el ayudante de root. Guarda la lectura y avisa si algo empeora."""
+        if not os.path.isfile(SYSTEM_SCRIPT):
+            raise ApiError(400, "Falta instalar novahub-sistema (ver Ajustes → Actualizaciones o el README)")
+        try:
+            res = subprocess.run(["sudo", "-n", SYSTEM_SCRIPT, "discos"], capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            raise ApiError(504, "smartctl ha tardado demasiado")
+        if res.returncode == 2 and "uso:" in res.stderr:
+            raise ApiError(400, "novahub-sistema está anticuado: vuelve a instalarlo para que pueda leer los discos")
+        if res.returncode != 0:
+            raise ApiError(500, (res.stderr or res.stdout).strip()[:200] or "no se pudo leer el SMART")
+        try:
+            data = json.loads(res.stdout)
+        except ValueError:
+            raise ApiError(500, "La salida de smartctl no se entiende")
+        if data.get("error"):
+            raise ApiError(400, "Falta smartmontools: sudo apt install smartmontools")
+        names = {d["name"]: d for d in lsblk_disks()}
+        fresh = {}
+        for sm in data.get("disks") or []:
+            dev = os.path.basename(((sm.get("device") or {}).get("name") or ""))
+            if "standby" in json.dumps((sm.get("smartctl") or {}).get("messages", [])).lower():
+                key = self.disk_key(names.get(dev, {"name": dev}))  # dormido: no se despierta, vale la lectura anterior
+                if key in self.smart:
+                    fresh[key] = {**self.smart[key], "sleeping": True}
+                continue
+            if (sm.get("smartctl") or {}).get("exit_status", 0) & 2 and not sm.get("smart_status"):
+                continue  # no se pudo abrir (p. ej. un USB sin SMART)
+            serial = sm.get("serial_number") or (names.get(dev) or {}).get("serial") or dev
+            prev = self.smart.get(serial)
+            status, reasons, details = evaluate_smart(sm, prev)
+            fresh[serial] = {"device": dev, "model": sm.get("model_name") or (names.get(dev) or {}).get("model"),
+                             "status": status, "reasons": reasons, "details": details, "at": time.time(),
+                             "passed": (sm.get("smart_status") or {}).get("passed")}
+            if status != "ok" and HW_RANK[status] > HW_RANK.get((prev or {}).get("status"), 1):  # nuevo o peor que antes
+                label = f"{fresh[serial]['model'] or dev} ({dev})"
+                NOTIFIER.notify("hardware", None, f"El disco {label} {'puede fallar' if status == 'danger' else 'da señales de desgaste'}",
+                                f"{label}:\n" + "\n".join(f"• {r['text']}" for r in reasons),
+                                key=f"smart-{serial}", level="danger" if status == "danger" else "warning")
+        with self.lock:
+            self.smart, self.smart_at, self.smart_error = fresh, time.time(), None
+            write_json(HARDWARE_FILE, {"disks": fresh, "at": self.smart_at})
+
+    def check_temps(self):
+        temps = read_hwmon()
+        names = {d["name"]: d for d in lsblk_disks()} if any(t["block"] for t in temps) else {}
+        for t in temps:
+            key = f"{t['sensor']}-{t['block'] or ''}"
+            over = "danger" if t["temp"] >= t["danger"] else "warn" if t["temp"] >= t["warn"] else None
+            t["status"] = over or "ok"
+            self.temp_strikes[key] = self.temp_strikes.get(key, 0) + 1 if over else 0
+            if self.temp_strikes[key] == HW_TEMP_STRIKES:
+                what = "La CPU" if t["kind"] == "cpu" else "La gráfica" if t["kind"] == "gpu" else \
+                    f"El disco {(names.get(t['block']) or {}).get('model') or t['block']}"
+                NOTIFIER.notify("hardware", None, f"{what} está muy caliente ({t['temp']:.0f} °C)",
+                                f"{what} lleva {HW_TEMP_STRIKES} minutos a {t['temp']:.0f} °C (límite {t['warn']:.0f} °C). "
+                                "Revisa los ventiladores, el polvo y que no esté tapado.", key=f"temp-{key}",
+                                level="danger" if over == "danger" else "warning")
+        self.temps = temps
+
+    def refresh(self):
+        with self.lock:
+            if self.busy:
+                raise ApiError(409, "Ya se está leyendo el SMART")
+            self.busy = True
+        try:
+            self.read_smart()
+        except ApiError as e:
+            self.smart_error = e.msg
+            raise
+        finally:
+            self.busy = False
+        return self.public()
+
+    def public(self):
+        if not self.temps:
+            try:
+                self.check_temps()
+            except Exception:  # noqa: BLE001
+                pass
+        by_block = {t["block"]: t for t in self.temps if t["block"]}
+        disks = []
+        for d in lsblk_disks():
+            sm = self.smart.get(self.disk_key(d)) or next((v for v in self.smart.values() if v.get("device") == d["name"]), None)
+            live = by_block.get(d["name"]) or by_block.get(re.sub(r"n\d+$", "", d["name"]))  # sensor nvme0 → disco nvme0n1
+            temp = live["temp"] if live else ((sm or {}).get("details") or {}).get("temp")
+            disks.append({**d, "role": disk_role(d["mounts"]), "temp": temp,
+                          "status": (sm or {}).get("status", "unknown"), "reasons": (sm or {}).get("reasons", []),
+                          "details": (sm or {}).get("details", {}), "smart_at": (sm or {}).get("at"),
+                          "sleeping": bool((sm or {}).get("sleeping"))})
+        worst = max([d["status"] for d in disks] + [t["status"] for t in self.temps if t.get("status")] or ["unknown"],
+                    key=lambda x: HW_RANK.get(x, 0))
+        return {"disks": disks, "temps": [t for t in self.temps if t["kind"] != "disk"], "status": worst,
+                "smart_at": self.smart_at, "smart_error": self.smart_error, "busy": self.busy,
+                "helper": os.path.isfile(SYSTEM_SCRIPT), "base_dir": BASE_DIR}
+
+    def loop(self):
+        last_smart = 0
+        while True:
+            SUPERVISOR.beat("hardware")
+            try:
+                self.check_temps()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+            if time.time() - last_smart >= HW_SMART_EVERY and os.path.isfile(SYSTEM_SCRIPT):
+                last_smart = time.time()
+                try:
+                    self.refresh()
+                except ApiError:
+                    pass  # queda en smart_error y se ve en el panel
+                except Exception:  # noqa: BLE001
+                    traceback.print_exc()
+            time.sleep(HW_TEMP_EVERY)
+
+
+HARDWARE = Hardware()
+
+
 # ───────────────────────────── plantillas de servicio ─────────────────────────────
 
 def _has_venv():
@@ -6087,7 +6391,7 @@ def route_permission(method, path, service_param=""):
     """(permiso, servicio) que exige cada petición de la API; None = cualquier usuario con sesión."""
     if path == "/api/me" or (path == "/api/account" and method == "PUT"):
         return None, None
-    if method == "GET" and path in ("/api/system", "/api/services", "/api/app/android"):
+    if method == "GET" and path in ("/api/system", "/api/services", "/api/app/android", "/api/hardware"):
         return "view", None
     if method == "GET" and path == "/api/metrics":
         return "view", (service_param if service_param and service_param != "system" else None)
@@ -6353,6 +6657,10 @@ class Handler(BaseHTTPRequestHandler):
             if method == "PUT":
                 return self.send_json(AUTH.save_settings(self.read_body()))
             raise ApiError(405, "Método no permitido")
+        if path == "/api/hardware" and method == "GET":
+            return self.send_json(HARDWARE.public())
+        if path == "/api/hardware/refresh" and method == "POST":
+            return self.send_json(HARDWARE.refresh())
         if path == "/api/system":
             info = {**system_info(), "android_apk": os.path.isfile(ANDROID_APK), "version": VERSION}
             if self.can("admin"):
@@ -6865,6 +7173,7 @@ def main():
     SUPERVISOR.spawn("actualizaciones", UPDATES.loop)
     SUPERVISOR.spawn("fuera-de-casa", OFFSITE.loop)
     SUPERVISOR.spawn("registro-de-cuentas", CATALOG.watch)
+    SUPERVISOR.spawn("hardware", HARDWARE.loop)
     write_json(RUNNING_FILE, {"version": VERSION, "commit": current_commit(), "pid": os.getpid(), "at": time.time()})
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)

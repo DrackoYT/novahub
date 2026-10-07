@@ -215,6 +215,22 @@ el gestor de archivos.
 Google no deja iniciar sesión con su cuenta dentro de una app (WebView), así que para Cloudflare Access añade el
 método **One-time PIN** (te manda un código por correo): Zero Trust → Settings → Authentication → Login methods.
 
+## Discos y temperatura
+
+En el **Resumen**, una tarjeta por disco (sistema, datos, USB…) y otra con las temperaturas:
+
+- **Temperaturas** de la CPU, la gráfica y los SSD NVMe, cada minuto y sin root (`/sys/class/hwmon`). Si pasan del
+  límite tres minutos seguidos, avisa (revisa ventiladores y polvo).
+- **SMART** de cada disco cada 30 minutos, con `smartctl` en solo lectura a través de `novahub-sistema discos`. No
+  despierta a los discos dormidos. Cada disco sale como **Bien**, **Atención** o **Peligro**, con el porqué: el disco se
+  da por fallado, sectores reasignados (y si crecen), sectores pendientes o sin corregir, desgaste y reserva de los SSD,
+  errores del medio, errores de cable nuevos o temperatura alta. También horas encendido, desgaste y datos escritos.
+- **Avisos** (móvil y correo, tipo «Un disco da señales de fallo o algo se calienta demasiado») en cuanto un disco
+  empeora, para cambiarlo antes de que falle.
+
+Necesita `sudo apt install smartmontools` y el ayudante `tools/novahub-sistema` instalado (ver Centro de
+actualizaciones); si ya lo tenías, vuelve a ejecutar la línea `sudo install …` para que tenga la orden `discos`.
+
 ## Vista de red
 
 Pestaña **Red** (tecla `4`):

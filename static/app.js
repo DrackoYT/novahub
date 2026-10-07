@@ -559,6 +559,8 @@ function viewOverview() {
     <section class="kpis" id="kpis"></section>
     <div id="ov-servers"></div>
     ${usageHTML("system")}
+    <div class="section-title"><h2>Discos y temperatura</h2><span class="dim-text" id="hw-when"></span></div>
+    <section class="net-grid hw-grid" id="hw-cards"></section>
     <div class="section-title"><h2>Servicios</h2><a href="#/servicios">Ver todos →</a></div>
     <section class="module rows" id="ov-rows"></section>`;
   drawKpis();
@@ -566,6 +568,73 @@ function viewOverview() {
   setupUsage();
   refreshOverview();
   every(3000, refreshOverview);
+  refreshHardware();
+  every(30000, refreshHardware);
+  $("#hw-cards").addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-hw-refresh]");
+    if (!btn) return;
+    btn.disabled = true;
+    btn.textContent = "Leyendo SMART…";
+    try { ui.hardware = await api("POST", "/api/hardware/refresh"); drawHardware(); toast("SMART leído", "ok"); }
+    catch (err) { toast(err.message, "error"); refreshHardware(); }
+  });
+}
+
+// Salud de los discos (SMART) y temperaturas
+const HW_STATUS = { ok: ["running", "Bien"], warn: ["starting", "Atención"], danger: ["crashed", "Peligro"], unknown: ["", "Sin SMART"] };
+
+async function refreshHardware() {
+  try { ui.hardware = await api("GET", "/api/hardware"); drawHardware(); } catch { /* sin permiso o desconectado */ }
+}
+
+function drawHardware() {
+  const el = $("#hw-cards"), h = ui.hardware;
+  if (!el || !h) return;
+  const cell = (k, v) => `<div><dt>${k}</dt><dd>${v}</dd></div>`;
+  const temp = (t, warn) => t == null ? '<span class="dim-text">—</span>'
+    : `<span class="${warn && t >= warn ? "warn-text" : ""}">${Math.round(t)}<small> °C</small></span>`;
+  const hours = (n) => n == null ? null : `${n.toLocaleString("es-ES")} h <span class="dim-text">· ${n >= 24 * 365 ? `${(n / 24 / 365).toLocaleString("es-ES", { maximumFractionDigits: 1 })} años` : `${Math.round(n / 24)} días`}</span>`;
+  const disk = (d) => {
+    const [st, label] = HW_STATUS[d.status] || HW_STATUS.unknown;
+    const x = d.details || {};
+    const rows = [
+      cell("Modelo", esc(d.model || d.name)),
+      cell("Tamaño · conexión", `${fmtBytes(d.size)} · ${esc((d.tran || "").toUpperCase() || d.kind)}`),
+      d.mounts.length ? cell("Montado en", `<span class="mono hw-mounts">${d.mounts.map(esc).join(" · ")}</span>`) : "",
+      x.hours != null ? cell("Encendido", hours(x.hours)) : "",
+      x.wear != null ? cell("Desgaste", `<span class="${x.wear >= 70 ? "warn-text" : ""}">${x.wear} %</span>`) : "",
+      x.written ? cell("Escrito", fmtBytes(x.written)) : "",
+      x.reallocated != null ? cell("Sectores reasignados · pendientes", `<span class="${x.reallocated || x.pending ? "warn-text" : ""}">${x.reallocated} · ${x.pending ?? 0}</span>`) : "",
+    ].join("");
+    const why = d.reasons.filter((r) => r.level !== "ok").map((r) => `<p class="git-note${r.level === "danger" ? " bad" : ""}">${esc(r.text)}</p>`).join("");
+    return `<div class="module net-card" data-status="${st}">
+      <div class="net-top"><span class="label">${esc(d.role)} · ${esc(d.kind)} · ${esc(d.name)}</span><span class="status">${label}</span></div>
+      <span class="kpi-value">${temp(d.temp, d.kind === "HDD" ? 50 : 70)}</span>
+      ${why}
+      <dl class="readout">${rows}</dl>
+      <span class="net-foot dim-text">${d.smart_at ? `SMART leído ${fmtAgo(d.smart_at)}${d.sleeping ? " · ahora está dormido" : ""}` : "Sin lectura SMART"}</span>
+    </div>`;
+  };
+  const temps = h.temps.length ? `<div class="module net-card" data-status="${h.temps.some((t) => t.status === "danger") ? "crashed" : h.temps.some((t) => t.status === "warn") ? "starting" : "running"}">
+      <div class="net-top"><span class="label">Temperaturas</span><span class="status">${h.temps.some((t) => t.status !== "ok") ? "Caliente" : "Bien"}</span></div>
+      <dl class="readout">${h.temps.map((t) => cell(t.kind === "cpu" ? "CPU" : "Gráfica", `${temp(t.temp, t.warn)} <span class="dim-text">· límite ${Math.round(t.warn)} °C</span>`)).join("")}</dl>
+      <span class="net-foot dim-text">Se miran cada minuto; avisa si pasan del límite 3 minutos seguidos.</span>
+    </div>` : "";
+  const setup = !h.helper || h.smart_error
+    ? `<div class="module net-card hw-setup" data-perm="admin"><span class="label">Leer el SMART</span>
+        <p>${h.smart_error ? esc(h.smart_error) : "Para ver la salud de los discos hace falta el ayudante de root y smartmontools:"}</p>
+        <pre class="upd-cmd">sudo apt install smartmontools
+cd ${esc(h.base_dir)}
+sudo install -o root -g root -m 755 tools/novahub-sistema /usr/local/sbin/novahub-sistema
+echo "$USER ALL=(root) NOPASSWD: /usr/local/sbin/novahub-sistema" | sudo tee /etc/sudoers.d/novahub-sistema
+sudo chmod 440 /etc/sudoers.d/novahub-sistema</pre>
+        <p class="dim-text">Si ya lo tenías instalado, basta con la línea de <code>install</code>: así coge la orden nueva para leer los discos.</p>
+        ${h.helper ? `<button type="button" class="btn sm" data-hw-refresh>Volver a intentarlo</button>` : ""}</div>`
+    : `<div class="hw-actions" data-perm="admin"><button type="button" class="btn sm" data-hw-refresh ${h.busy ? "disabled" : ""}>Leer SMART ahora</button></div>`;
+  const html = h.disks.map(disk).join("") + temps + setup;
+  if (el._html !== html) { el.innerHTML = html; el._html = html; }
+  const when = $("#hw-when");
+  if (when) when.textContent = h.smart_at ? `SMART cada 30 min · último ${fmtAgo(h.smart_at)}` : "";
 }
 
 async function refreshOverview() {

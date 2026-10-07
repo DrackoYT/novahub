@@ -22,7 +22,17 @@ case "${1:-}" in
     exec $APT install --only-upgrade $pkgs ;;
   reboot)
     exec systemctl reboot ;;
+  discos)    # SMART de cada disco en JSON, solo lectura; no despierta a los discos dormidos
+    if ! command -v smartctl >/dev/null; then echo '{"error":"falta smartctl"}'; exit 0; fi
+    printf '{"disks":['
+    sep=""
+    for d in $(lsblk -dn -o NAME,TYPE | awk '$2 == "disk" && $1 !~ /^(zram|loop|sr)/ {print $1}'); do
+      printf '%s' "$sep"
+      sep=","
+      smartctl --json=c -a -n standby "/dev/$d" || true   # el código de salida es una máscara de avisos: el JSON sale igual
+    done
+    printf ']}\n' ;;
   *)
-    echo "uso: novahub-sistema update|upgrade|security|reboot" >&2
+    echo "uso: novahub-sistema update|upgrade|security|reboot|discos" >&2
     exit 2 ;;
 esac

@@ -6,6 +6,11 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- **Salud de los discos y temperatura** (Resumen): SMART de cada disco cada 30 min con `novahub-sistema discos` (solo
+  lectura, sin despertar discos dormidos), con estado Bien / Atención / Peligro y el motivo (sectores reasignados o
+  pendientes, desgaste del SSD, errores…); temperaturas de CPU, gráfica y NVMe cada minuto. Avisos al móvil y al correo
+  cuando un disco empeora o algo se calienta demasiado. Hay que volver a instalar `novahub-sistema` y `smartmontools`.
+
 ## 1.0.8 — 2026-10-07
 
 - **Pendientes** en la página de Mejoras: una lista de tareas sueltas para hacer a mano (instalar algo, conectar el
