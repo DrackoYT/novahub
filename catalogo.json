@@ -1,0 +1,445 @@
+{
+ "_info": "Catálogo de apps autoalojadas de NovaHub. Marcadores en env, cargs y notas: {secret} (clave aleatoria), {secret:nombre} (la misma clave en varios sitios, p. ej. en las notas), {secret_alnum} (solo letras y números), {url} (dirección pública o de la red local), {host}, {uid}, {gid}, {tz}. «fields» son datos que se piden al instalar (p. ej. la carpeta de las películas).",
+ "apps": [
+  {
+   "id": "vaultwarden",
+   "name": "Vaultwarden",
+   "category": "Privacidad",
+   "replaces": "LastPass, 1Password, Bitwarden en la nube",
+   "desc": "Gestor de contraseñas compatible con las apps y extensiones de Bitwarden.",
+   "ram": 50,
+   "image": "vaultwarden/server:latest",
+   "port": 8222,
+   "cport": 80,
+   "volumes": [
+    "data:/data"
+   ],
+   "env": {
+    "DOMAIN": "{url}",
+    "SIGNUPS_ALLOWED": "true"
+   },
+   "health": "http",
+   "notes": "1. Ábrelo y crea tu cuenta (la contraseña maestra no se puede recuperar: apúntala).\n2. Después, en Editar → Variables, pon SIGNUPS_ALLOWED=false y reinicia para que nadie más pueda registrarse.\n3. Necesita HTTPS: publícalo en internet (Cloudflare Tunnel) para usarlo desde el móvil y las extensiones.\n4. Activa las copias de seguridad del servicio: ahí están todas tus contraseñas (cifradas)."
+  },
+  {
+   "id": "immich",
+   "name": "Immich",
+   "category": "Privacidad",
+   "replaces": "Google Fotos, iCloud Fotos",
+   "desc": "Tus fotos y vídeos: copia automática desde el móvil, caras, mapas y álbumes compartidos.",
+   "ram": 2500,
+   "compose": {
+    "files": {
+     "docker-compose.yml": "https://github.com/immich-app/immich/releases/latest/download/docker-compose.yml",
+     ".env": "https://github.com/immich-app/immich/releases/latest/download/example.env"
+    },
+    "env_file": ".env",
+    "env_set": {
+     "DB_PASSWORD": "{secret_alnum}",
+     "UPLOAD_LOCATION": "./library",
+     "DB_DATA_LOCATION": "./postgres",
+     "TZ": "{tz}"
+    }
+   },
+   "port": 2283,
+   "health": "http",
+   "stop_timeout": 60,
+   "notes": "1. La primera vez descarga varias imágenes (unos 2 GB): mira el progreso en la consola.\n2. Ábrelo y crea la cuenta de administrador.\n3. Instala la app «Immich» en el móvil y pon la dirección del servidor para la copia automática.\n4. Las fotos quedan en library/ dentro de la carpeta del servicio: actívale las copias de seguridad (y las de fuera de casa)."
+  },
+  {
+   "id": "nextcloud",
+   "name": "Nextcloud",
+   "category": "Privacidad",
+   "replaces": "Google Drive, Dropbox, OneDrive",
+   "desc": "Tus archivos sincronizados en todos tus dispositivos, con calendario, contactos y notas.",
+   "ram": 300,
+   "image": "nextcloud:apache",
+   "port": 8380,
+   "cport": 80,
+   "volumes": [
+    "html:/var/www/html"
+   ],
+   "env": {
+    "NEXTCLOUD_TRUSTED_DOMAINS": "{host}",
+    "OVERWRITEPROTOCOL": "https"
+   },
+   "health": "tcp",
+   "stop_timeout": 30,
+   "notes": "1. Ábrelo, crea el usuario administrador y deja la base de datos «SQLite» (suficiente para casa).\n2. Instala las apps de Nextcloud en el móvil y el ordenador.\n3. Si no lo publicas con HTTPS, quita OVERWRITEPROTOCOL en Editar → Variables."
+  },
+  {
+   "id": "radicale",
+   "name": "Radicale",
+   "category": "Privacidad",
+   "replaces": "Google Calendar y Contactos",
+   "desc": "Servidor ligero de calendarios (CalDAV) y contactos (CardDAV) para el móvil y el ordenador.",
+   "ram": 30,
+   "image": "tomsquest/docker-radicale:latest",
+   "port": 5232,
+   "cport": 5232,
+   "volumes": [
+    "data:/data"
+   ],
+   "health": "tcp",
+   "notes": "1. Ábrelo y entra con cualquier usuario y contraseña la primera vez: crea tus calendarios.\n2. En el móvil, usa DAVx⁵ (Android) o Ajustes → Cuentas (iPhone) con la dirección del servidor.\n3. Para usuarios con contraseña, mira la documentación de «docker-radicale» (archivo users en data/)."
+  },
+  {
+   "id": "ntfy",
+   "name": "ntfy",
+   "category": "Privacidad",
+   "replaces": "Notificaciones push de Google",
+   "desc": "Avisos al móvil desde tu servidor (scripts, NovaHub, cámaras…), sin pasar por Google.",
+   "ram": 20,
+   "image": "binwiederhier/ntfy:latest",
+   "port": 8093,
+   "cport": 80,
+   "volumes": [
+    "cache:/var/cache/ntfy",
+    "config:/etc/ntfy"
+   ],
+   "env": {
+    "NTFY_BASE_URL": "{url}",
+    "NTFY_CACHE_FILE": "/var/cache/ntfy/cache.db",
+    "NTFY_BEHIND_PROXY": "true"
+   },
+   "ccmd": "serve",
+   "health": "http",
+   "notes": "1. Instala la app «ntfy» en el móvil (también como APK desde F-Droid, sin Google Play).\n2. En la app, añade tu servidor ({url}) y suscríbete a un tema, p. ej. «casa».\n3. Prueba: curl -d \"Hola\" {url}/casa"
+  },
+  {
+   "id": "searxng",
+   "name": "SearXNG",
+   "category": "Privacidad",
+   "replaces": "Google Search",
+   "desc": "Buscador que reúne resultados de muchos buscadores sin rastrearte ni guardar historial.",
+   "ram": 150,
+   "image": "searxng/searxng:latest",
+   "port": 8888,
+   "cport": 8080,
+   "volumes": [
+    "config:/etc/searxng"
+   ],
+   "env": {
+    "SEARXNG_BASE_URL": "{url}/"
+   },
+   "health": "http",
+   "notes": "1. Ábrelo y búscalo como siempre.\n2. Ponlo como buscador predeterminado en el navegador (en la página: Preferencias)."
+  },
+  {
+   "id": "jellyfin",
+   "name": "Jellyfin",
+   "category": "Multimedia",
+   "replaces": "Netflix, Plex",
+   "desc": "Tus películas y series con carátulas, en la tele, el móvil y el navegador.",
+   "ram": 400,
+   "image": "jellyfin/jellyfin:latest",
+   "port": 8096,
+   "cport": 8096,
+   "volumes": [
+    "config:/config",
+    "cache:/cache"
+   ],
+   "fields": [
+    {
+     "key": "media",
+     "label": "Carpeta de películas y series",
+     "placeholder": "/mnt/dades/pelis",
+     "volume": "{value}:/media:ro"
+    }
+   ],
+   "health": "http",
+   "stop_timeout": 30,
+   "notes": "1. Ábrelo y sigue el asistente: crea tu usuario y añade la biblioteca en /media.\n2. Apps de Jellyfin para Android TV, móvil y navegador."
+  },
+  {
+   "id": "navidrome",
+   "name": "Navidrome",
+   "category": "Multimedia",
+   "replaces": "Spotify",
+   "desc": "Tu música en streaming, compatible con muchas apps (Subsonic).",
+   "ram": 60,
+   "image": "deluan/navidrome:latest",
+   "port": 4533,
+   "cport": 4533,
+   "volumes": [
+    "data:/data"
+   ],
+   "fields": [
+    {
+     "key": "music",
+     "label": "Carpeta de música",
+     "placeholder": "/mnt/dades/musica",
+     "volume": "{value}:/music:ro"
+    }
+   ],
+   "cargs": "--userns=keep-id --user {uid}:{gid}",
+   "health": "http",
+   "notes": "1. Ábrelo y crea el usuario administrador.\n2. En el móvil: Symfonium, Ultrasonic o Tempo, con la dirección del servidor."
+  },
+  {
+   "id": "calibre-web",
+   "name": "Calibre-Web",
+   "category": "Multimedia",
+   "replaces": "Kindle en la nube",
+   "desc": "Tu biblioteca de libros electrónicos para leer y descargar desde cualquier sitio.",
+   "ram": 150,
+   "image": "linuxserver/calibre-web:latest",
+   "port": 8083,
+   "cport": 8083,
+   "volumes": [
+    "config:/config"
+   ],
+   "fields": [
+    {
+     "key": "books",
+     "label": "Carpeta de la biblioteca de Calibre",
+     "placeholder": "/mnt/dades/libros",
+     "volume": "{value}:/books"
+    }
+   ],
+   "env": {
+    "PUID": "{uid}",
+    "PGID": "{gid}",
+    "TZ": "{tz}"
+   },
+   "cargs": "--userns=keep-id",
+   "health": "http",
+   "notes": "1. Usuario admin, contraseña admin123: cámbiala nada más entrar.\n2. Indica /books como carpeta de la base de datos de Calibre (metadata.db)."
+  },
+  {
+   "id": "paperless",
+   "name": "Paperless-ngx",
+   "category": "Productividad",
+   "replaces": "Archivadores de papel, Google Drive para documentos",
+   "desc": "Digitaliza facturas y papeles: los lee (OCR), los clasifica y los encuentras por su texto.",
+   "ram": 700,
+   "compose": {
+    "files": {
+     "docker-compose.yml": "https://raw.githubusercontent.com/paperless-ngx/paperless-ngx/main/docker/compose/docker-compose.sqlite.yml",
+     "docker-compose.env": "https://raw.githubusercontent.com/paperless-ngx/paperless-ngx/main/docker/compose/docker-compose.env"
+    },
+    "env_file": "docker-compose.env",
+    "env_set": {
+     "PAPERLESS_SECRET_KEY": "{secret}",
+     "PAPERLESS_URL": "{url}",
+     "PAPERLESS_TIME_ZONE": "{tz}",
+     "PAPERLESS_OCR_LANGUAGE": "spa",
+     "PAPERLESS_ADMIN_USER": "admin",
+     "PAPERLESS_ADMIN_PASSWORD": "{secret:admin}"
+    }
+   },
+   "port": 8000,
+   "health": "http",
+   "stop_timeout": 60,
+   "notes": "1. La primera vez descarga las imágenes y prepara la base de datos (unos minutos): mira la consola.\n2. Entra con el usuario admin y la contraseña {secret:admin}, y cámbiala en tu perfil.\n3. Sube documentos desde la web o déjalos en la carpeta consume/ del servicio: los lee y los clasifica solo."
+  },
+  {
+   "id": "mealie",
+   "name": "Mealie",
+   "category": "Productividad",
+   "replaces": "Apps de recetas en la nube",
+   "desc": "Recetario de casa: importa recetas de cualquier web, planifica menús y la lista de la compra.",
+   "ram": 250,
+   "image": "ghcr.io/mealie-recipes/mealie:latest",
+   "port": 9925,
+   "cport": 9000,
+   "volumes": [
+    "data:/app/data"
+   ],
+   "env": {
+    "BASE_URL": "{url}",
+    "TZ": "{tz}",
+    "ALLOW_SIGNUP": "false"
+   },
+   "health": "http",
+   "notes": "1. Ábrelo y crea tu cuenta (la primera es la de administrador).\n2. Importa recetas pegando la dirección de cualquier web de cocina."
+  },
+  {
+   "id": "actual",
+   "name": "Actual Budget",
+   "category": "Productividad",
+   "replaces": "Apps de finanzas en la nube",
+   "desc": "Presupuesto y cuentas de casa, rápido y privado (los datos se quedan en tu servidor).",
+   "ram": 80,
+   "image": "actualbudget/actual-server:latest",
+   "port": 5006,
+   "cport": 5006,
+   "volumes": [
+    "data:/data"
+   ],
+   "health": "http",
+   "notes": "1. Ábrelo y elige una contraseña del servidor.\n2. Crea un presupuesto o importa el de otra app (YNAB, CSV…)."
+  },
+  {
+   "id": "freshrss",
+   "name": "FreshRSS",
+   "category": "Productividad",
+   "replaces": "Feedly, Google Reader",
+   "desc": "Lector de noticias y blogs por RSS: todo en un sitio, sin algoritmos.",
+   "ram": 60,
+   "image": "freshrss/freshrss:latest",
+   "port": 8085,
+   "cport": 80,
+   "volumes": [
+    "data:/var/www/FreshRSS/data",
+    "extensions:/var/www/FreshRSS/extensions"
+   ],
+   "env": {
+    "TZ": "{tz}",
+    "CRON_MIN": "*/20"
+   },
+   "health": "http",
+   "notes": "1. Ábrelo y sigue el asistente (base de datos SQLite).\n2. Apps compatibles: Readrops, FeedMe, NetNewsWire…"
+  },
+  {
+   "id": "stirling-pdf",
+   "name": "Stirling-PDF",
+   "category": "Herramientas",
+   "replaces": "iLovePDF, Smallpdf",
+   "desc": "Une, divide, comprime, firma y pasa a texto PDFs sin subirlos a ninguna web.",
+   "ram": 400,
+   "image": "stirlingtools/stirling-pdf:latest",
+   "port": 8484,
+   "cport": 8080,
+   "volumes": [
+    "tessdata:/usr/share/tessdata",
+    "configs:/configs"
+   ],
+   "env": {
+    "DOCKER_ENABLE_SECURITY": "false",
+    "LANGS": "es_ES"
+   },
+   "health": "http",
+   "notes": "Ábrelo y usa la herramienta que necesites: los archivos no salen de tu servidor."
+  },
+  {
+   "id": "filebrowser",
+   "name": "File Browser",
+   "category": "Herramientas",
+   "replaces": "WeTransfer",
+   "desc": "Explorador de archivos web para subir, bajar y compartir archivos de una carpeta del servidor.",
+   "ram": 30,
+   "image": "filebrowser/filebrowser:latest",
+   "port": 8082,
+   "cport": 80,
+   "volumes": [
+    "database:/database",
+    "config:/config"
+   ],
+   "fields": [
+    {
+     "key": "srv",
+     "label": "Carpeta que compartir",
+     "placeholder": "/mnt/dades/compartido",
+     "volume": "{value}:/srv"
+    }
+   ],
+   "health": "http",
+   "notes": "1. La primera vez la contraseña del usuario «admin» sale en la consola del servicio.\n2. Entra, cámbiala y crea enlaces para compartir archivos."
+  },
+  {
+   "id": "syncthing",
+   "name": "Syncthing",
+   "category": "Herramientas",
+   "replaces": "Dropbox (sincronizar carpetas)",
+   "desc": "Sincroniza carpetas entre tus dispositivos directamente, sin nube intermedia.",
+   "ram": 80,
+   "image": "syncthing/syncthing:latest",
+   "port": 8384,
+   "cport": 8384,
+   "volumes": [
+    "data:/var/syncthing"
+   ],
+   "env": {
+    "PUID": "{uid}",
+    "PGID": "{gid}"
+   },
+   "cargs": "--userns=keep-id -p 22000:22000/tcp -p 22000:22000/udp -p 21027:21027/udp",
+   "health": "http",
+   "notes": "1. Ábrelo y ponle usuario y contraseña a la interfaz (Acciones → Ajustes → Interfaz).\n2. Instala Syncthing en el móvil o el PC y enlázalos con su ID de dispositivo."
+  },
+  {
+   "id": "forgejo",
+   "name": "Forgejo",
+   "category": "Herramientas",
+   "replaces": "GitHub, GitLab",
+   "desc": "Tus repositorios de git en casa, con incidencias, pull requests y espejos de GitHub.",
+   "ram": 200,
+   "image": "codeberg.org/forgejo/forgejo:15",
+   "port": 3030,
+   "cport": 3000,
+   "volumes": [
+    "data:/data"
+   ],
+   "env": {
+    "USER_UID": "{uid}",
+    "USER_GID": "{gid}",
+    "FORGEJO__server__ROOT_URL": "{url}/"
+   },
+   "cargs": "--userns=keep-id -p 2222:22",
+   "health": "http",
+   "stop_timeout": 30,
+   "notes": "1. Ábrelo y completa la instalación (base de datos SQLite); el primer usuario es administrador.\n2. git por SSH en el puerto 2222.\n3. Para espejar un repositorio de GitHub: + → Nueva migración."
+  },
+  {
+   "id": "home-assistant",
+   "name": "Home Assistant",
+   "category": "Domótica",
+   "replaces": "Apps de cada marca (Tapo, Xiaomi, Philips…)",
+   "desc": "Toda la domótica de casa en un panel: luces, enchufes, sensores y automatizaciones.",
+   "ram": 400,
+   "image": "ghcr.io/home-assistant/home-assistant:stable",
+   "port": 8123,
+   "cport": 8123,
+   "volumes": [
+    "config:/config"
+   ],
+   "env": {
+    "TZ": "{tz}"
+   },
+   "cargs": "--network=host",
+   "health": "http",
+   "stop_timeout": 30,
+   "notes": "1. Ábrelo y crea tu cuenta.\n2. Usa la red del servidor directamente (--network=host) para encontrar los dispositivos de casa.\n3. Integraciones → añade Tapo, Chromecast, etc."
+  },
+  {
+   "id": "uptime-kuma",
+   "name": "Uptime Kuma",
+   "category": "Monitorización",
+   "replaces": "UptimeRobot, Pingdom",
+   "desc": "Vigila tus webs y servicios y te avisa si caen (correo, ntfy…).",
+   "ram": 120,
+   "image": "louislam/uptime-kuma:1",
+   "port": 3001,
+   "cport": 3001,
+   "volumes": [
+    "data:/app/data"
+   ],
+   "health": "http",
+   "notes": "1. Ábrelo y crea el administrador.\n2. Añade monitores para tus webs y elige cómo avisarte (ntfy funciona sin terceros)."
+  },
+  {
+   "id": "minecraft",
+   "name": "Minecraft (Paper)",
+   "category": "Juegos",
+   "replaces": "Realms y hostings de pago",
+   "desc": "Servidor de Minecraft Java para jugar con los amigos.",
+   "ram": 2500,
+   "image": "itzg/minecraft-server:latest",
+   "port": 25565,
+   "cport": 25565,
+   "volumes": [
+    "data:/data"
+   ],
+   "env": {
+    "EULA": "TRUE",
+    "TYPE": "PAPER",
+    "MEMORY": "2G",
+    "TZ": "{tz}"
+   },
+   "health": "tcp",
+   "stop_timeout": 60,
+   "notes": "1. La primera vez descarga el servidor: mira la consola.\n2. En Minecraft: Multijugador → Añadir servidor → la IP del servidor.\n3. Para jugar desde fuera de casa hace falta abrir el puerto 25565 en el router o usar Tailscale (el túnel de Cloudflare es solo para webs)."
+  }
+ ]
+}

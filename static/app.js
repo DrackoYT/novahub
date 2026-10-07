@@ -2915,6 +2915,7 @@ function drawDetail(s) {
         ${s.last_update ? cell("Última actualización", `<span class="${s.last_update.ok ? "" : "bad-text"}">${esc(s.last_update.msg)}</span> <span class="dim-text">· ${fmtAgo(s.last_update.at)}</span>`) : ""}
       </dl>
     </div>
+    ${s.notes ? `<div class="module first-steps"><span class="label">Primeros pasos</span><p>${esc(s.notes)}</p></div>` : ""}
     <div class="module" data-perm="edit">
       <span class="label">Configuración</span>
       <dl class="readout">
@@ -3221,14 +3222,92 @@ function confirmDialog(title, text, okLabel) {
 // #/nuevo: qué añadir. #/nuevo/<tipo> y #/s/<id>/editar: el formulario a página completa, con un resumen en vivo.
 
 const KIND_SLUG = { programa: "process", contenedor: "container", compose: "compose" };
-const CONTAINER_PRESETS = {
-  kuma: { label: "Uptime Kuma", sub: "Vigila tus webs y te avisa si caen", name: "Uptime Kuma", image: "louislam/uptime-kuma:1", port: 3001, cport: 3001,
-    volumes: "data:/app/data", cwd: "~/contenedores/uptime-kuma" },
-  nginx: { label: "Web estática", sub: "nginx sirviendo una carpeta", name: "Web estática", image: "nginx:alpine", port: 8080, cport: 80,
-    volumes: "html:/usr/share/nginx/html:ro", cwd: "~/contenedores/web" },
-  minecraft: { label: "Minecraft (Paper)", sub: "Servidor de Minecraft Java", name: "Minecraft", image: "itzg/minecraft-server", port: 25565, cport: 25565,
-    volumes: "data:/data", cwd: "~/contenedores/minecraft", env: { EULA: "TRUE", TYPE: "PAPER", MEMORY: "2G" }, stop_timeout: 60, health_check: "tcp" },
-};
+// ───────────────────────── catálogo de apps ─────────────────────────
+
+const CAT_COLORS = { Privacidad: "#7b4dff", Multimedia: "#e05a86", Productividad: "#1fa3a8", Herramientas: "#e8792b",
+  Domótica: "#5aa82a", Monitorización: "#3d7be0", Juegos: "#e0b400" };
+const appIcon = (a) => `<span class="app-ico" style="--c:${CAT_COLORS[a.category] || "#8a7fa0"}">${esc(a.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 2))}</span>`;
+const appCard = (a) => `<button type="button" class="module app-card" data-app="${esc(a.id)}">
+    <span class="app-top">${appIcon(a)}<span><strong>${esc(a.name)}</strong><small>${esc(a.category)}${a.installed.length ? " · instalada" : ""}</small></span></span>
+    <span class="app-desc">${esc(a.desc)}</span>
+    ${a.replaces ? `<span class="app-rep">En lugar de: ${esc(a.replaces)}</span>` : ""}
+    <span class="app-meta">${a.kind === "compose" ? "varios contenedores · " : ""}~${a.ram >= 1000 ? `${(a.ram / 1000).toFixed(1)} GB` : `${a.ram} MB`} de RAM</span>
+  </button>`;
+
+async function loadCatalog() {
+  if (!ui.catalog) ui.catalog = await api("GET", "/api/catalog");
+  return ui.catalog;
+}
+
+async function viewCatalog() {
+  $("#main").innerHTML = `
+    <a class="back" href="#/nuevo">${ICON.back}Nuevo servicio</a>
+    <section class="page-head"><div><h1 class="page-title">Catálogo de apps</h1>
+      <p class="page-sub">Alternativas propias a servicios de empresas, ya configuradas: un clic y se instalan en tu servidor</p></div></section>
+    <div id="cat-page"><div class="pane-msg">Cargando…</div></div>`;
+  let cat;
+  try { ui.catalog = null; cat = await loadCatalog(); } catch (e) { $("#cat-page").innerHTML = `<div class="pane-msg bad-text">${esc(e.message)}</div>`; return; }
+  const cats = [...new Set(cat.apps.map((a) => a.category))];
+  let filter = "", q = "";
+  const draw = () => {
+    const list = cat.apps.filter((a) => (!filter || a.category === filter)
+      && (!q || `${a.name} ${a.desc} ${a.replaces} ${a.category}`.toLowerCase().includes(q)));
+    $("#cat-grid").innerHTML = list.map(appCard).join("") || '<p class="dim-text">Nada coincide con la búsqueda.</p>';
+    $("#cat-chips").querySelectorAll("[data-cat]").forEach((b) => b.classList.toggle("active", b.dataset.cat === filter));
+  };
+  $("#cat-page").innerHTML = `
+    ${cat.podman ? "" : '<p class="git-note">Hace falta Podman: <code>sudo apt install podman podman-compose passt uidmap</code></p>'}
+    <section class="toolbar">
+      <label class="search">${ICON.search}<input id="cat-q" type="search" placeholder="Buscar (p. ej. «fotos», «Netflix»)…" aria-label="Buscar app"></label>
+      <div class="filters" id="cat-chips"><button class="chip" data-cat="">Todas</button>${cats.map((c) => `<button class="chip" data-cat="${esc(c)}">${esc(c)}</button>`).join("")}</div>
+    </section>
+    <div class="app-grid" id="cat-grid"></div>`;
+  $("#cat-q").addEventListener("input", (e) => { q = e.target.value.trim().toLowerCase(); draw(); });
+  $("#cat-chips").addEventListener("click", (e) => { const b = e.target.closest("[data-cat]"); if (b) { filter = b.dataset.cat; draw(); } });
+  $("#cat-grid").addEventListener("click", (e) => { const b = e.target.closest("[data-app]"); if (b) installApp(cat, b.dataset.app); });
+  draw();
+}
+
+function installApp(cat, id) {
+  const a = cat.apps.find((x) => x.id === id);
+  const dlg = modal(`
+    <form id="app-form" novalidate>
+      <header><h2>${appIcon(a)} Instalar ${esc(a.name)}</h2><button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
+      <div class="body">
+        <p class="dim-text">${esc(a.desc)}</p>
+        ${a.installed.length ? `<p class="git-note">Ya está instalada (${a.installed.map(esc).join(", ")}). Puedes instalar otra copia con otro nombre, carpeta y puerto.</p>` : ""}
+        <div class="form-error" id="app-error"></div>
+        <label class="field"><span>Nombre</span><input name="name" value="${esc(a.name)}"></label>
+        <div class="row2 even">
+          <label class="field"><span>Carpeta</span><input name="cwd" class="mono" spellcheck="false" value="${esc(cat.apps_dir)}/${esc(a.id)}${a.installed.length ? `-${a.installed.length + 1}` : ""}">
+            <small>Ahí quedan sus datos (y entran en las copias de seguridad).</small></label>
+          <label class="field"><span>Puerto</span><input name="port" inputmode="numeric" placeholder="${a.port} (o el siguiente libre)"></label>
+        </div>
+        ${(a.fields || []).map((f) => `<label class="field"><span>${esc(f.label)}</span><input name="f-${esc(f.key)}" class="mono" spellcheck="false" placeholder="${esc(f.placeholder || "")}">
+          <small>Opcional: también puedes añadirla después en Editar → Carpetas.</small></label>`).join("")}
+        ${cat.domain ? `<label class="field"><span>Publicar en internet</span><div class="affix"><input name="subdomain" class="mono" spellcheck="false" autocapitalize="off" placeholder="${esc(a.id)}"><span>.${esc(cat.domain)}</span></div>
+          <small>Con HTTPS por el túnel de Cloudflare. Vacío = solo en casa.</small></label>` : ""}
+        <label class="chk-line"><input type="checkbox" name="start" checked> Encenderla al terminar (la primera vez descarga la imagen: mira la consola)</label>
+      </div>
+      <footer><button type="button" class="btn ghost" data-close>Cancelar</button><button type="submit" class="btn primary">${ICON.download}Instalar</button></footer>
+    </form>`);
+  const f = $("#app-form", dlg);
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = f.querySelector("[type=submit]");
+    btn.disabled = true;
+    const fields = {};
+    (a.fields || []).forEach((x) => { fields[x.key] = f.elements[`f-${x.key}`].value; });
+    try {
+      const s = await api("POST", "/api/catalog/install", { app: a.id, name: f.name.value.trim(), cwd: f.cwd.value.trim(), port: f.port.value.trim(),
+        subdomain: f.subdomain?.value.trim() || "", fields, start: f.start.checked });
+      dlg.close();
+      ui.catalog = null;
+      toast(`${a.name} instalada${s.notice ? `. ${s.notice}` : ""}`, "ok");
+      location.hash = `#/s/${s.id}`;
+    } catch (err) { $("#app-error", dlg).textContent = err.message; btn.disabled = false; }
+  });
+}
 
 function viewNew() {
   $("#main").innerHTML = `
@@ -3244,17 +3323,19 @@ function viewNew() {
       <a class="module new-card" href="#/nuevo/programa">${ICON.plus}<strong>Programa</strong>
         <small>Un comando de algo que ya está en el servidor: npm start, python bot.py, java -jar…</small></a>
     </div>
-    <div class="section-title"><h2>Contenedores listos para usar</h2></div>
-    <div class="new-presets">${Object.entries(CONTAINER_PRESETS).map(([k, p]) => `
-      <button type="button" class="module preset-card" data-preset="${k}"><strong>${esc(p.label)}</strong><small>${esc(p.sub)}</small>
-        <code>${esc(p.image)}</code></button>`).join("")}
-    </div></div>`;
+    <div class="section-title"><h2>Catálogo de apps</h2><a href="#/nuevo/catalogo">Ver todas →</a></div>
+    <div class="app-grid" id="new-apps"><div class="pane-msg">Cargando…</div></div></div>`;
+  loadCatalog().then((cat) => {
+    const featured = ["vaultwarden", "immich", "jellyfin", "nextcloud", "ntfy", "uptime-kuma"];
+    const el = $("#new-apps");
+    if (el) el.innerHTML = featured.map((id) => cat.apps.find((a) => a.id === id)).filter(Boolean).map(appCard).join("");
+  }).catch(() => { const el = $("#new-apps"); if (el) el.innerHTML = ""; });
   $("#new-page").addEventListener("click", (e) => {
     const n = e.target.closest("[data-new]")?.dataset.new;
     if (n === "github") openGithub();
     if (n === "template") openTemplates();
-    const p = e.target.closest("[data-preset]")?.dataset.preset;
-    if (p) { ui.formPrefill = { kind: "container", ...CONTAINER_PRESETS[p] }; location.hash = "#/nuevo/contenedor"; }
+    const app = e.target.closest("[data-app]")?.dataset.app;
+    if (app && ui.catalog) installApp(ui.catalog, app);
   });
 }
 
@@ -3471,12 +3552,13 @@ function route() {
   clearView();
   const hash = location.hash;
   const m = hash.match(/^#\/s\/([a-z0-9-]+)(\/editar)?$/);
-  const nm = hash.match(/^#\/nuevo(?:\/(programa|contenedor|compose))?$/);
+  const nm = hash.match(/^#\/nuevo(?:\/(programa|contenedor|compose|catalogo))?$/);
   let section = "overview";
   const adminOnly = (m && m[2]) || nm || ["#/procesos", "#/red", "#/mejoras"].includes(hash);
   if ((adminOnly && !can("admin")) || (hash === "#/mejoras" && !ui.hasRoadmap)) { viewNoAccess(); section = ""; }
   else if (m && m[2]) { viewServiceForm({ id: m[1] }); section = "services"; }
   else if (m) { viewDetail(m[1]); section = "services"; }
+  else if (nm && nm[1] === "catalogo") { viewCatalog(); section = "services"; }
   else if (nm && nm[1]) { viewServiceForm({ kind: KIND_SLUG[nm[1]] }); section = "services"; }
   else if (nm) { viewNew(); section = "services"; }
   else if (hash === "#/servicios") { viewList(); section = "services"; }

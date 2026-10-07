@@ -6,6 +6,12 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- **Catálogo de apps** (Nuevo servicio → Catálogo de apps): 20 apps autoalojadas ya configuradas (Vaultwarden, Immich,
+  Nextcloud, Radicale, ntfy, SearXNG, Jellyfin, Navidrome, Calibre-Web, Paperless-ngx, Mealie, Actual Budget, FreshRSS,
+  Stirling-PDF, File Browser, Syncthing, Forgejo, Home Assistant, Uptime Kuma y Minecraft), con búsqueda y categorías.
+  Instalar elige un puerto libre, genera las claves, descarga el compose oficial si hace falta, lo publica si quieres y lo
+  arranca; la ficha muestra los primeros pasos. Definido en `catalogo.json`.
+
 ## 1.0.2 — 2026-10-06
 
 - **Copias fuera de casa** (Ajustes → Copias fuera de casa): copias cifradas con restic de las copias locales y de la

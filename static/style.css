@@ -529,6 +529,22 @@ kbd { font: 500 10.5px var(--f-mono); padding: 1px 5px; border-radius: 4px; back
 @media (max-width: 1000px) { .new-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .sf-layout { grid-template-columns: 1fr; } .sf-summary { position: static; } }
 @media (max-width: 640px) { .new-grid, .new-presets { grid-template-columns: 1fr; } .sf-sect { padding: 16px; } .sf-actions { bottom: calc(70px + env(safe-area-inset-bottom)); } }
 
+/* catálogo de apps */
+.app-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; }
+.app-card { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 16px 18px; border: 0; text-align: left; cursor: pointer;
+  color: inherit; font: inherit; transition: transform .12s, box-shadow .12s; }
+.app-card:hover { transform: translateY(-2px); box-shadow: inset 0 1px 0 var(--module-hi), 0 4px 0 var(--edge); }
+.app-top { display: flex; align-items: center; gap: 12px; }
+.app-top strong { display: block; font-size: 16px; }
+.app-top small { color: var(--soft); font-size: 12.5px; }
+.app-ico { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 11px; background: var(--c); color: #fff;
+  font: 800 15px var(--f-brand); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, .18); }
+dialog .app-ico { width: 30px; height: 30px; border-radius: 8px; font-size: 12px; display: inline-grid; vertical-align: middle; margin-right: 6px; }
+.app-desc { font-size: 14px; line-height: 1.45; }
+.app-rep { font-size: 12.5px; color: var(--nova-text); font-weight: 600; }
+.app-meta { font-size: 12px; color: var(--faint); margin-top: auto; }
+.first-steps p { margin: 8px 0 0; white-space: pre-line; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+
 /* tipo de servicio y contenedores */
 .kind-pick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .kind-pick label { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: var(--r-sm); border: 1px solid var(--line-hi);

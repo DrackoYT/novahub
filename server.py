@@ -269,7 +269,7 @@ def container_command(sid, svc):
         # down primero: si NovaHub se cerró de golpe, los contenedores anteriores no estorban
         return f"{base} down >/dev/null 2>&1; exec {base} up"
     parts = ["exec podman run --rm --replace -i", f"--name {q(container_name(sid))}", f"--label novahub.service={q(sid)}"]
-    if svc.get("port"):
+    if svc.get("port") and not re.search(r"--network[= ]host\b", svc.get("cargs") or ""):
         parts.append(f"-p {svc['port']}:{svc.get('cport') or svc['port']}")
     root = os.path.realpath(os.path.expanduser(svc.get("cwd") or "~"))
     for host, path, ro in parse_volumes(svc.get("volumes")):
@@ -4304,6 +4304,131 @@ class Remotes:
 REMOTES = Remotes()
 
 
+# ───────────────────────────── catálogo de apps ─────────────────────────────
+# Apps autoalojadas ya configuradas (catalogo.json): instalar crea un servicio de tipo contenedor o compose con sus
+# puertos, carpetas y claves generadas, y lo arranca. Las apps de varios contenedores descargan su compose oficial.
+
+CATALOG_FILE = os.path.join(BASE_DIR, "catalogo.json")
+APPS_DIR = os.path.expanduser(os.environ.get("NOVAHUB_APPS_DIR", "~/apps"))
+
+
+def local_tz():
+    try:
+        return os.path.realpath("/etc/localtime").split("zoneinfo/")[1]
+    except (IndexError, OSError):
+        return "UTC"
+
+
+class Catalog:
+    def __init__(self):
+        self.apps = {a["id"]: a for a in read_json(CATALOG_FILE, {}).get("apps", [])}
+
+    def public(self):
+        installed = {}
+        for sid, s in MANAGER.services.items():
+            if s.get("catalog"):
+                installed.setdefault(s["catalog"], []).append(sid)
+        keys = ("id", "name", "category", "replaces", "desc", "ram", "port", "fields")
+        return {"apps": [{**{k: a.get(k) for k in keys}, "kind": "compose" if a.get("compose") else "container",
+                          "installed": installed.get(a["id"], [])} for a in self.apps.values()],
+                "podman": bool(shutil.which("podman")), "compose": bool(shutil.which("podman-compose")),
+                "apps_dir": APPS_DIR, "domain": PUBLISHER.domain if PUBLISHER.enabled else None}
+
+    @staticmethod
+    def free_port(want):
+        used = {s.get("port") for s in MANAGER.services.values()} | listening_ports()
+        used |= {gateway_port(p) for p in used if p}
+        port = want
+        while port in used and port < want + 100:
+            port += 1
+        return port
+
+    def install(self, data):
+        app = self.apps.get(str(data.get("app") or ""))
+        if not app:
+            raise ApiError(404, "Esa app no está en el catálogo")
+        if not shutil.which("podman") or (app.get("compose") and not shutil.which("podman-compose")):
+            raise ApiError(400, "Hace falta Podman: sudo apt install podman podman-compose passt uidmap")
+        name = re.sub(r"[\x00-\x1f\x7f]", "", str(data.get("name") or app["name"])).strip()[:60] or app["name"]
+        cwd = os.path.expanduser(str(data.get("cwd") or "").strip() or os.path.join(APPS_DIR, app["id"]))
+        if os.path.isdir(cwd) and os.listdir(cwd) and not data.get("reuse"):
+            raise ApiError(409, f"La carpeta {cwd} ya tiene archivos: elige otra (o es la de una instalación anterior)")
+        try:
+            port = int(data.get("port") or self.free_port(app["port"]))
+        except (TypeError, ValueError):
+            raise ApiError(400, "El puerto debe ser un número")
+        sub = str(data.get("subdomain") or "").strip().lower()
+        url = f"https://{sub}.{PUBLISHER.domain}" if sub and PUBLISHER.enabled else f"http://{lan_ip() or '127.0.0.1'}:{port}"
+        secrets_named = {}
+
+        def fill(text):
+            def rep(m):
+                key = m.group(1)
+                if key == "secret":
+                    return secrets.token_urlsafe(24)
+                if key == "secret_alnum":
+                    return secrets.token_hex(16)
+                if key.startswith("secret:"):
+                    return secrets_named.setdefault(key, secrets.token_urlsafe(12))
+                return {"url": url, "host": urlparse(url).hostname or "", "uid": str(os.getuid()), "gid": str(os.getgid()),
+                        "tz": local_tz()}.get(key, m.group(0))
+            return re.sub(r"\{(secret(?::\w+)?|secret_alnum|url|host|uid|gid|tz)\}", rep, str(text))
+
+        volumes = [fill(v) for v in app.get("volumes", [])]
+        for f in app.get("fields", []):
+            val = str((data.get("fields") or {}).get(f["key"]) or "").strip()
+            if val:
+                val = os.path.expanduser(val)
+                if not os.path.isdir(val):
+                    raise ApiError(400, f"No existe la carpeta «{val}» ({f['label']})")
+                volumes.append(f["volume"].replace("{value}", val))
+        os.makedirs(cwd, mode=0o755, exist_ok=True)
+        body = {"name": name, "description": app["desc"], "tags": [app["category"]], "cwd": cwd, "port": port,
+                "autostart": True, "restart_on_crash": True, "health_check": app.get("health", "auto"),
+                "stop_timeout": app.get("stop_timeout", 20)}
+        if app.get("compose"):
+            c = app["compose"]
+            import urllib.request
+            for fname, src in c["files"].items():
+                try:
+                    with urllib.request.urlopen(urllib.request.Request(src, headers={"User-Agent": "NovaHub"}), timeout=60) as r:
+                        content = r.read(2_000_000).decode("utf-8")
+                except Exception as e:  # noqa: BLE001
+                    raise ApiError(502, f"No se pudo descargar {fname} de {app['name']}: {e}")
+                if fname == c.get("env_file"):
+                    lines = content.splitlines()
+                    for key, val in c.get("env_set", {}).items():
+                        val = fill(val)
+                        hit = [i for i, l in enumerate(lines) if re.match(rf"\s*#?\s*{re.escape(key)}=", l)]
+                        if hit:
+                            lines[hit[0]] = f"{key}={val}"
+                        else:
+                            lines.append(f"{key}={val}")
+                    content = "\n".join(lines) + "\n"
+                fd = os.open(os.path.join(cwd, fname), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if fname == c.get("env_file") else 0o644)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+            body.update(kind="compose", compose_file="docker-compose.yml" if "docker-compose.yml" in c["files"] else "")
+        else:
+            body.update(kind="container", image=app["image"], cport=app.get("cport"), volumes="\n".join(volumes),
+                        env={k: fill(v) for k, v in app.get("env", {}).items()}, cargs=fill(app.get("cargs", "")), ccmd=app.get("ccmd", ""))
+        if sub:
+            body["subdomain"] = sub
+        extra, notice = PUBLISHER.apply(None, None, normalize_service(body), body)
+        extra.update(catalog=app["id"], notes=fill(app.get("notes", "")))
+        sid = MANAGER.create(body, extra)
+        MANAGER.log(sid, f"\x1b[35minstalado desde el catálogo: {app['name']}\x1b[0m")
+        if data.get("start", True):
+            try:
+                MANAGER.start(sid)
+            except ApiError as e:
+                MANAGER.log(sid, f"\x1b[31mno se pudo arrancar: {e.msg}\x1b[0m")
+        return {**MANAGER.get_public(sid), "notice": notice}
+
+
+CATALOG = Catalog()
+
+
 # ───────────────────────────── copias fuera de casa ─────────────────────────────
 # Las copias locales (novahub-copias) y la configuración de NovaHub (data/) van cifradas con restic a un disco USB o a
 # otro servidor tuyo por SSH (p. ej. por Tailscale). Sin servicios de terceros ni suscripciones. Copia diaria con
@@ -5598,7 +5723,7 @@ class Handler(BaseHTTPRequestHandler):
         """Lo que ve cada usuario de un servicio: sin comando, rutas ni variables si no es administrador."""
         if self.can("edit"):
             return data
-        hidden = ("command", "dev_command", "cwd", "env", "volumes", "cargs", "ccmd", "compose_file", "stop_command", "tasks", "backup_cfg")
+        hidden = ("command", "dev_command", "cwd", "env", "volumes", "cargs", "ccmd", "compose_file", "stop_command", "tasks", "backup_cfg", "notes")
         return {k: v for k, v in data.items() if k not in hidden}
 
     # ── enrutado ──
@@ -5742,6 +5867,10 @@ class Handler(BaseHTTPRequestHandler):
             if method == "PUT":
                 return self.send_json(set_git_identity(self.read_body()))
             raise ApiError(405, "Método no permitido")
+        if path == "/api/catalog" and method == "GET":
+            return self.send_json(CATALOG.public())
+        if path == "/api/catalog/install" and method == "POST":
+            return self.send_json(CATALOG.install(self.read_body()), 201)
         if path == "/api/offsite":
             if method == "GET":
                 return self.send_json(OFFSITE.public())

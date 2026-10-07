@@ -284,6 +284,24 @@ cambiarles el rol o los servicios y borrarlos; cada uno cambia su contraseña en
 - La primera vez, la contraseña única de antes pasa a ser la del usuario administrador con el nombre del usuario
   del sistema.
 
+## Catálogo de apps
+
+Nuevo servicio → **Catálogo de apps**: alternativas propias a servicios de empresas, ya configuradas (puertos, carpetas,
+variables y claves generadas). Un clic las instala como un servicio más (contenedor o compose), con copias de seguridad,
+salud, gráficas y publicación como cualquier otro, y en su ficha salen los **primeros pasos**.
+
+| Categoría | Apps |
+|---|---|
+| Privacidad | Vaultwarden (contraseñas), Immich (fotos), Nextcloud (archivos), Radicale (calendario y contactos), ntfy (avisos al móvil), SearXNG (buscador) |
+| Multimedia | Jellyfin (películas y series), Navidrome (música), Calibre-Web (libros) |
+| Productividad | Paperless-ngx (documentos), Mealie (recetas), Actual Budget (finanzas), FreshRSS (noticias) |
+| Herramientas | Stirling-PDF, File Browser, Syncthing, Forgejo (git propio) |
+| Otras | Home Assistant (domótica), Uptime Kuma (vigilancia), Minecraft |
+
+El catálogo es [`catalogo.json`](catalogo.json): añadir una app es añadir una entrada (imagen, puertos, carpetas, variables
+con marcadores como `{secret}` o `{url}`, y notas). Las apps de varios contenedores descargan su compose oficial.
+Las carpetas van por defecto a `~/apps/<app>` (`NOVAHUB_APPS_DIR`).
+
 ## Contenedores (Podman)
 
 Además de programas (un comando), un servicio puede ser un **contenedor** (una imagen de Docker Hub u otro
@@ -458,6 +476,7 @@ Se habla con el enchufe por la red local: no hace falta Alexa ni la nube.
 server.py          backend (API + gestor de procesos + consola por SSE)
 static/            interfaz web (HTML/CSS/JS sin frameworks) y app para el móvil (manifiesto, sw.js, iconos)
 serve.py           servidor estático del modo producción
+catalogo.json      catálogo de apps autoalojadas (imagen, puertos, carpetas, variables y notas)
 updater.py         actualiza NovaHub desde fuera y vuelve atrás si la versión nueva no arranca
 logsearch.py       búsqueda en los logs (las expresiones regulares van en un proceso aparte con límite de tiempo)
 tapo.py            control del enchufe Tapo
