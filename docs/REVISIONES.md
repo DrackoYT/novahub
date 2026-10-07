@@ -5,11 +5,11 @@ Sirve para que cada revisión nueva cubra solo lo que ha cambiado desde la anter
 
 ## Cómo saber qué hay que revisar
 
-**Revisado hasta el commit: `2f6dcee`** (versión **1.0**, la primera pública, etiqueta `v1.0`) (se actualiza al cerrar cada revisión; editar este documento
+**Revisado hasta el commit: `d1ca29b`** (versión **1.0.15**, revisión 6) (se actualiza al cerrar cada revisión; editar este documento
 por otros motivos no cambia este valor). Para ver lo que ha cambiado desde entonces:
 
 ```bash
-BASE=2f6dcee
+BASE=d1ca29b
 git diff --stat "$BASE"..HEAD        # qué archivos han cambiado
 git diff "$BASE"..HEAD -- server.py  # el detalle de un archivo
 ```
@@ -26,15 +26,16 @@ pieza marcada como *invariante de seguridad*, hay que revisar esa pieza entera, 
 | 3 | 2026-10-06 | **Incremental**: modo producción, sesiones, editor, copias, gráficas y vista de red | `92ee43d..72eae4a` | 7 corregidos |
 | 4 | 2026-10-06 | **Incremental**: PWA, tareas programadas, búsqueda en logs, `.env`, identidad de git, ajustes como página | `72eae4a..0d96648` | 5 corregidos |
 | 5 | 2026-10-06 | **v1.0**: contenedores, páginas de servicio, usuarios y permisos, varios servidores; todos los invariantes repetidos; historial de git revisado para publicarlo | `0d96648..aae4582` | 2 corregidos |
+| 6 | 2026-10-07 | **1.0.1–1.0.14**: actualizaciones, copias fuera de casa, catálogo (Vaultwarden, Immich), ntfy, discos, dos pasos y QR, documentación, actividad, pendientes; matriz de permisos con 4 perfiles, ataques al Markdown y regresión de la interfaz | `2f6dcee..d1ca29b` | 8 corregidos |
 
 ---
 
 ## Inventario: qué está revisado
 
-Estado de cada pieza tras la revisión 5 (v1.0). «R1» = revisada entera en la revisión 1 y sin cambios
-desde entonces; «R2»…«R5» = cambiada o añadida después y revisada en esa revisión.
+Estado de cada pieza tras la revisión 6. «R1» = revisada entera en la revisión 1 y sin cambios
+desde entonces; «R2»…«R6» = cambiada o añadida después y revisada en esa revisión.
 
-### `server.py` (backend, ~5.300 líneas)
+### `server.py` (backend, ~7.900 líneas)
 
 | Pieza | Estado | Notas |
 |---|---|---|
@@ -69,13 +70,25 @@ desde entonces; «R2»…«R5» = cambiada o añadida después y revisada en esa
 | Despliegue: `gh_repos`, `detect_project`, `project_dir`, `install_steps`, `Deployer` | R1 + R3 | R3: modo producción (`set_mode`, `_to_prod`, `_build`, `_publish_build`, `prod_command`, `build_info`) |
 | Plantillas (`TEMPLATES`, `template_create`, `_template_job`, `download_paper`) | R1 | |
 | `Handler` (rutas, cabeceras, cookies, estáticos, SSE) | R1 + R2 + R3 + R4 | R3: renovación de sesión, `/api/session-settings`, `/api/network`, `/api/metrics`, `mode`, `file` (PUT), `backups*`. R4: `/api/git-identity`, `tasks*`, `logs/search`, `env`; MIME del manifiesto |
+| Centro de actualizaciones: `Updates`, `semver`, `current_commit`, `Power.reboot` | R6 | Solo modos de una lista cerrada (`security`/`upgrade`, `image`/`git`/`deps`); lo de root pasa por `tools/novahub-sistema` con sudo |
+| Copias fuera de casa: `Offsite`, `restic_bin`, `fstab_mount_for` | R6 | Usuario y servidor SFTP validados (no pueden ser opciones de `ssh`), carpeta remota sin `..`; contraseñas de restic nunca devueltas; destino USB sin montar = no conectado |
+| Catálogo: `Catalog` (instalar, registro de cuentas, carpeta grande), `catalogo.json` | R6 | Marcadores fijos; descarga de compose oficial con límite de 2 MB; `.env` con 600; `watch` cierra el registro de Vaultwarden |
+| ntfy: `Notifier.*ntfy*`, `ntfy_setup` | R6 | La llave nunca sale por la API; publica por 127.0.0.1 |
+| Contenedores: `kill_container_orphans` | R6 | Solo procesos propios y solo si Podman confirma que no conoce el contenedor ni el puerto |
+| Salud: `probe`, `Gateway.connect` (IPv4 y luego IPv6), margen de los contenedores hasta su primera respuesta | R6 | |
+| Discos: `Hardware`, `read_hwmon`, `lsblk_disks`, `evaluate_smart` | R6 | SMART con `novahub-sistema discos` (sin parámetros); sin serie ni rutas para quien no administra |
+| Dos pasos: `totp_code`, `totp_match`, `qr_matrix`/`qr_svg`, `Auth.second_factor`/`totp_*`/`reset_totp`, política `admin_totp` | R6 | Invariante de seguridad (1). Vectores del RFC 6238; QR leído por un lector real (versiones 1–10) |
+| Copias SQLite coherentes: `is_sqlite`, `sqlite_copy` | R6 | |
+| Documentación: `Docs`, `fold` | R6 | Solo páginas del índice; imágenes solo de `docs/` |
+| Actividad: `Activity`, `describe_action`, `ACTIVITY_RULES`, `Handler.log_activity` | R6 | Nunca secretos: solo campos de una lista; credenciales quitadas de las URL |
+| Pendientes: `Roadmap.todos`/`*_todo` | R6 | Solo administradores |
 | `main`, `panel_url` | R2 + R3 + R4 | R3: hilos `copias` y `graficas`; guarda las métricas al cerrar. R4: hilo `tareas` |
 
 ### Otros archivos
 
 | Archivo | Estado | Notas |
 |---|---|---|
-| `static/app.js` | R1 + R2 + R3 + R4 + R5 | R3: sesión y bloqueo, editor con resaltado, modo producción, pestaña Copias, gráficas SVG, vista Red. R4: PWA (registro, instalar, sin conexión), Tareas, búsqueda en la consola, Variables, Ajustes como página |
+| `static/app.js` | R1 + R2 + R3 + R4 + R5 + R6 | R6: intérprete de Markdown propio (`mdRender`), Docs, Actividad, dos pasos, Pendientes, discos, catálogo | R3: sesión y bloqueo, editor con resaltado, modo producción, pestaña Copias, gráficas SVG, vista Red. R4: PWA (registro, instalar, sin conexión), Tareas, búsqueda en la consola, Variables, Ajustes como página |
 | `static/style.css` | R1 + R2 + R3 + R4 + R5 | R3: editor, copias, gráficas (`--chart`) y vista de red. R4: tareas, búsqueda, variables, ajustes, aviso sin conexión |
 | `static/sw.js`, `static/manifest.webmanifest`, `static/icons/*` | R4 | El service worker nunca guarda `/api/` ni respuestas redirigidas (login de Access); primero la red |
 | `logsearch.py` | R4 | Búsqueda en logs; se ejecuta como proceso aparte para las expresiones regulares |
@@ -87,6 +100,10 @@ desde entonces; «R2»…«R5» = cambiada o añadida después y revisada en esa
 | `novahub.service` | R2 | `Type=notify`, `NotifyAccess=main`, `WatchdogSec=30`, `KillMode=process` |
 | `README.md` | R2 + R3 + R4 | Comprobado que describe lo que hace el código |
 | `demo/` | — | Página de ejemplo, sin lógica |
+| `updater.py` | R6 | Copia de datos, compila antes de reiniciar, vuelve atrás si no responde; la rama avanza (ff-only) en vez de quedar detached |
+| `tools/novahub-sistema` | R6 | Único punto con root (sudoers): órdenes fijas `update`/`upgrade`/`security`/`reboot`/`discos`, sin parámetros del panel |
+| `tools/publicar-version.sh` | R6 | Se para si falla el push |
+| `docs/guia/*.md` | R6 | Contenido comprobado contra el código (comando con `bash -lc`, editar no reinicia, intervalos de salud) |
 
 ---
 
@@ -100,7 +117,10 @@ a comprobarlas.
    los renuevan peticiones con actividad real del usuario. Cerrar sesión invalida **todos** los tokens de esa sesión. La contraseña usa PBKDF2 con 600.000
    iteraciones. Máximo 5 intentos de login (o de llave de acceso) por IP cada 5 minutos. Con un usuario que no existe
    el login tarda lo mismo (no se puede averiguar qué usuarios hay). Las sesiones de un usuario caen si cambia su
-   contraseña, su rol o sus servicios, o si se borra.
+   contraseña, su rol o sus servicios, o si se borra. **R6, dos pasos (TOTP):** tras la contraseña se pide el código; ninguno
+   vale dos veces (se guarda el último contador), se aceptan ±30 s; 8 códigos de recuperación guardados como SHA-256 y de un
+   solo uso. Activa, no se puede sustituir sin desactivarla (contraseña + código). Con la opción obligatoria, un administrador
+   sin ella solo llega a su cuenta, `/api/me`, `/api/system` y la documentación.
 2. **CSRF**: toda petición que no sea GET exige la cabecera `X-NovaHub: 1`, y la cookie es
    `HttpOnly` y `SameSite=Strict`. Ningún GET modifica estado.
 3. **Rutas de archivos**: `safe_path` resuelve con `realpath` y rechaza todo lo que quede fuera de
@@ -108,12 +128,17 @@ a comprobarlas.
    desde `static/`. Editar no puede tocar `.git/`. Los nombres de copia se validan con una expresión
    exacta, y restaurar usa el filtro `data` de `tarfile` (nada fuera de la carpeta). `serve.py` no sale
    de la carpeta compilada. El editor de `.env` también pasa por `safe_path` (un `.env` enlazado fuera no se toca).
+   R6: `/api/docs/asset` solo sirve imágenes de `docs/` (probado con `../../server.py`, `../../data/users.json` y `/etc/passwd`).
 4. **XSS**: en `app.js`, todo dato del servidor pasa por `esc()` o se asigna con `textContent`. Las
    URL de servicio solo pueden ser `http(s)://`. En los correos, todo texto dinámico pasa por
-   `html.escape`.
+   `html.escape`. R6: el intérprete de Markdown escapa todo el texto y solo crea sus etiquetas; enlaces solo `http(s)`, `mailto`,
+   anclas, páginas de la guía o GitHub; probado con 20 ataques (`<script>`, `onerror`, `javascript:`, `data:`, entidades,
+   comillas en atributos): ninguno ejecuta nada.
 5. **Secretos**: los archivos de `data/` tienen permisos 600. La contraseña de aplicación de Gmail
    nunca se devuelve por la API. `tapo.json` exige 600. Las copias del HDD (pueden llevar `.env`) van en
-   carpetas 700 y archivos 600.
+   carpetas 700 y archivos 600. R6: `activity.jsonl`, `roadmap-todo.json`, `hardware.json`, `offsite.json` y `notify.json` con 600;
+   ninguna API devuelve la llave de ntfy, las contraseñas de restic ni los secretos TOTP. El registro de actividad no guarda
+   contraseñas, valores de `.env`, lo escrito en las consolas ni credenciales de URL (probado con valores marcados).
 6. **Superficie de red**: el panel y las pasarelas escuchan solo en `127.0.0.1`. Desde fuera se
    llega únicamente por el túnel, con Cloudflare Access (Google) delante.
 7. **Peticiones malformadas**: si `Content-Length` es negativo o no numérico, la respuesta es 400 sin
@@ -123,13 +148,24 @@ a comprobarlas.
 9. **Permisos**: cada petición pasa por `route_permission` antes de hacer nada; lo que no está permitido
    expresamente a operador o lector es solo para administradores, y operador/lector solo llegan a sus servicios.
    A quien no es administrador no se le envían comandos, rutas, variables ni comandos de tareas. Comprobado con
-   28 rutas × 2 roles.
+   28 rutas × 2 roles. R6: 25 rutas nuevas × 4 perfiles (lector, operador, administrador sin dos pasos con la opción
+   obligatoria y administrador).
 10. **Varios servidores**: la puerta remota (`NOVAHUB_REMOTE_LISTEN`) solo acepta llaves (`Bearer nh_…`, guardadas
     como huella SHA-256): ni interfaz, ni login, ni cookies. El reenvío solo deja pasar JSON y la consola en
     directo; cualquier otra respuesta sale como descarga con `CSP: sandbox`, así un servidor remoto comprometido
     no puede ejecutar código en este panel. Solo los administradores pueden usar otros servidores.
 
 ## Riesgos aceptados (decisiones conscientes)
+
+- **Con la verificación obligatoria, quien tenga la contraseña de un administrador que aún no la ha activado puede
+  activarla con su propio móvil** (como en cualquier servicio que obliga a activarla al entrar). Delante sigue Cloudflare
+  Access. Una vez activada, la contraseña sola no basta.
+- **Las llaves de acceso entre paneles no piden el segundo paso**: ya son secretos largos guardados como huella.
+- **Los intentos fallidos de entrar se apuntan en la actividad**: alguien que llegue al login podría llenar el registro
+  (como mucho 5 cada 5 minutos por IP; se rota a los 5 MB y quedan entre 5 y 10 MB).
+- **La contraseña del móvil de ntfy viaja en la orden `podman exec -e`** un instante: la ven solo los procesos del mismo
+  usuario.
+- **El catálogo descarga el compose y el `.env` de ejemplo oficiales** (GitHub de cada proyecto) al instalar.
 
 - **Las sesiones cerradas solo se recuerdan en memoria**: si NovaHub se reinicia, un token cerrado
   antes de caducar volvería a valer hasta su caducidad (como mucho, el tiempo de inactividad: 15 min
@@ -165,6 +201,30 @@ a comprobarlas.
   similares). Solo se clonan repositorios propios.
 
 ## Hallazgos y correcciones
+
+### Revisión 6 — 1.0.1 a 1.0.14 (2026-10-07)
+
+Además de leer el código nuevo: pyflakes y ESLint sin avisos; matriz de permisos de 25 rutas nuevas con 4 perfiles;
+protecciones de siempre (401, 403 sin cabecera, `../`); 20 ataques al intérprete de Markdown; ninguna API con secretos y
+`data/` con 600; vectores TOTP del RFC 6238 y QR leído con jsQR; y una regresión de 10 pasos en una instancia limpia
+(entrar, activar dos pasos con el QR, volver a entrar con código, Docs, Actividad, Pendientes, ficha y 9 páginas del móvil
+sin desbordes ni errores de JavaScript).
+
+| # | Problema | Riesgo | Corrección |
+|---|---|---|---|
+| 1 | Con la verificación activa se podía generar y confirmar otra clave sin contraseña: una sesión robada podía pasarla a su móvil | Medio | Activa, no se puede sustituir: hay que desactivarla (contraseña + código) |
+| 2 | Con la verificación obligatoria, un administrador sin ella podía hacer cualquier consulta (archivos, `.env`, logs) | Medio | Solo llega a su cuenta, `/api/me`, `/api/system` y la documentación |
+| 3 | La actividad habría guardado `https://usuario:llave@…` al desplegar desde una URL con credenciales | Bajo | Se quitan las credenciales de las URL |
+| 4 | Si `podman ps` fallaba, la limpieza de huérfanos podía cerrar el contenedor de otro servicio con el mismo puerto | Bajo | Sin respuesta correcta de Podman no se cierra nada |
+| 5 | `/api/hardware` enviaba números de serie, rutas y puntos de montaje a operadores y lectores | Bajo | Se quitan para quien no administra |
+| 6 | Actualizar a una versión estable dejaba el repositorio en *detached HEAD* (los commits siguientes, fuera de la rama) | Bajo | Si se puede, la rama avanza con `--ff-only` |
+| 7 | Un enlace `//dominio` de la documentación se abría en la misma pestaña; `new URL` podía lanzar con rutas raras | Bajo | Se trata como externo; `new URL` protegido |
+| 8 | «Creó el servicio» no aparecía en la actividad de su ficha | Bajo | Se enlaza el servicio nuevo |
+
+Durante el desarrollo de estas versiones ya se habían corregido (y probado) otros fallos: el 502 de Vaultwarden
+(pasarela y salud por `localhost`/IPv6), los reinicios a media descarga de imágenes, contenedores huérfanos que
+ocupaban el puerto, el desgaste de SSD que se marcaba como peligro, la copia fuera de casa que habría escrito en un disco
+sin montar y gastar un código de recuperación al rechazar la desactivación.
 
 ### Revisión 5 — versión 1.0 (2026-10-06)
 
@@ -282,3 +342,5 @@ Los anoto para no buscarlos otra vez: ya están corregidos.
 - [ ] Regresión: rutas, protecciones y recorrido de la interfaz.
 - [ ] Añadir aquí una fila al historial, actualizar el inventario, apuntar los hallazgos y
   **actualizar «Revisado hasta el commit»** al último commit revisado.
+- [ ] Desde la revisión 6: repetir los ataques al intérprete de Markdown si cambia `mdRender`, y la matriz de permisos si
+  hay rutas nuevas (también con un administrador sin dos pasos y la opción obligatoria).
