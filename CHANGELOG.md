@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.1.1 — 2026-10-07
+
 - **Invitaciones** (Ajustes → Usuarios → Invitar a alguien): enlace de un solo uso con rol, servicios y caducidad (1 a
   30 días), con su QR. La persona elige su usuario y contraseña y entra directamente. Solo se guarda la huella del
   enlace; se puede revocar; los enlaces inventados frenan como los inicios de sesión fallidos. En la actividad se apunta
