@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.0.4 — 2026-10-07
+
 - **Avisos al móvil con ntfy** (Ajustes → Avisos): ntfy como canal de avisos junto al correo, eligiendo qué avisos van
   por cada uno. «Proteger y conectar» deja el ntfy del catálogo con todo denegado por defecto, un usuario `movil` de solo
   lectura y una llave de solo escritura para NovaHub, que publica por dentro del servidor. Prioridad máxima para los
