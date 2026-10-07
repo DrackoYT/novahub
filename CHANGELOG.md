@@ -6,6 +6,12 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- **Documentación al estilo GitBook** (pestaña **Docs**): 26 páginas por temas en `docs/guia/`, con el índice en
+  `SUMMARY.md` (formato de GitBook). Índice lateral por secciones, «En esta página» que sigue la lectura, buscador sin
+  tildes ni mayúsculas, anterior y siguiente, enlaces entre páginas y apartados, avisos de colores, tablas, bloques de
+  código con botón de copiar e imágenes. Intérprete de Markdown propio y seguro (el HTML se muestra como texto).
+  Páginas nuevas: primeros pasos, servicios, solución de problemas, variables de entorno y cómo escribir la guía.
+
 ## 1.0.12 — 2026-10-07
 
 - **Verificación en dos pasos (TOTP)**: en Mi cuenta, con código QR (generado en el propio servidor, sin dependencias) y

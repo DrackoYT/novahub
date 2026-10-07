@@ -6356,6 +6356,130 @@ class Hardware:
 HARDWARE = Hardware()
 
 
+# ───────────────────────────── documentación (estilo GitBook) ─────────────────────────────
+# Páginas Markdown en docs/guia/ y el índice en docs/guia/SUMMARY.md, con el mismo formato que GitBook:
+#   ## Sección
+#   * [Título](archivo.md)
+#     * [Subpágina](otro.md)
+# Van con el código: se actualizan con cada versión y también se leen en GitHub.
+
+DOCS_ROOT = os.path.join(BASE_DIR, "docs")
+DOCS_DIR = os.path.join(DOCS_ROOT, "guia")
+DOCS_ASSETS = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def fold(text):
+    """Minúsculas y sin tildes, para buscar «configuracion» y encontrar «Configuración»."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", str(text).lower()) if unicodedata.category(c) != "Mn")
+
+
+class Docs:
+    @staticmethod
+    def slug_of(fname):
+        stem = fname[:-3] if fname.endswith(".md") else fname
+        return "inicio" if stem.lower() == "readme" else stem
+
+    def summary(self):
+        title, groups, order = "Documentación", [], []
+        try:
+            with open(os.path.join(DOCS_DIR, "SUMMARY.md"), encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            lines = []
+        stack = []  # (sangría, lista de páginas) para las subpáginas
+        for line in lines:
+            if line.startswith("# "):
+                title = line[2:].strip()
+            elif line.startswith("## "):
+                groups.append({"title": line[3:].strip(), "pages": []})
+                stack = []
+            else:
+                m = re.match(r"^(\s*)[*-]\s+\[([^\]]+)\]\(([^)#\s]+\.md)\)", line)
+                if not m:
+                    continue
+                indent, text, fname = len(m.group(1).expandtabs(2)), m.group(2).strip(), m.group(3)
+                if "/" in fname.strip("./") or not os.path.isfile(os.path.join(DOCS_DIR, fname)):
+                    continue
+                if not groups:
+                    groups.append({"title": "", "pages": []})
+                page = {"slug": self.slug_of(fname), "title": text, "file": fname, "children": []}
+                while stack and stack[-1][0] >= indent:
+                    stack.pop()
+                (stack[-1][1] if stack else groups[-1]["pages"]).append(page)
+                stack.append((indent, page["children"]))
+                order.append({"slug": page["slug"], "title": text, "file": fname})
+        return {"title": title, "groups": groups, "order": order}
+
+    def find(self, slug):
+        page = next((p for p in self.summary()["order"] if p["slug"] == slug), None)
+        if not page:
+            raise ApiError(404, "Esa página de la documentación no existe")
+        return page
+
+    def page(self, slug):
+        page = self.find(slug)
+        path = os.path.join(DOCS_DIR, page["file"])
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        updated = None
+        res = git(BASE_DIR, "log", "-1", "--format=%ct", "--", os.path.relpath(path, BASE_DIR)) if os.path.isdir(os.path.join(BASE_DIR, ".git")) else None
+        if res is not None and res.returncode == 0 and res.stdout.strip():
+            updated = int(res.stdout.strip())
+        edit = None
+        try:
+            edit = f"https://github.com/{UPDATES.github_repo()}/edit/main/docs/guia/{page['file']}"
+        except Exception:  # noqa: BLE001
+            pass
+        return {**page, "markdown": text, "updated": updated or os.path.getmtime(path), "edit_url": edit}
+
+    def search(self, q):
+        """Páginas que contienen todas las palabras (sin distinguir tildes ni mayúsculas), con la mejor línea de muestra.
+        Puntúa más el título y los apartados que las contienen."""
+        terms = [t for t in fold(q).split() if len(t) > 1][:6]
+        if not terms:
+            return []
+        link = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+        hits = []
+        for p in self.summary()["order"]:
+            try:
+                with open(os.path.join(DOCS_DIR, p["file"]), encoding="utf-8") as f:
+                    lines = f.read().splitlines()
+            except OSError:
+                continue
+            if not all(t in fold(p["title"] + "\n" + "\n".join(lines)) for t in terms):
+                continue
+            score = 10 * sum(t in fold(p["title"]) for t in terms)
+            heading, best, best_n = "", None, 0
+            for line in lines:
+                n = sum(t in fold(line) for t in terms)
+                if line.startswith("#"):
+                    heading = line.lstrip("#").strip()
+                    score += 5 * n
+                    if n > best_n:
+                        best, best_n = (heading, ""), n
+                    continue
+                score += n
+                if n > best_n:
+                    text = re.sub(r"[*`>|]", "", link.sub(r"\1", line)).strip(" -")
+                    best, best_n = (heading, text[:220]), n
+            hits.append({"slug": p["slug"], "title": p["title"], "heading": best[0] if best else "",
+                         "snippet": best[1] if best else "", "score": score})
+        return sorted(hits, key=lambda h: -h["score"])[:20]
+
+    @staticmethod
+    def asset(rel):
+        full = os.path.realpath(os.path.join(DOCS_DIR, rel))
+        if not full.startswith(os.path.realpath(DOCS_ROOT) + os.sep) or os.path.splitext(full)[1].lower() not in DOCS_ASSETS:
+            raise ApiError(404, "No encontrado")
+        if not os.path.isfile(full):
+            raise ApiError(404, "No encontrado")
+        return full, DOCS_ASSETS[os.path.splitext(full)[1].lower()]
+
+
+DOCS = Docs()
+
+
 # ───────────────────────────── plantillas de servicio ─────────────────────────────
 
 def _has_venv():
@@ -6731,7 +6855,7 @@ def route_permission(method, path, service_param=""):
     """(permiso, servicio) que exige cada petición de la API; None = cualquier usuario con sesión."""
     if path == "/api/me" or (path == "/api/account" and method == "PUT") or path.startswith("/api/account/totp"):
         return None, None
-    if method == "GET" and path in ("/api/system", "/api/services", "/api/app/android", "/api/hardware"):
+    if method == "GET" and (path in ("/api/system", "/api/services", "/api/app/android", "/api/hardware") or path.startswith("/api/docs")):
         return "view", None
     if method == "GET" and path == "/api/metrics":
         return "view", (service_param if service_param and service_param != "system" else None)
@@ -7013,6 +7137,24 @@ class Handler(BaseHTTPRequestHandler):
             if method == "PUT":
                 return self.send_json(AUTH.save_settings(self.read_body(), self.user["username"]))
             raise ApiError(405, "Método no permitido")
+        if path == "/api/docs" and method == "GET":
+            return self.send_json(DOCS.summary())
+        if path == "/api/docs/page" and method == "GET":
+            return self.send_json(DOCS.page(self.query("slug")))
+        if path == "/api/docs/search" and method == "GET":
+            return self.send_json({"results": DOCS.search(self.query("q") or "")})
+        if path == "/api/docs/asset" and method == "GET":
+            full, ctype = DOCS.asset(self.query("path") or "")
+            with open(full, "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "private, max-age=3600")
+            self.common_headers()
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path == "/api/hardware" and method == "GET":
             return self.send_json(HARDWARE.public())
         if path == "/api/hardware/refresh" and method == "POST":

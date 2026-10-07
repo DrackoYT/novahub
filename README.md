@@ -95,6 +95,9 @@ permisos por rol comprobados en el servidor y nada escuchando fuera de `127.0.0.
 
 # Guía de funciones
 
+> La documentación completa, por temas, está en [`docs/guia`](docs/guia/README.md) y también dentro del panel, en la
+> pestaña **Docs** (con índice, buscador y «En esta página»).
+
 ## Centro de actualizaciones
 
 Ajustes → **Actualizaciones** reúne todo lo que se puede actualizar en el servidor. Se comprueba solo cada 6 horas

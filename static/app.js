@@ -38,6 +38,8 @@ const ICON = {
   eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
   eyeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.6 5.1A9.6 9.6 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3 3.9M6.6 6.6A17 17 0 0 0 2 12s3.6 7 10 7a9.4 9.4 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/></svg>',
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V5a2 2 0 0 1 2-2h13v16H6.5A2.5 2.5 0 0 0 4 21.5v-2z"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H19"/><path d="M9 7h6"/></svg>',
+  menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
   hdd: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="12" cy="11" r="4.5"/><circle cx="12" cy="11" r=".6"/><path d="M7 18h.01"/></svg>',
   ssd: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="7" width="19" height="10" rx="2"/><path d="M6 11h4M6 13.5h2M14 10h4v4h-4z"/></svg>',
   thermo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.8V4a2 2 0 0 0-4 0v10.8a4 4 0 1 0 4 0z"/></svg>',
@@ -290,6 +292,7 @@ const NAV = [
   ["services", "#/servicios", "Servicios", "2", ICON.grid],
   ["tasks", "#/procesos", "Procesos", "3", ICON.activity, "admin"],
   ["network", "#/red", "Red", "4", ICON.globe, "admin"],
+  ["docs", "#/docs", "Docs", "5", ICON.book],
 ];
 
 // Permisos del usuario (los decide el servidor, que rechaza lo demás; aquí solo se esconde lo que no puede usar)
@@ -497,7 +500,7 @@ function viewNoAccess() {
 // ───────────────────────── varios servidores ─────────────────────────
 // Con otro servidor elegido arriba, las peticiones van a /api/remote/<id>/… y este panel las reenvía.
 
-const HUB_ONLY = /^\/api\/(me|login|logout|account|servers|remote)(\/|$|\?)/;
+const HUB_ONLY = /^\/api\/(me|login|logout|account|servers|remote|docs)(\/|$|\?)/;
 function apiUrl(url) {
   if (!ui.server || ui.server === "local" || !url.startsWith("/api/") || HUB_ONLY.test(url)) return url;
   return `/api/remote/${encodeURIComponent(ui.server)}/${url.slice(5)}`;
@@ -1018,6 +1021,244 @@ function drawRoadmap() {
     return `<details class="module rm-version"><summary><b>${esc(v)}v</b> <span class="dim-text">· ${list.length} mejora${list.length === 1 ? "" : "s"} hecha${list.length === 1 ? "" : "s"}</span></summary>
       <div class="rm-list done">${list.map((i) => row(i, null)).join("")}</div></details>`;
   }).join("");
+}
+
+// ───────────────────────── vista: documentación (estilo GitBook) ─────────────────────────
+// Markdown propio y seguro: todo el texto se escapa y solo se generan las etiquetas de abajo.
+
+const HINT = { note: "Nota", tip: "Consejo", important: "Importante", warning: "Atención", caution: "Cuidado" };
+const mdSlug = (t) => t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/<[^>]+>|[`*_]/g, "")
+  .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "apartado";
+
+function mdLink(label, href, ctx) {
+  const raw = href.replace(/&amp;/g, "&");
+  if (/^(https?:|mailto:)/i.test(raw)) return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
+  if (raw.startsWith("#")) return `<a href="#/docs/${ctx.slug}/${esc(raw.slice(1))}" data-anchor="${esc(raw.slice(1))}">${label}</a>`;
+  const page = raw.match(/^(?:\.\/)?([\w.-]+)\.md(?:#(.*))?$/);
+  if (page) {
+    const slug = page[1].toLowerCase() === "readme" ? "inicio" : page[1];
+    return `<a href="#/docs/${esc(slug)}${page[2] ? `/${esc(page[2])}` : ""}">${label}</a>`;
+  }
+  if (ctx.repo && !/^[a-z]+:/i.test(raw)) {  // otro archivo del repositorio (../../server.py): en GitHub
+    return `<a href="${esc(new URL(raw, `https://github.com/${ctx.repo}/blob/main/docs/guia/`).href)}" target="_blank" rel="noopener">${label}</a>`;
+  }
+  return label;
+}
+
+function mdInline(text, ctx) {
+  const codes = [];
+  // `código` y ``código con ` dentro`` (con un espacio a cada lado)
+  let s = text.replace(/`` (.+?) ``|`([^`]+)`/g, (_, a, b) => `\u0000${codes.push(a ?? b) - 1}\u0000`);
+  s = esc(s);
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, src) => {
+    const raw = src.replace(/&amp;/g, "&");
+    const url = /^https?:/i.test(raw) ? raw : `/api/docs/asset?path=${encodeURIComponent(raw)}`;
+    return `<img src="${esc(url)}" alt="${alt}" loading="lazy">`;
+  });
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) => mdLink(label, href, ctx));
+  s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^\w*])\*(?!\s)([^*]+?)\*(?!\w)/g, "$1<em>$2</em>")
+    .replace(/(^|[^\w])_(?!\s)([^_]+?)_(?![\w])/g, "$1<em>$2</em>");
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${esc(codes[+i])}</code>`);
+}
+
+const mdCode = (lang, body) => `<div class="doc-code"><button type="button" class="btn sm doc-copy" data-copy>Copiar</button>
+  <pre><code${lang ? ` data-lang="${esc(lang)}"` : ""}>${esc(body)}</code></pre></div>`;
+const LIST_RE = /^(\s*)([-*]|\d+[.)])\s+(.*)$/;
+
+function mdList(lines, i, ctx) {
+  const indent = lines[i].match(LIST_RE)[1].length;
+  const ordered = /\d/.test(lines[i].match(LIST_RE)[2]);
+  const items = [];
+  let afterBlank = false;  // tras una línea en blanco, el texto sangrado es un párrafo nuevo del mismo punto
+  while (i < lines.length) {
+    const line = lines[i];
+    const m = line.match(LIST_RE);
+    if (!line.trim()) {
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim()) j++;
+      const nm = lines[j]?.match(LIST_RE);
+      const ind = j < lines.length ? lines[j].match(/^\s*/)[0].length : -1;
+      if (items.length && j < lines.length && ((nm && nm[1].length >= indent) || (!nm && ind > indent))) { i = j; afterBlank = true; continue; }
+      break;
+    }
+    if (m && m[1].length === indent) { items.push({ text: m[3], sub: "" }); i++; afterBlank = false; continue; }
+    if (!items.length) break;
+    if (m && m[1].length > indent) { const [sub, next] = mdList(lines, i, ctx); items[items.length - 1].sub += sub; i = next; continue; }
+    const fence = line.match(/^(\s+)```\s*([\w-]*)/);
+    if (fence) {  // bloque de código dentro de un punto
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++].slice(fence[1].length));
+      i++;
+      items[items.length - 1].sub += mdCode(fence[2], buf.join("\n"));
+      continue;
+    }
+    if (/^\s+/.test(line) && !m) {
+      const it = items[items.length - 1];
+      if (afterBlank) { it.sub += `<p>${mdInline(line.trim(), ctx)}</p>`; afterBlank = false; } else it.text += ` ${line.trim()}`;
+      i++;
+      continue;
+    }
+    break;
+  }
+  const tag = ordered ? "ol" : "ul";
+  return [`<${tag}>${items.map((it) => `<li>${mdInline(it.text, ctx)}${it.sub}</li>`).join("")}</${tag}>`, i];
+}
+
+function mdRender(md, ctx, ids = {}) {
+  const lines = md.replace(/\r/g, "").split("\n");
+  const out = [], toc = [];
+  let i = 0, m;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+    if ((m = line.match(/^( {0,3})```\s*([\w-]*)/))) {
+      const pad = m[1].length, lang = m[2], buf = [];
+      i++;
+      while (i < lines.length && !/^ {0,3}```/.test(lines[i])) buf.push(lines[i++].slice(Math.min(pad, lines[i - 1].match(/^ */)[0].length)));
+      i++;
+      out.push(mdCode(lang, buf.join("\n")));
+    } else if ((m = line.match(/^(#{1,4})\s+(.*?)\s*#*$/))) {
+      const level = m[1].length;
+      let id = mdSlug(m[2]);
+      ids[id] = (ids[id] || 0) + 1;
+      if (ids[id] > 1) id += `-${ids[id]}`;
+      if (level === 2 || level === 3) toc.push({ level, id, text: m[2].replace(/[`*_]/g, "") });
+      out.push(`<h${level} id="${id}">${mdInline(m[2], ctx)}${level > 1 ? `<a class="doc-anchor" href="#/docs/${ctx.slug}/${id}" data-anchor="${id}" aria-label="Enlace a este apartado">#</a>` : ""}</h${level}>`);
+      i++;
+    } else if (/^(-{3,}|\*{3,})\s*$/.test(line)) {
+      out.push("<hr>");
+      i++;
+    } else if (line.startsWith(">")) {
+      const buf = [];
+      while (i < lines.length && lines[i].startsWith(">")) buf.push(lines[i++].replace(/^>\s?/, ""));
+      const kind = buf[0]?.match(/^\[!(note|tip|important|warning|caution)\]\s*$/i)?.[1].toLowerCase();
+      if (kind) buf.shift();
+      const inner = mdRender(buf.join("\n"), ctx, ids).html;
+      out.push(kind ? `<div class="doc-hint ${kind}"><b class="doc-hint-t">${HINT[kind]}</b>${inner}</div>` : `<blockquote>${inner}</blockquote>`);
+    } else if (line.startsWith("|") && /^\|?[\s:|-]*-{2,}[\s:|-]*$/.test(lines[i + 1] || "")) {
+      const row = (l) => l.trim().replace(/^\||(?<!\\)\|$/g, "").split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+      const head = row(line);
+      i += 2;
+      const body = [];
+      while (i < lines.length && lines[i].startsWith("|")) body.push(row(lines[i++]));
+      out.push(`<div class="doc-table"><table><thead><tr>${head.map((c) => `<th>${mdInline(c, ctx)}</th>`).join("")}</tr></thead>
+        <tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${mdInline(c, ctx)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+    } else if (LIST_RE.test(line)) {
+      const [html, next] = mdList(lines, i, ctx);
+      out.push(html);
+      i = next;
+    } else {
+      const buf = [lines[i++].trim()];  // al menos una línea: nunca se queda atascado
+      while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s| {0,3}```|>|\||(-{3,}|\*{3,})\s*$)/.test(lines[i]) && !LIST_RE.test(lines[i])) buf.push(lines[i++].trim());
+      out.push(`<p>${mdInline(buf.join(" "), ctx)}</p>`);
+    }
+  }
+  return { html: out.join("\n"), toc };
+}
+
+async function viewDocs(slug, anchor) {
+  if (!ui.docs) {
+    try { ui.docs = await api("GET", "/api/docs"); } catch (e) { $("#main").innerHTML = `<p class="pane-msg">${esc(e.message)}</p>`; return; }
+  }
+  const sum = ui.docs;
+  if (!sum.order.length) { $("#main").innerHTML = '<p class="pane-msg">Todavía no hay documentación (docs/guia/SUMMARY.md).</p>'; return; }
+  slug = slug || sum.order[0].slug;
+  const idx = sum.order.findIndex((p) => p.slug === slug);
+  const tree = (pages) => `<ul>${pages.map((p) => `<li><a href="#/docs/${esc(p.slug)}" class="${p.slug === slug ? "active" : ""}"
+    ${p.slug === slug ? 'aria-current="page"' : ""}>${esc(p.title)}</a>${p.children.length ? tree(p.children) : ""}</li>`).join("")}</ul>`;
+  $("#main").innerHTML = `
+    <div class="docs">
+      <aside class="docs-side" id="docs-side">
+        <div class="docs-brand">${ICON.book}<b>${esc(sum.title)}</b></div>
+        <label class="docs-search">${ICON.search || ""}<input id="docs-q" type="search" placeholder="Buscar en la documentación…" autocomplete="off" aria-label="Buscar en la documentación"></label>
+        <nav class="docs-nav" id="docs-nav" aria-label="Índice de la documentación">
+          ${sum.groups.map((g) => `${g.title ? `<p class="docs-group">${esc(g.title)}</p>` : ""}${tree(g.pages)}`).join("")}
+        </nav>
+        <div class="docs-results" id="docs-results" hidden></div>
+      </aside>
+      <article class="docs-main">
+        <button type="button" class="btn sm docs-toggle" id="docs-toggle">${ICON.menu}Índice</button>
+        <div class="docs-body" id="docs-body"><p class="pane-msg">Cargando…</p></div>
+      </article>
+      <aside class="docs-toc" id="docs-toc"></aside>
+      <div class="docs-backdrop" id="docs-backdrop"></div>
+    </div>`;
+  const side = $("#docs-side");
+  const drawer = (open) => { side.classList.toggle("open", open); $("#docs-backdrop").classList.toggle("open", open); };
+  $("#docs-toggle").addEventListener("click", () => drawer(!side.classList.contains("open")));
+  $("#docs-backdrop").addEventListener("click", () => drawer(false));
+  side.addEventListener("click", (e) => { if (e.target.closest("a")) drawer(false); });
+  let timer;
+  $("#docs-q").addEventListener("input", (e) => {
+    clearTimeout(timer);
+    const q = e.target.value.trim();
+    timer = setTimeout(async () => {
+      const box = $("#docs-results");
+      $("#docs-nav").hidden = !!q;
+      box.hidden = !q;
+      if (!q) return;
+      try {
+        const { results } = await api("GET", `/api/docs/search?q=${encodeURIComponent(q)}`);
+        if ($("#docs-q")?.value.trim() !== q) return;
+        box.innerHTML = results.length ? results.map((r) => `<a href="#/docs/${esc(r.slug)}${r.heading ? `/${mdSlug(r.heading)}` : ""}" class="docs-hit">
+          <b>${esc(r.title)}</b>${r.heading && r.heading !== r.title ? `<span class="dim-text"> › ${esc(r.heading)}</span>` : ""}
+          ${r.snippet ? `<small>${esc(r.snippet)}</small>` : ""}</a>`).join("") : `<p class="dim-text docs-none">Nada para «${esc(q)}».</p>`;
+      } catch (err) { box.innerHTML = `<p class="bad-text docs-none">${esc(err.message)}</p>`; }
+    }, 180);
+  });
+  if (idx < 0) { $("#docs-body").innerHTML = '<p class="pane-msg">Esa página no existe. Elige otra en el índice.</p>'; return; }
+  let page;
+  try { page = await api("GET", `/api/docs/page?slug=${encodeURIComponent(slug)}`); } catch (e) { $("#docs-body").innerHTML = `<p class="pane-msg">${esc(e.message)}</p>`; return; }
+  if (!$("#docs-body")) return;  // se ha ido a otra vista mientras cargaba
+  const repo = page.edit_url ? page.edit_url.match(/github\.com\/([^/]+\/[^/]+)\//)?.[1] : null;
+  const { html, toc } = mdRender(page.markdown, { slug, repo });
+  const prev = sum.order[idx - 1], next = sum.order[idx + 1];
+  const group = sum.groups.find((g) => JSON.stringify(g.pages).includes(`"slug":"${slug}"`))?.title;
+  $("#docs-body").innerHTML = `
+    ${group ? `<p class="docs-crumb">${esc(group)}</p>` : ""}
+    <div class="doc">${html}</div>
+    <footer class="docs-foot">
+      <div class="docs-meta dim-text">Actualizado ${fmtAgo(page.updated)}${page.edit_url && can("admin") ? ` · <a href="${esc(page.edit_url)}" target="_blank" rel="noopener">Editar en GitHub ↗</a>` : ""}</div>
+      <nav class="docs-pager">
+        ${prev ? `<a href="#/docs/${esc(prev.slug)}" class="docs-prev"><small>Anterior</small><b>← ${esc(prev.title)}</b></a>` : "<span></span>"}
+        ${next ? `<a href="#/docs/${esc(next.slug)}" class="docs-next"><small>Siguiente</small><b>${esc(next.title)} →</b></a>` : "<span></span>"}
+      </nav>
+    </footer>`;
+  $("#docs-toc").innerHTML = toc.length > 1 ? `<p class="docs-group">En esta página</p>
+    ${toc.map((t) => `<a href="#/docs/${esc(slug)}/${t.id}" data-anchor="${t.id}" class="lvl${t.level}">${esc(t.text)}</a>`).join("")}` : "";
+  document.title = `${page.title} · NovaHub`;
+  const main = $("#main");
+  main.onclick = async (e) => {
+    const a = e.target.closest("a[data-anchor]");
+    if (a) {  // apartados de la misma página: desplazar sin volver a cargar
+      e.preventDefault();
+      const el = document.getElementById(a.dataset.anchor);
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+      history.replaceState(null, "", `#/docs/${slug}/${a.dataset.anchor}`);
+      ui.docsPinned = Date.now();  // el elegido manda aunque la página no pueda bajar hasta él
+      $("#docs-toc")?.querySelectorAll("a").forEach((l) => l.classList.toggle("active", l.dataset.anchor === a.dataset.anchor));
+      return;
+    }
+    const copy = e.target.closest("[data-copy]");
+    if (copy) {
+      await navigator.clipboard.writeText(copy.parentElement.querySelector("code").textContent).catch(() => {});
+      copy.textContent = "Copiado";
+      setTimeout(() => { copy.textContent = "Copiar"; }, 1500);
+    }
+  };
+  const links = [...$("#docs-toc").querySelectorAll("a")];
+  if (links.length) {  // resalta el apartado que se está leyendo
+    const spy = new IntersectionObserver((entries) => {
+      const vis = entries.filter((x) => x.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      if (vis && Date.now() - (ui.docsPinned || 0) > 1200) links.forEach((l) => l.classList.toggle("active", l.dataset.anchor === vis.target.id));
+    }, { rootMargin: "-80px 0px -70% 0px" });
+    toc.forEach((t) => { const el = document.getElementById(t.id); if (el) spy.observe(el); });
+    ui.docsSpy?.disconnect();
+    ui.docsSpy = spy;
+  }
+  if (anchor) requestAnimationFrame(() => document.getElementById(decodeURIComponent(anchor))?.scrollIntoView({ block: "start" }));
 }
 
 // ───────────────────────── vista: procesos ─────────────────────────
@@ -3936,6 +4177,9 @@ async function leaveForm() {
 function route() {
   if (!$("#main")) shell();
   clearView();
+  document.title = "NovaHub";
+  $("#main").onclick = null;  // la documentación pone el suyo
+  ui.docsSpy?.disconnect();
   const hash = location.hash;
   const m = hash.match(/^#\/s\/([a-z0-9-]+)(\/editar)?$/);
   const nm = hash.match(/^#\/nuevo(?:\/(programa|contenedor|compose|catalogo))?$/);
@@ -3952,6 +4196,7 @@ function route() {
   else if (hash === "#/red") { viewNetwork(); section = "network"; }
   else if (hash.startsWith("#/ajustes")) { viewSettings(hash.split("/")[2]); section = "settings"; }
   else if (hash === "#/mejoras") { viewRoadmap(); section = "roadmap"; }
+  else if (hash === "#/docs" || hash.startsWith("#/docs/")) { const [, , slug, anchor] = hash.split("/"); viewDocs(slug, anchor); section = "docs"; }
   else viewOverview();
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
   window.scrollTo(0, 0);
