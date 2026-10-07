@@ -43,7 +43,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.0.5"   # versión semántica (MAYOR.MENOR.PARCHE); cada versión publicada lleva su etiqueta vX.Y.Z en git
+VERSION = "1.0.6"   # versión semántica (MAYOR.MENOR.PARCHE); cada versión publicada lleva su etiqueta vX.Y.Z en git
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 mimetypes.add_type("application/manifest+json", ".webmanifest")  # manifiesto de la app (PWA)
 DATA_DIR = os.path.abspath(os.environ.get("NOVAHUB_DATA", os.path.join(BASE_DIR, "data")))
