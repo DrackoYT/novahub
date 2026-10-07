@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.1.0 — 2026-10-07
+
 **Versión 1.1**: el bloque de mejoras de la 1.0.1 a la 1.0.15, revisado en la revisión 6 del código
 ([`docs/REVISIONES.md`](docs/REVISIONES.md)). Lo nuevo respecto a la 1.0:
 
@@ -18,6 +20,7 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 - **Documentación al estilo GitBook** en la pestaña Docs (27 páginas).
 - **Registro de actividad** y **Pendientes** en la página de Mejoras.
 - Copias coherentes de bases de datos SQLite, limpieza de contenedores huérfanos y pasarela/salud por IPv4.
+
 ## 1.0.15 — 2026-10-07
 
 - **Revisión 6 del código** (todo lo publicado desde la 1.0). Correcciones:
