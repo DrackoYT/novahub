@@ -6,6 +6,12 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- **Gestor de contraseñas propio (Vaultwarden)**: se instala desde el catálogo proponiendo publicarlo con HTTPS
+  (`vault.<dominio>`), con copias diarias activadas desde el primer día y el registro de cuentas controlado: NovaHub lo
+  cierra solo en cuanto se crea tu cuenta y la ficha permite abrirlo para una cuenta más. Panel /admin desactivado.
+- Las copias de seguridad copian las bases de datos SQLite con la API de SQLite (copia coherente aunque la app esté
+  escribiendo) en lugar del archivo y su `-wal` a medias. Sirve para todas las apps que usan SQLite.
+
 ## 1.0.4 — 2026-10-07
 
 - **Avisos al móvil con ntfy** (Ajustes → Avisos): ntfy como canal de avisos junto al correo, eligiendo qué avisos van

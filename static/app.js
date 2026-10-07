@@ -1099,6 +1099,38 @@ async function toggle(id) {
   refreshCurrent();
 }
 
+// Registro de cuentas de las apps del catálogo que lo controlan (Vaultwarden): abierto solo mientras haga falta.
+function signupsHTML(s) {
+  const g = s.signups;
+  const n = g.accounts;
+  const accounts = n == null ? "aún sin crear" : `${n} cuenta${n === 1 ? "" : "s"}`;
+  const exposed = g.open && s.subdomain;
+  return `<div class="module signups" data-perm="edit">
+      <span class="label">Registro de cuentas</span>
+      <dl class="readout">
+        <div><dt>Estado</dt><dd class="${g.open ? "warn-text" : "ok-text"}">${g.open ? "Abierto" : "Cerrado"}</dd></div>
+        <div><dt>Cuentas</dt><dd>${accounts}</dd></div>
+      </dl>
+      ${g.open ? `<p class="git-note${exposed ? " bad" : ""}">${exposed ? "Está en internet: cualquiera con la dirección puede crear una cuenta. " : ""}${g.auto
+        ? "Se cerrará solo en cuanto se cree una cuenta nueva."
+        : "Ciérralo cuando termines de crear las cuentas."}</p>` : ""}
+      <label class="chk-line"><input type="checkbox" data-act="signups-auto" ${g.auto ? "checked" : ""}> Cerrarlo solo tras cada cuenta nueva</label>
+      <button class="btn${g.open ? " primary" : ""}" data-act="${g.open ? "signups-close" : "signups-open"}">${g.open ? "Cerrar el registro" : "Abrir para una cuenta más"}</button>
+    </div>`;
+}
+
+async function setSignups(s, body, el) {
+  if (body.open && !await confirmDialog("Abrir el registro",
+    `Mientras esté abierto, quien llegue a ${esc(s.url || s.name)} podrá crear una cuenta.${s.signups.auto ? " Se cerrará solo en cuanto se cree una." : ""} El servicio se reinicia para aplicarlo.`,
+    "Abrir")) { if (el.type === "checkbox") el.checked = !el.checked; return; }
+  el.disabled = true;
+  try {
+    await api("POST", `/api/services/${s.id}/signups`, body);
+    if ("open" in body) toast(body.open ? "Registro abierto: el servicio se reinicia" : "Registro cerrado: el servicio se reinicia", "ok");
+  } catch (e) { toast(e.message, "error"); }
+  refreshCurrent();
+}
+
 async function restart(id) {
   try {
     await api("POST", `/api/services/${id}/restart`);
@@ -2044,6 +2076,8 @@ document.addEventListener("click", async (e) => {
   else if (act === "update") updateService(s.id);
   else if (act === "mode-prod" || act === "mode-dev") setMode(s, act === "mode-prod" ? "prod" : "dev");
   else if (act === "edit") location.hash = `#/s/${s.id}/editar`;
+  else if (act === "signups-open" || act === "signups-close") setSignups(s, { open: act === "signups-open" }, el);
+  else if (act === "signups-auto") setSignups(s, { open: s.signups.open, auto: el.checked }, el);
   else if (act === "delete") removeService(s);
   else if (act === "clear-log") {
     if (await confirmDialog("Limpiar consola", "Se borrará el historial guardado de la consola.", "Limpiar")) {
@@ -2960,6 +2994,7 @@ function drawDetail(s) {
         ${s.last_update ? cell("Última actualización", `<span class="${s.last_update.ok ? "" : "bad-text"}">${esc(s.last_update.msg)}</span> <span class="dim-text">· ${fmtAgo(s.last_update.at)}</span>`) : ""}
       </dl>
     </div>
+    ${s.signups ? signupsHTML(s) : ""}
     ${s.notes ? `<div class="module first-steps"><span class="label">Primeros pasos</span><p>${esc(s.notes)}</p></div>` : ""}
     <div class="module" data-perm="edit">
       <span class="label">Configuración</span>
@@ -3330,8 +3365,9 @@ function installApp(cat, id) {
         </div>
         ${(a.fields || []).map((f) => `<label class="field"><span>${esc(f.label)}</span><input name="f-${esc(f.key)}" class="mono" spellcheck="false" placeholder="${esc(f.placeholder || "")}">
           <small>Opcional: también puedes añadirla después en Editar → Carpetas.</small></label>`).join("")}
-        ${cat.domain ? `<label class="field"><span>Publicar en internet</span><div class="affix"><input name="subdomain" class="mono" spellcheck="false" autocapitalize="off" placeholder="${esc(a.id)}"><span>.${esc(cat.domain)}</span></div>
-          <small>Con HTTPS por el túnel de Cloudflare. Vacío = solo en casa.</small></label>` : ""}
+        ${cat.domain ? `<label class="field"><span>Publicar en internet</span><div class="affix"><input name="subdomain" class="mono" spellcheck="false" autocapitalize="off" placeholder="${esc(a.id)}"${a.subdomain ? ` value="${esc(a.subdomain)}"` : ""}><span>.${esc(cat.domain)}</span></div>
+          <small>${a.https ? "Necesita HTTPS: sin publicarla, el navegador y las apps no la dejan funcionar." : "Con HTTPS por el túnel de Cloudflare. Vacío = solo en casa."}</small></label>`
+    : a.https ? '<p class="git-note">Necesita HTTPS para funcionar (el navegador lo exige). Configura la publicación en internet (Cloudflare Tunnel) antes de usarla.</p>' : ""}
         <label class="chk-line"><input type="checkbox" name="start" checked> Encenderla al terminar (la primera vez descarga la imagen: mira la consola)</label>
       </div>
       <footer><button type="button" class="btn ghost" data-close>Cancelar</button><button type="submit" class="btn primary">${ICON.download}Instalar</button></footer>

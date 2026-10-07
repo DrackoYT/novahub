@@ -302,6 +302,21 @@ El catálogo es [`catalogo.json`](catalogo.json): añadir una app es añadir una
 con marcadores como `{secret}` o `{url}`, y notas). Las apps de varios contenedores descargan su compose oficial.
 Las carpetas van por defecto a `~/apps/<app>` (`NOVAHUB_APPS_DIR`).
 
+### Gestor de contraseñas (Vaultwarden)
+
+Vaultwarden es compatible con las apps y extensiones de Bitwarden (Android, iPhone, Chrome, Firefox…). Al instalarlo:
+
+- **HTTPS obligatorio:** el navegador y las apps lo exigen, así que el formulario propone publicarlo en
+  `vault.<tu dominio>`. No lo pongas detrás de Cloudflare Access: las apps de Bitwarden no pueden pasar ese login.
+- **Registro controlado:** entra en su dirección y crea tu cuenta. En cuanto existe, NovaHub cierra el registro solo
+  (`SIGNUPS_ALLOWED=false`) y reinicia el contenedor, así que nadie más puede crear cuentas aunque esté en internet.
+  En la ficha, «Registro de cuentas» muestra cuántas hay y permite **abrirlo para una cuenta más** (familia); se vuelve
+  a cerrar tras ella. El panel `/admin` queda desactivado y las pistas de contraseña ocultas.
+- **Copias diarias desde el primer día** (03:30, 14 días), con la base de datos copiada sin cortes. Las contraseñas ya
+  van cifradas con tu contraseña maestra; para tenerlas también fuera de casa, añade un destino en **Copias fuera de
+  casa** (restic, cifrado).
+- En las apps de Bitwarden: «Autoalojado» (self-hosted) → `https://vault.<tu dominio>`.
+
 ## Contenedores (Podman)
 
 Además de programas (un comando), un servicio puede ser un **contenedor** (una imagen de Docker Hub u otro
@@ -387,6 +402,8 @@ Pestaña **Copias** en la ficha de cada servicio:
 - **Cuándo:** a mano («Hacer copia ahora») o automáticas cada día a una hora o cada X horas.
 - **Qué:** toda la carpeta o solo algunas subcarpetas, sin lo que se regenera (`node_modules`, `.git`,
   `.venv`…). Opción de parar el servicio durante la copia (juegos, bases de datos).
+- **Bases de datos SQLite** (Vaultwarden, Uptime Kuma, ntfy…): se copian con la API de copia de SQLite, que da una
+  copia coherente aunque la app esté escribiendo, en lugar de copiar el archivo y su `-wal` a medias.
 - **Retención:** se guardan las N últimas automáticas y las 3 últimas «antes de restaurar»; las manuales
   solo se borran a mano.
 - **Restaurar:** para el servicio, guarda antes una copia del estado actual, deja la carpeta como en la

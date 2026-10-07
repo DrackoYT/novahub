@@ -1046,6 +1046,7 @@ class Manager:
             mode=svc.get("mode", "dev"), can_build=build_info(svc) is not None,
             listening=(svc["port"] in ports) if svc.get("port") else None,
             backup={k: (st.get("backup") or {}).get(k) for k in ("last_name", "last_ok_at")},
+            signups=CATALOG.signups_public(sid, svc) if svc.get("catalog") else None,
             cpu=None, memory=None, processes=None,
         )
         if running:
@@ -3805,6 +3806,35 @@ def snapshot_time(name, path=None):
         return os.path.getmtime(path) if path else 0
 
 
+SQLITE_SUFFIXES = (".sqlite", ".sqlite3", ".db")
+
+
+def is_sqlite(path):
+    """Base de datos SQLite (por la cabecera, no solo por la extensión)."""
+    if not path.endswith(SQLITE_SUFFIXES) or not os.path.isfile(path) or os.path.islink(path):
+        return False
+    try:
+        with open(path, "rb") as f:
+            return f.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
+def sqlite_copy(src, dest):
+    """Copia coherente de una base de datos SQLite en uso (API de copia de SQLite: respeta el WAL y los bloqueos);
+    copiar el archivo a pelo mientras la app escribe puede dejarla corrupta en la copia."""
+    import sqlite3
+    con = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=30)
+    try:
+        out = sqlite3.connect(dest)
+        try:
+            con.backup(out)
+        finally:
+            out.close()
+    finally:
+        con.close()
+
+
 def _excluded(name, patterns):
     import fnmatch
     return any(fnmatch.fnmatch(name, p) for p in patterns)
@@ -3947,6 +3977,7 @@ class Backups:
         t0, count = time.time(), [0]
 
         own = _own_rels(root)
+        dbs = []  # bases de datos SQLite: se copian aparte, con la API de SQLite, al final
 
         def keep(info):
             if any((os.path.normpath(info.name) + "/").startswith(o + "/") for o in own):
@@ -3954,8 +3985,35 @@ class Backups:
             parts = info.name.split("/")
             if any(_excluded(p, cfg["exclude"]) for p in parts if p not in (".", "")):
                 return None
+            if info.isfile():
+                full = os.path.join(root, info.name)
+                if is_sqlite(full):
+                    dbs.append(info.name)
+                    return None
+                for side in ("-wal", "-shm", "-journal"):  # lo pendiente del WAL ya va dentro de la copia coherente
+                    if info.name.endswith(side) and is_sqlite(full[:-len(side)]):
+                        return None
             count[0] += info.isfile()
             return info
+
+        def add_databases(tar):
+            for arc in dbs:
+                full, tmp_db = os.path.join(root, arc), os.path.join(folder, f".{name}.sqlite.tmp")
+                try:
+                    sqlite_copy(full, tmp_db)
+                    tar.add(tmp_db, arcname=arc)
+                    MANAGER.log(sid, f"base de datos copiada sin cortes: {os.path.normpath(arc)}")
+                except Exception as e:  # noqa: BLE001
+                    MANAGER.log(sid, f"\x1b[33mno se pudo copiar {arc} con SQLite ({e}): se copia el archivo tal cual\x1b[0m")
+                    for side in ("", "-wal", "-shm"):
+                        if os.path.isfile(full + side):
+                            tar.add(full + side, arcname=arc + side)
+                finally:
+                    try:
+                        os.remove(tmp_db)
+                    except OSError:
+                        pass
+                count[0] += 1
 
         try:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -3964,6 +4022,7 @@ class Backups:
                                                            format=tarfile.PAX_FORMAT, pax_headers=meta) as tar:
                 for rel in scope:
                     tar.add(os.path.join(root, rel), arcname=os.path.normpath(rel), filter=keep)
+                add_databases(tar)
             os.replace(tmp, final)
         except BaseException:
             try:
@@ -4479,13 +4538,95 @@ def local_tz():
 class Catalog:
     def __init__(self):
         self.apps = {a["id"]: a for a in read_json(CATALOG_FILE, {}).get("apps", [])}
+        self.accounts = {}  # sid → nº de cuentas (apps con registro controlado, p. ej. Vaultwarden)
+        self.seen_open = {}  # sid → registro abierto en la última vuelta
+
+    # ── registro de cuentas (apps con «signups» en el catálogo) ──
+    def signup_cfg(self, svc):
+        app = self.apps.get(svc.get("catalog") or "")
+        return app.get("signups") if app and svc.get("kind") == "container" else None
+
+    def signups_public(self, sid, svc):
+        cfg = self.signup_cfg(svc)
+        if not cfg:
+            return None
+        return {"open": (svc.get("env") or {}).get(cfg["env"]) == cfg["open"], "accounts": self.accounts.get(sid),
+                "auto": svc.get("signups_auto", True)}
+
+    def count_accounts(self, svc):
+        import sqlite3
+        db = os.path.join(service_root(svc), self.signup_cfg(svc)["db"])
+        if not os.path.isfile(db):
+            return None
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        try:
+            return int(con.execute(self.signup_cfg(svc)["count"]).fetchone()[0])
+        except sqlite3.OperationalError:
+            return None  # aún sin tablas (primer arranque)
+        finally:
+            con.close()
+
+    def set_signups(self, sid, data):
+        svc = MANAGER.services[sid]
+        cfg = self.signup_cfg(svc)
+        if not cfg:
+            raise ApiError(400, "Este servicio no tiene registro de cuentas que controlar")
+        want_open = bool(data.get("open"))
+        try:
+            count = self.count_accounts(svc)
+        except Exception:  # noqa: BLE001
+            count = None
+        with MANAGER.lock:
+            svc = MANAGER.services[sid]
+            was_open = (svc.get("env") or {}).get(cfg["env"]) == cfg["open"]
+            svc["env"] = {**(svc.get("env") or {}), cfg["env"]: cfg["open"] if want_open else cfg["closed"]}
+            if "auto" in data:
+                svc["signups_auto"] = bool(data["auto"])
+            if want_open and not was_open:
+                svc["signups_base"] = count or 0  # se vuelve a cerrar en cuanto haya una cuenta más que ahora
+            svc["command"] = container_command(sid, svc)
+            MANAGER.save_services()
+        if want_open != was_open:
+            MANAGER.log(sid, f"\x1b[35mregistro de cuentas {'abierto' if want_open else 'cerrado'}"
+                             f"{': se reinicia para aplicarlo' if MANAGER.running(sid) else ''}\x1b[0m")
+            if MANAGER.running(sid):
+                MANAGER.restart(sid)
+        return MANAGER.get_public(sid)
+
+    def watch(self):
+        """Cuenta las cuentas de las apps con registro controlado y, si el cierre automático está puesto, cierra
+        el registro en cuanto aparece una cuenta nueva (la tuya): nadie más puede registrarse aunque esté en internet."""
+        while True:
+            for sid, svc in list(MANAGER.services.items()):
+                if not self.signup_cfg(svc):
+                    continue
+                try:
+                    count = self.count_accounts(svc)
+                except Exception:  # noqa: BLE001
+                    continue
+                self.accounts[sid] = count
+                st = self.signups_public(sid, svc)
+                if st["open"] and self.seen_open.get(sid) is False:  # abierto a mano (Variables): cuenta desde ahora
+                    with MANAGER.lock:
+                        svc["signups_base"] = count or 0
+                        MANAGER.save_services()
+                self.seen_open[sid] = st["open"]
+                if st["open"] and st["auto"] and count is not None and count > svc.get("signups_base", 0) \
+                        and sid not in MANAGER.transition:
+                    MANAGER.log(sid, f"\x1b[32mya hay {count} cuenta{'s' if count != 1 else ''}: se cierra el registro "
+                                     "para que nadie más pueda crear una\x1b[0m")
+                    try:
+                        self.set_signups(sid, {"open": False})
+                    except Exception:  # noqa: BLE001
+                        traceback.print_exc()
+            time.sleep(15)
 
     def public(self):
         installed = {}
         for sid, s in MANAGER.services.items():
             if s.get("catalog"):
                 installed.setdefault(s["catalog"], []).append(sid)
-        keys = ("id", "name", "category", "replaces", "desc", "ram", "port", "fields")
+        keys = ("id", "name", "category", "replaces", "desc", "ram", "port", "fields", "https", "subdomain")
         return {"apps": [{**{k: a.get(k) for k in keys}, "kind": "compose" if a.get("compose") else "container",
                           "installed": installed.get(a["id"], [])} for a in self.apps.values()],
                 "podman": bool(shutil.which("podman")), "compose": bool(shutil.which("podman-compose")),
@@ -4573,7 +4714,15 @@ class Catalog:
             body["subdomain"] = sub
         extra, notice = PUBLISHER.apply(None, None, normalize_service(body), body)
         extra.update(catalog=app["id"], notes=fill(app.get("notes", "")))
+        if app.get("backup"):  # copias diarias desde el primer día (p. ej. las contraseñas de Vaultwarden)
+            extra["backup"] = {**BACKUP_DEFAULTS, **app["backup"]}
+        if app.get("signups"):
+            extra.update(signups_auto=True, signups_base=0)
         sid = MANAGER.create(body, extra)
+        if app.get("backup"):
+            with MANAGER.lock:  # la primera copia, a la hora programada (no ahora, con la app aún vacía)
+                MANAGER.st(sid)["backup"] = {"last_auto": time.time()}
+                MANAGER.save_state()
         MANAGER.log(sid, f"\x1b[35minstalado desde el catálogo: {app['name']}\x1b[0m")
         if data.get("start", True):
             try:
@@ -5796,7 +5945,7 @@ JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
                            r"|files|file|file/download|git|git/commit|git/push|git/pull|update|mode"
-                           r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run|logs/search|env))?")
+                           r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run|logs/search|env|signups))?")
 KILL_ROUTE = re.compile(r"/api/processes/(\d+)/kill")
 USER_ROUTE = re.compile(r"/api/users/([a-z0-9][a-z0-9._-]{1,31})")
 OFFSITE_ROUTE = re.compile(r"/api/offsite/destinations/([a-z0-9][a-z0-9-]{0,40})(?:/(run|check|snapshots|restore))?")
@@ -6267,6 +6416,8 @@ class Handler(BaseHTTPRequestHandler):
         if action == "backups/run" and method == "POST":
             BACKUPS.start(sid, "manual")
             return self.send_json(BACKUPS.public(sid), 202)
+        if action == "signups" and method == "POST":
+            return self.send_json(CATALOG.set_signups(sid, self.read_body()))
         if action == "backups/restore" and method == "POST":
             BACKUPS.restore(sid, self.read_body().get("name"))
             return self.send_json(BACKUPS.public(sid), 202)
@@ -6575,6 +6726,7 @@ def main():
     SUPERVISOR.spawn("tareas", SCHEDULER.loop)
     SUPERVISOR.spawn("actualizaciones", UPDATES.loop)
     SUPERVISOR.spawn("fuera-de-casa", OFFSITE.loop)
+    SUPERVISOR.spawn("registro-de-cuentas", CATALOG.watch)
     write_json(RUNNING_FILE, {"version": VERSION, "commit": current_commit(), "pid": os.getpid(), "at": time.time()})
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)

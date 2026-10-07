@@ -16,10 +16,27 @@
    ],
    "env": {
     "DOMAIN": "{url}",
-    "SIGNUPS_ALLOWED": "true"
+    "SIGNUPS_ALLOWED": "true",
+    "INVITATIONS_ALLOWED": "false",
+    "SHOW_PASSWORD_HINT": "false"
    },
    "health": "http",
-   "notes": "1. Ábrelo y crea tu cuenta (la contraseña maestra no se puede recuperar: apúntala).\n2. Después, en Editar → Variables, pon SIGNUPS_ALLOWED=false y reinicia para que nadie más pueda registrarse.\n3. Necesita HTTPS: publícalo en internet (Cloudflare Tunnel) para usarlo desde el móvil y las extensiones.\n4. Activa las copias de seguridad del servicio: ahí están todas tus contraseñas (cifradas)."
+   "notes": "1. Ábrelo en su dirección https:// y crea tu cuenta. La contraseña maestra no se puede recuperar: apúntala en papel.\n2. En cuanto exista tu cuenta, NovaHub cierra el registro solo (lo ves en «Registro de cuentas»). Para dar de alta a alguien de tu familia, ábrelo para una cuenta más.\n3. En las apps y extensiones de Bitwarden elige «Autoalojado» (self-hosted) y pon {url}\n4. Copia diaria a las 03:30 (se guardan 14 días), con la base de datos copiada sin cortes. Para tenerla también fuera de casa y cifrada: Ajustes → Copias fuera de casa.\n5. El panel /admin está desactivado: no hace falta.",
+   "https": true,
+   "subdomain": "vault",
+   "signups": {
+    "env": "SIGNUPS_ALLOWED",
+    "open": "true",
+    "closed": "false",
+    "db": "data/db.sqlite3",
+    "count": "SELECT COUNT(*) FROM users"
+   },
+   "backup": {
+    "enabled": true,
+    "every": "daily",
+    "at": "03:30",
+    "keep": 14
+   }
   },
   {
    "id": "immich",
