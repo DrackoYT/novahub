@@ -6,8 +6,10 @@ Bitwarden, 2FAS…) y confirmas con un primer código. Desde entonces, al entrar
 
 - **Códigos de recuperación:** 8, de un solo uso, que se muestran una vez (cópialos o descárgalos). Sirven en lugar del
   código si pierdes el móvil; se pueden generar otros nuevos.
-- **Obligatoria para administradores** (Ajustes → Sesión): quien no la tenga solo puede mirar hasta activarla. Para
-  marcarla hay que tenerla activada antes.
+- **Cambiar de móvil:** desactívala (pide la contraseña y un código) y vuelve a activarla con el móvil nuevo. Así una
+  sesión robada no puede pasarla a otro teléfono.
+- **Obligatoria para administradores** (Ajustes → Sesión): quien no la tenga no puede ver ni tocar nada (ni servicios,
+  ni archivos, ni logs) hasta activarla en Mi cuenta. Para marcarla hay que tenerla activada antes.
 - **Móvil perdido:** un administrador se la quita a otro usuario en Usuarios → Editar. Si eres tú y no te quedan
   códigos: `python3 server.py reset-totp <usuario>` en el servidor.
 - Las llaves de acceso entre paneles (Acceso remoto) no la piden: ya son secretos largos.

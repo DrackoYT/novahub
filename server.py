@@ -314,7 +314,10 @@ def kill_container_orphans(sid, port):
     name = container_name(sid)
     if subprocess.run(["podman", "container", "exists", name], capture_output=True, timeout=15).returncode == 0:
         return []  # lo conoce: --replace se encarga
-    ports = subprocess.run(["podman", "ps", "--format", "{{.Ports}}"], capture_output=True, text=True, timeout=15).stdout
+    res = subprocess.run(["podman", "ps", "--format", "{{.Ports}}"], capture_output=True, text=True, timeout=15)
+    if res.returncode != 0:
+        return []  # sin saber qué contenedores hay, no se cierra nada
+    ports = res.stdout
     if port and re.search(rf":{port}->", ports):
         return []  # el puerto es de otro contenedor que sí existe
     procs = {}
@@ -1423,6 +1426,10 @@ class Auth:
     def totp_setup(self, username):
         """Clave nueva pendiente de confirmar (no sustituye a la actual hasta que se confirma con un código)."""
         from urllib.parse import quote
+        if (self.users[username].get("totp") or {}).get("secret"):
+            # con una sesión robada no se puede pasar a otro móvil: para cambiarla hay que desactivarla antes,
+            # y eso pide la contraseña y un código
+            raise ApiError(400, "Ya la tienes activada. Para pasarla a otro móvil, desactívala antes (pide tu contraseña y un código)")
         secret = base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
         with self.lock:
             self.users[username]["totp_pending"] = {"secret": secret, "at": time.time()}
@@ -1436,6 +1443,8 @@ class Auth:
         with self.lock:
             u = self.users[username]
             pend = u.get("totp_pending") or {}
+            if (u.get("totp") or {}).get("secret"):
+                raise ApiError(400, "Ya la tienes activada")
             if not pend or time.time() - pend.get("at", 0) > 1800:
                 raise ApiError(400, "Vuelve a empezar: la clave ha caducado (30 min)")
             counter = totp_match(pend["secret"], code)
@@ -6923,7 +6932,10 @@ def describe_action(method, path, body, query, names):
         def field(src, key):
             v = (src or {}).get(key) if isinstance(src, dict) else None
             v = query(key) if src is None else v
-            return re.sub(r"[\x00-\x1f\x7f]", " ", str(v))[:80] if v not in (None, "") else "—"
+            if v in (None, ""):
+                return "—"
+            v = re.sub(r"://[^/@\s]+@", "://", str(v))  # https://usuario:llave@github.com/… → sin la llave
+            return re.sub(r"[\x00-\x1f\x7f]", " ", v)[:80]
         text = tpl.replace("{svc}", names.get(sid) or sid or "?")
         text = re.sub(r"\{b:(\w+)\}", lambda x: field(body, x.group(1)), text)
         text = re.sub(r"\{q:(\w+)\}", lambda x: field(None, x.group(1)), text)
@@ -7100,7 +7112,11 @@ class Handler(BaseHTTPRequestHandler):
             auth = self.headers.get("Authorization") or ""
             if auth.startswith("Bearer "):
                 via = via or "llave de otro panel"
-            ACTIVITY.record(user, self.client_ip(), desc[0], (f"En {via}: " if m else "") + desc[1], service=desc[2] if not m else None,
+            service = desc[2]
+            if not service and not m and names is not None:  # crear, clonar, plantilla o catálogo: el servicio nuevo
+                new = [sid for sid in list(MANAGER.services) if sid not in names]
+                service = new[0] if len(new) == 1 else None
+            ACTIVITY.record(user, self.client_ip(), desc[0], (f"En {via}: " if m else "") + desc[1], service=service if not m else None,
                             via=via if not m else (via if auth.startswith("Bearer ") else None))
         except Exception:  # noqa: BLE001
             traceback.print_exc()  # el registro nunca debe romper la petición
@@ -7265,9 +7281,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.proxy(m.group(1), m.group(2))
         perm, psid = route_permission(method, path, self.query("service"))
         self.need(perm, psid)  # todo lo que no está en route_permission es solo para administradores
-        if (method != "GET" and self.user["role"] == "admin" and not self.user["totp"] and AUTH.settings()["admin_totp"]
-                and not path.startswith("/api/account") and not (self.headers.get("Authorization") or "").startswith("Bearer ")):
-            raise ApiError(403, "Activa la verificación en dos pasos (Ajustes → Mi cuenta): hasta entonces solo puedes mirar")
+        if (self.user["role"] == "admin" and not self.user["totp"] and AUTH.settings()["admin_totp"]
+                and not (self.headers.get("Authorization") or "").startswith("Bearer ")
+                and not (path.startswith("/api/account") or path in ("/api/me", "/api/system") or path.startswith("/api/docs"))):
+            # con la contraseña sola no se ve nada (ni archivos, ni .env, ni logs): solo se puede activar la verificación
+            raise ApiError(403, "Activa la verificación en dos pasos (Ajustes → Mi cuenta) para seguir: es obligatoria para los administradores")
 
         if path == "/api/me":
             return self.send_json({"ok": True, **AUTH.settings(), "user": self.user,
@@ -7356,7 +7374,11 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if path == "/api/hardware" and method == "GET":
-            return self.send_json(HARDWARE.public())
+            hw = HARDWARE.public()
+            if not self.can("admin"):  # como con los servicios: a quien no administra no se le envían rutas
+                hw = {**hw, "base_dir": None, "smart_error": None,
+                      "disks": [{k: v for k, v in d.items() if k not in ("serial", "mounts")} | {"mounts": []} for d in hw["disks"]]}
+            return self.send_json(hw)
         if path == "/api/hardware/refresh" and method == "POST":
             return self.send_json(HARDWARE.refresh())
         if path == "/api/system":

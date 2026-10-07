@@ -1032,7 +1032,7 @@ const mdSlug = (t) => t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").r
 
 function mdLink(label, href, ctx) {
   const raw = href.replace(/&amp;/g, "&");
-  if (/^(https?:|mailto:)/i.test(raw)) return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
+  if (/^(https?:|mailto:|\/\/)/i.test(raw)) return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
   if (raw.startsWith("#")) return `<a href="#/docs/${ctx.slug}/${esc(raw.slice(1))}" data-anchor="${esc(raw.slice(1))}">${label}</a>`;
   const page = raw.match(/^(?:\.\/)?([\w.-]+)\.md(?:#(.*))?$/);
   if (page) {
@@ -1040,7 +1040,9 @@ function mdLink(label, href, ctx) {
     return `<a href="#/docs/${esc(slug)}${page[2] ? `/${esc(page[2])}` : ""}">${label}</a>`;
   }
   if (ctx.repo && !/^[a-z]+:/i.test(raw)) {  // otro archivo del repositorio (../../server.py): en GitHub
-    return `<a href="${esc(new URL(raw, `https://github.com/${ctx.repo}/blob/main/docs/guia/`).href)}" target="_blank" rel="noopener">${label}</a>`;
+    try {
+      return `<a href="${esc(new URL(raw, `https://github.com/${ctx.repo}/blob/main/docs/guia/`).href)}" target="_blank" rel="noopener">${label}</a>`;
+    } catch { return label; }
   }
   return label;
 }
@@ -1981,7 +1983,7 @@ async function setSession(body) {
     <div class="checks one"><label><input type="checkbox" name="reload" ${s.lock_on_reload ? "checked" : ""}>
       <span><strong>Pedir la contraseña al recargar la página</strong><small>También al abrir el panel en una pestaña nueva o abrir la app del móvil.</small></span></label>
       <label><input type="checkbox" name="admin_totp" ${s.admin_totp ? "checked" : ""}>
-      <span><strong>Verificación en dos pasos obligatoria para los administradores</strong><small>Quien no la tenga solo podrá mirar hasta activarla en Mi cuenta. Para marcarlo, actívala antes en tu cuenta.</small></span></label></div>
+      <span><strong>Verificación en dos pasos obligatoria para los administradores</strong><small>Quien no la tenga no podrá ver ni tocar nada hasta activarla en Mi cuenta. Para marcarlo, actívala antes en tu cuenta.</small></span></label></div>
     <div class="set-grid">
       <label class="field"><span>Cerrar tras… sin usarlo (minutos)</span><input name="idle" inputmode="numeric" value="${s.idle_minutes}">
         <small>Sin clics ni teclas en el panel. Las actualizaciones automáticas de la pantalla no cuentan.</small></label>
@@ -2388,7 +2390,7 @@ function drawTotp(box, st, mode = null, data = null) {
     });
   } else {
     box.innerHTML = `${head}
-      ${st.required ? '<p class="git-note bad">Es obligatoria para los administradores: hasta que la actives solo puedes mirar.</p>' : ""}
+      ${st.required ? '<p class="git-note bad">Es obligatoria para los administradores: actívala para poder usar el panel.</p>' : ""}
       <p class="set-sub">Además de la contraseña, al entrar se pide un código de 6 cifras de una app del móvil. Si alguien averigua tu contraseña,
         sin tu móvil no puede entrar. Sirve cualquier app de códigos: Aegis, Google Authenticator, Bitwarden, 2FAS…</p>
       <button type="button" class="btn primary" data-totp="setup">${ICON.lock}Activar</button>`;

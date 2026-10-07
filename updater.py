@@ -117,6 +117,9 @@ def main():
             if prev_branch != a.branch:
                 git(a.base, "checkout", "-q", a.branch)
             git(a.base, "merge", "-q", "--ff-only", a.target)
+        elif prev_branch and subprocess.run(["git", "-C", a.base, "merge-base", "--is-ancestor", prev, a.target],
+                                            capture_output=True, timeout=60).returncode == 0:
+            git(a.base, "merge", "-q", "--ff-only", a.target)  # la rama avanza: no se queda «suelta» (detached)
         else:
             git(a.base, "checkout", "-q", "--detach", a.target)
         log(f"código en {a.label or a.target[:7]}")
