@@ -71,6 +71,7 @@ GATEWAY_OFFSET = 10000             # la pasarela de un servicio publicado escuch
 HEALTH_EVERY = 30                  # segundos entre comprobaciones de salud de cada servicio
 HEALTH_FAILS = 3                   # fallos seguidos antes de reiniciar (≈90 s sin responder)
 HEALTH_GRACE = 60                  # tras arrancar no se comprueba: margen para que el programa se inicie
+HEALTH_GRACE_PULL = 900  # contenedores: hasta que respondan por primera vez (la 1.ª vez descargan GB de imágenes), máx. 15 min
 HEALTH_RESTARTS_PER_HOUR = 3
 HEALTH_MODES = ("auto", "http", "tcp", "off")
 SHELL = shutil.which("bash") or "/bin/sh"
@@ -2254,13 +2255,21 @@ class Health:
                         st.pop("health", None)
                     self.next.pop(sid, None)
                     continue
-                if now - (st.get("started_at") or 0) < HEALTH_GRACE:
-                    st["health"] = {"state": "starting", "at": now}
+                started = st.get("started_at") or 0
+                grace = HEALTH_GRACE
+                if svc.get("kind") in CONTAINER_KINDS and (st.get("health") or {}).get("ok_at", 0) < started:
+                    grace = HEALTH_GRACE_PULL  # aún no ha respondido nunca desde que arrancó: puede estar descargando
+                if now - started < grace and (st.get("health") or {}).get("ok_at", 0) < started:
+                    if (st.get("health") or {}).get("state") != "starting":
+                        st["health"] = {"state": "starting", "at": now}
+                    if now - started >= HEALTH_GRACE and mono >= self.next.get(sid, 0):  # se prueba sin contar fallos
+                        self.next[sid] = mono + HEALTH_EVERY
+                        due.append((sid, mode, svc["port"], svc.get("health_path") or "/", st.get("pid"), True))
                     continue
                 if mono >= self.next.get(sid, 0):
                     self.next[sid] = mono + HEALTH_EVERY
-                    due.append((sid, mode, svc["port"], svc.get("health_path") or "/", st.get("pid")))
-        for sid, mode, port, path, pid in due:
+                    due.append((sid, mode, svc["port"], svc.get("health_path") or "/", st.get("pid"), False))
+        for sid, mode, port, path, pid, warming in due:
             SUPERVISOR.beat("salud")  # cada comprobación puede tardar 8 s: con varias, no parecer colgado
             ok, ms, detail = probe(mode, port, path)
             with MANAGER.lock:
@@ -2268,8 +2277,11 @@ class Health:
                 if not st or st.get("pid") != pid or sid in MANAGER.transition:
                     continue  # se reinició o paró mientras tanto
                 prev = st.get("health") or {}
+                if warming and not ok:
+                    continue  # todavía arrancando (o descargando la imagen): no cuenta como fallo
                 fails = 0 if ok else prev.get("fails", 0) + 1
-                st["health"] = {"state": "ok" if ok else "failing", "at": time.time(), "ms": ms, "detail": detail, "fails": fails}
+                st["health"] = {"state": "ok" if ok else "failing", "at": time.time(), "ms": ms, "detail": detail, "fails": fails,
+                                "ok_at": time.time() if ok else prev.get("ok_at", 0)}
                 if ok and (prev.get("fails") or st.get("health_gave_up")):
                     st["health_gave_up"] = False  # vuelve a vigilarse con normalidad
                     MANAGER.log(sid, f"\x1b[32mvuelve a responder ({detail}, {ms} ms)\x1b[0m")
@@ -4649,11 +4661,17 @@ class Catalog:
         for sid, s in MANAGER.services.items():
             if s.get("catalog"):
                 installed.setdefault(s["catalog"], []).append(sid)
-        keys = ("id", "name", "category", "replaces", "desc", "ram", "port", "fields", "https", "subdomain")
+        keys = ("id", "name", "category", "replaces", "desc", "ram", "port", "fields", "https", "subdomain", "storage")
         return {"apps": [{**{k: a.get(k) for k in keys}, "kind": "compose" if a.get("compose") else "container",
                           "installed": installed.get(a["id"], [])} for a in self.apps.values()],
                 "podman": bool(shutil.which("podman")), "compose": bool(shutil.which("podman-compose")),
-                "apps_dir": APPS_DIR, "domain": PUBLISHER.domain if PUBLISHER.enabled else None}
+                "apps_dir": APPS_DIR, "domain": PUBLISHER.domain if PUBLISHER.enabled else None,
+                "storage_base": self.storage_base(), "storage_kind": disk_kind(self.storage_base() or APPS_DIR)}
+
+    @staticmethod
+    def storage_base():
+        """Disco para los datos grandes de las apps (fotos, vídeos): el disco duro de datos si está montado."""
+        return BACKUP_MOUNT if BACKUP_MOUNT and os.path.ismount(BACKUP_MOUNT) else None
 
     @staticmethod
     def free_port(want):
@@ -4692,9 +4710,24 @@ class Catalog:
                 if key.startswith("secret:"):
                     return secrets_named.setdefault(key, secrets.token_urlsafe(12))
                 return {"url": url, "host": urlparse(url).hostname or "", "uid": str(os.getuid()), "gid": str(os.getgid()),
-                        "tz": local_tz()}.get(key, m.group(0))
-            return re.sub(r"\{(secret(?::\w+)?|secret_alnum|url|host|uid|gid|tz)\}", rep, str(text))
+                        "tz": local_tz(), "lan": lan_ip() or "127.0.0.1", "port": str(port),
+                        "storage": storage or ""}.get(key, m.group(0))
+            return re.sub(r"\{(secret(?::\w+)?|secret_alnum|url|host|uid|gid|tz|lan|port|storage)\}", rep, str(text))
 
+        storage = None
+        if app.get("storage"):  # carpeta de datos grandes: por defecto en el disco duro, fuera de la carpeta de la app
+            st_cfg = app["storage"]
+            storage = os.path.expanduser(str(data.get("storage") or "").strip()) or \
+                (os.path.join(self.storage_base(), st_cfg["default"]) if self.storage_base() else os.path.join(cwd, st_cfg.get("local", "data")))
+            if not os.path.isabs(storage):
+                raise ApiError(400, f"{st_cfg['label']}: pon una ruta completa (p. ej. /mnt/dades/{st_cfg['default']})")
+            storage = os.path.normpath(storage)
+            if os.path.realpath(storage).startswith(os.path.realpath(DATA_DIR) + os.sep):
+                raise ApiError(400, f"{st_cfg['label']}: no puede estar dentro de los datos de NovaHub")
+            try:
+                os.makedirs(storage, exist_ok=True)
+            except OSError as e:
+                raise ApiError(400, f"No se pudo crear {storage}: {e.strerror}")
         volumes = [fill(v) for v in app.get("volumes", [])]
         for f in app.get("fields", []):
             val = str((data.get("fields") or {}).get(f["key"]) or "").strip()
@@ -4718,7 +4751,10 @@ class Catalog:
                     raise ApiError(502, f"No se pudo descargar {fname} de {app['name']}: {e}")
                 if fname == c.get("env_file"):
                     lines = content.splitlines()
-                    for key, val in c.get("env_set", {}).items():
+                    env_set = dict(c.get("env_set", {}))
+                    if storage:
+                        env_set[app["storage"]["env"]] = storage
+                    for key, val in env_set.items():
                         val = fill(val)
                         hit = [i for i, l in enumerate(lines) if re.match(rf"\s*#?\s*{re.escape(key)}=", l)]
                         if hit:
@@ -4741,6 +4777,8 @@ class Catalog:
             extra["backup"] = {**BACKUP_DEFAULTS, **app["backup"]}
         if app.get("signups"):
             extra.update(signups_auto=True, signups_base=0)
+        if storage:  # va directa a las copias fuera de casa (restic: incremental, sin duplicarla en tar.gz)
+            extra.update(storage=storage, offsite_paths=[storage], offsite_exclude=app["storage"].get("offsite_exclude", []))
         sid = MANAGER.create(body, extra)
         if app.get("backup"):
             with MANAGER.lock:  # la primera copia, a la hora programada (no ahora, con la app aún vacía)
@@ -5036,7 +5074,7 @@ class Offsite:
                                                  "last_backup", "last_check", "same_disk")} | {"repo": self.repo(d), "available": ok, "why": why})
         return {"restic": version, "pubkey": self.ssh_key(), "config": self.config(), "destinations": dests,
                 "job": self.job, "log": log_tail, "restore_dir": RESTORE_DIR,
-                "sources": self.sources()}
+                "sources": self.sources(), "service_sources": [{"name": n, "path": p} for n, p, _ in self.service_sources()]}
 
     @staticmethod
     def sources():
@@ -5044,7 +5082,21 @@ class Offsite:
         snap = os.path.realpath(SNAPSHOT_DIR)
         if os.path.isdir(snap) and not snap.startswith(paths[0] + os.sep):
             paths.append(snap)
+        for _, path, _ in Offsite.service_sources():
+            if not any(path == p or path.startswith(p + os.sep) for p in paths):
+                paths.append(path)
         return paths
+
+    @staticmethod
+    def service_sources():
+        """(servicio, carpeta, exclusiones) de los servicios con datos fuera de su carpeta (p. ej. las fotos de Immich)."""
+        out = []
+        for sid, svc in list(MANAGER.services.items()):
+            for p in svc.get("offsite_paths") or []:
+                real = os.path.realpath(p)
+                if os.path.isdir(real):
+                    out.append((svc.get("name") or sid, real, [os.path.join(real, x) for x in svc.get("offsite_exclude") or []]))
+        return out
 
     # ── trabajos ──
     def _job(self, label, fn):
@@ -5088,6 +5140,7 @@ class Offsite:
         self._log(f"Copia cifrada a «{d['name']}» ({self.repo(d)})…")
         t0 = time.time()
         excludes = [a for x in OFFSITE_EXCLUDE for a in ("--exclude", os.path.join(os.path.realpath(DATA_DIR), x))]
+        excludes += [a for _, _, ex in self.service_sources() for x in ex for a in ("--exclude", x)]
         try:
             res = self.restic(d, "backup", "--tag", "novahub", "--host", socket.gethostname(), "--json", *excludes, *self.sources(), capture=True)
             summary = next((json.loads(l) for l in res.stdout.splitlines()[::-1] if '"message_type":"summary"' in l.replace(" ", "")), {})

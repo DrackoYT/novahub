@@ -1634,7 +1634,10 @@ async function setOffsite(body) {
         <span>Conservar <input id="off-d" class="upd-hour" value="${c.keep_daily}"> diarias, <input id="off-w" class="upd-hour" value="${c.keep_weekly}"> semanales
           y <input id="off-m" class="upd-hour" value="${c.keep_monthly}"> mensuales</span>
       </div>
-      <p class="dim-text upd-help">Se copian ${o.sources.map((x) => `<code>${esc(x)}</code>`).join(" y ")}. Cada ${c.verify_days} días se comprueba el destino y se restaura
+      <p class="dim-text upd-help">Se copian ${o.sources.map((x) => {
+        const svc = (o.service_sources || []).find((s) => s.path === x);
+        return `<code>${esc(x)}</code>${svc ? ` (${esc(svc.name)})` : ""}`;
+      }).join(", ").replace(/, ([^,]*)$/, " y $1")}. Cada ${c.verify_days} días se comprueba el destino y se restaura
         de verdad un archivo para confirmar que la copia sirve. «Recuperar» saca una copia completa a <code>${esc(o.restore_dir)}</code> sin tocar nada de lo actual.</p>
       ${o.log ? `<details class="adv" ${busy ? "open" : ""}><summary>Registro</summary><pre class="upd-log" id="off-log">${esc(o.log)}</pre></details>` : ""}`;
     const f = $("#off-form", body);
@@ -3363,6 +3366,9 @@ function installApp(cat, id) {
             <small>Ahí quedan sus datos (y entran en las copias de seguridad).</small></label>
           <label class="field"><span>Puerto</span><input name="port" inputmode="numeric" placeholder="${a.port} (o el siguiente libre)"></label>
         </div>
+        ${a.storage ? `<label class="field"><span>${esc(a.storage.label)}</span><input name="storage" class="mono" spellcheck="false"
+            value="${esc(cat.storage_base ? `${cat.storage_base}/${a.storage.default}` : `${cat.apps_dir}/${a.id}/${a.storage.local || "data"}`)}">
+          <small>${esc(a.storage.help || "")}${cat.storage_base ? ` ${esc(cat.storage_base)} es el disco ${esc(cat.storage_kind || "de datos")}.` : ""}</small></label>` : ""}
         ${(a.fields || []).map((f) => `<label class="field"><span>${esc(f.label)}</span><input name="f-${esc(f.key)}" class="mono" spellcheck="false" placeholder="${esc(f.placeholder || "")}">
           <small>Opcional: también puedes añadirla después en Editar → Carpetas.</small></label>`).join("")}
         ${cat.domain ? `<label class="field"><span>Publicar en internet</span><div class="affix"><input name="subdomain" class="mono" spellcheck="false" autocapitalize="off" placeholder="${esc(a.id)}"${a.subdomain ? ` value="${esc(a.subdomain)}"` : ""}><span>.${esc(cat.domain)}</span></div>
@@ -3381,7 +3387,7 @@ function installApp(cat, id) {
     (a.fields || []).forEach((x) => { fields[x.key] = f.elements[`f-${x.key}`].value; });
     try {
       const s = await api("POST", "/api/catalog/install", { app: a.id, name: f.name.value.trim(), cwd: f.cwd.value.trim(), port: f.port.value.trim(),
-        subdomain: f.subdomain?.value.trim() || "", fields, start: f.start.checked });
+        subdomain: f.subdomain?.value.trim() || "", storage: f.storage?.value.trim() || "", fields, start: f.start.checked });
       dlg.close();
       ui.catalog = null;
       toast(`${a.name} instalada${s.notice ? `. ${s.notice}` : ""}`, "ok");

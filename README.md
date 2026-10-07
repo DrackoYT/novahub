@@ -317,6 +317,20 @@ Vaultwarden es compatible con las apps y extensiones de Bitwarden (Android, iPho
   casa** (restic, cifrado).
 - En las apps de Bitwarden: «Autoalojado» (self-hosted) → `https://vault.<tu dominio>`.
 
+### Fotos (Immich)
+
+Alternativa a Google Fotos: copia automática desde el móvil, caras, mapas y álbumes compartidos.
+
+- **Fotos en el disco duro:** el formulario pide la «Carpeta de las fotos», por defecto en el disco de datos
+  (`/mnt/dades/immich`), y la base de datos se queda en la carpeta de la app (SSD, más rápida).
+- **Copias:** Immich guarda cada noche una copia de su base de datos en `<fotos>/backups`. Las **Copias fuera de casa**
+  se llevan la carpeta de fotos directamente (restic: incremental, sin duplicarla en un .tar.gz), sin miniaturas ni
+  vídeos recodificados, que se regeneran. La copia local del servicio guarda su configuración (`.env`), nunca la carpeta
+  viva de PostgreSQL, que copiada en marcha no sirve.
+- **Móvil:** app «Immich» (F-Droid, Google Play o el APK de sus releases). Cloudflare corta las subidas de más de 100 MB,
+  así que en la app activa el **cambio automático de URL**: con el Wi-Fi de casa usa la dirección local
+  (`http://<ip>:2283`) y fuera, la publicada.
+
 ## Contenedores (Podman)
 
 Además de programas (un comando), un servicio puede ser un **contenedor** (una imagen de Docker Hub u otro
@@ -337,7 +351,8 @@ sudo apt install -y podman podman-compose passt uidmap
   contenedores salen en la consola, cada uno con su nombre.
 - Se vigilan como cualquier servicio: consola (también para escribirles), reinicio si se caen, comprobación
   de salud, límite de memoria, gráficas, tareas programadas, copias de seguridad y publicación en internet.
-  La CPU y la memoria se leen de su cgroup, porque sus procesos no son hijos de NovaHub.
+  La CPU y la memoria se leen de su cgroup, porque sus procesos no son hijos de NovaHub. La comprobación de salud no
+  cuenta fallos hasta que responden por primera vez (máx. 15 min): la primera vez descargan GB de imágenes.
 - **Actualizar imagen** descarga la versión nueva y reinicia solo si ha cambiado.
 - Al parar, el contenedor recibe su señal de parada con el tiempo de «Espera»; después se elimina (los datos
   quedan en sus carpetas).
@@ -412,7 +427,8 @@ Pestaña **Copias** en la ficha de cada servicio:
 ## Copias fuera de casa
 
 Ajustes → **Copias fuera de casa**: las copias locales de los servicios (`novahub-copias`) y la configuración de NovaHub
-(`data/`: servicios, usuarios, ajustes) van **cifradas** con [restic](https://restic.net) (libre: `sudo apt install restic`)
+(`data/`: servicios, usuarios, ajustes), además de las carpetas de datos grandes de las apps (las fotos de Immich, sin
+las miniaturas), van **cifradas** con [restic](https://restic.net) (libre: `sudo apt install restic`)
 a uno o varios destinos tuyos, **sin servicios de terceros ni suscripciones**:
 
 - **Disco USB o externo**: una carpeta del disco. Si no está conectado a la hora de la copia, se espera a la siguiente.

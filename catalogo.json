@@ -61,7 +61,38 @@
    "port": 2283,
    "health": "http",
    "stop_timeout": 60,
-   "notes": "1. La primera vez descarga varias imágenes (unos 2 GB): mira el progreso en la consola.\n2. Ábrelo y crea la cuenta de administrador.\n3. Instala la app «Immich» en el móvil y pon la dirección del servidor para la copia automática.\n4. Las fotos quedan en library/ dentro de la carpeta del servicio: actívale las copias de seguridad (y las de fuera de casa)."
+   "subdomain": "fotos",
+   "storage": {
+    "label": "Carpeta de las fotos",
+    "env": "UPLOAD_LOCATION",
+    "default": "immich",
+    "local": "library",
+    "help": "Fotos y vídeos originales. Mejor en el disco duro grande: la base de datos se queda en la carpeta de la app (SSD).",
+    "offsite_exclude": [
+     "thumbs",
+     "encoded-video"
+    ]
+   },
+   "backup": {
+    "enabled": true,
+    "every": "daily",
+    "at": "04:30",
+    "keep": 7,
+    "exclude": [
+     "node_modules",
+     ".git",
+     ".venv",
+     "venv",
+     "__pycache__",
+     "dist",
+     "build",
+     ".cache",
+     ".next",
+     "postgres",
+     "library"
+    ]
+   },
+   "notes": "1. La primera vez descarga varias imágenes (unos 2 GB): mira el progreso en la consola.\n2. Ábrelo y crea la cuenta de administrador (la primera que se crea lo es).\n3. App del móvil: «Immich» en F-Droid, en Google Play o el APK de github.com/immich-app/immich/releases. Servidor: {url}\n4. En la app, Ajustes → Red → «Cambio automático de URL»: con el Wi-Fi de casa usa http://{lan}:{port}. Cloudflare corta las subidas de más de 100 MB, así que los vídeos largos se suben por el Wi-Fi de casa.\n5. Activa la copia de seguridad en la app (pestaña Copia → elige los álbumes).\n6. Las fotos van a {storage}. Immich guarda cada noche una copia de su base de datos en {storage}/backups, y las Copias fuera de casa se llevan las fotos y esa copia cifradas (sin las miniaturas, que se regeneran)."
   },
   {
    "id": "nextcloud",

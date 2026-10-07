@@ -6,6 +6,13 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- **Fotos propias (Immich)**: el catálogo pide la carpeta de las fotos, por defecto en el disco duro de datos
+  (`/mnt/dades/immich`), con la base de datos en el SSD. Las copias fuera de casa se llevan las fotos directamente
+  (incremental, sin miniaturas) y la copia de la base de datos que Immich hace cada noche; la copia local nunca copia la
+  carpeta viva de PostgreSQL. Notas para el móvil, incluido el cambio de URL en casa por el límite de 100 MB de Cloudflare.
+- La comprobación de salud de los contenedores no cuenta fallos hasta que responden por primera vez (máx. 15 min):
+  antes podía reiniciar una app a media descarga de sus imágenes.
+
 ## 1.0.6 — 2026-10-07
 
 - Arreglado el 502 de Cloudflare (y las comprobaciones de salud fallidas) en servicios publicados cuyo programa solo
