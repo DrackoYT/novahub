@@ -1363,7 +1363,7 @@ const SETTINGS = [
   ["usuarios", "Usuarios", "Quién entra y qué puede hacer", ICON.users, "admin"],
   ["servidores", "Servidores", "Otros servidores en este panel", ICON.server, "admin"],
   ["remoto", "Acceso remoto", "Llaves para otros paneles", ICON.key, "admin"],
-  ["avisos", "Avisos por correo", "Gmail y qué avisar", ICON.mail, "admin"],
+  ["avisos", "Avisos", "Móvil (ntfy) y correo", ICON.mail, "admin"],
   ["vigilante", "Vigilante externo", "Si el servidor cae del todo", ICON.activity, "admin"],
   ["sesion", "Sesión", "Contraseña e inactividad", ICON.lock, "admin"],
   ["git", "Git", "Autor de los commits", ICON.git, "admin"],
@@ -1407,43 +1407,88 @@ function setForm(body, html, save, extra) {
   return submit;
 }
 
-async function setNotify(body) {
-  const n = await api("GET", "/api/notify");
-  const status = n.last_error ? `<p class="git-note bad">Último error: ${esc(n.last_error)}</p>`
+async function setNotify(body, shownPass = null) {
+  const [n, svcs] = await Promise.all([api("GET", "/api/notify"), api("GET", "/api/services").catch(() => ({ services: [] }))]);
+  const nt = n.ntfy, catalogNtfy = svcs.services.filter((s) => s.catalog === "ntfy");
+  const mailStatus = n.last_error ? `<p class="git-note bad">Último error: ${esc(n.last_error)}</p>`
     : n.last_sent ? `<p class="nt-ok">Último correo enviado ${fmtAgo(n.last_sent)}.</p>`
-    : n.configured ? '<p class="nt-ok">Configurado. Pulsa «Enviar correo de prueba» para comprobarlo.</p>' : "";
+    : n.configured ? '<p class="nt-ok">Configurado. Pulsa «Probar correo» para comprobarlo.</p>' : '<p class="dim-text">Desactivado (sin cuenta de Gmail).</p>';
+  const ntfyStatus = nt.last_error ? `<p class="git-note bad">Último error: ${esc(nt.last_error)}</p>`
+    : nt.last_sent ? `<p class="nt-ok">Último aviso enviado ${fmtAgo(nt.last_sent)}.</p>` : "";
+  const phone = nt.configured && nt.public_url ? `<div class="git-note off-key ntfy-phone"><b>En la app ntfy del móvil:</b>
+      <ol><li>Ajustes → Usuarios → <b>Añadir usuario</b>: servidor <code>${esc(nt.public_url)}</code>, usuario <code>${esc(nt.phone_user || "movil")}</code> y su contraseña${shownPass ? ":" : " (la que se mostró al conectar; si no la tienes, pulsa «Nueva contraseña del móvil»)."}</li>
+        ${shownPass ? `<li class="tok-show"><code id="ntfy-pass">${esc(shownPass)}</code><button type="button" class="btn sm" data-nt="copy">Copiar</button>
+          <b>Apúntala ahora: no se vuelve a mostrar.</b></li>` : ""}
+        <li><b>+</b> → «Use another server»: <code>${esc(nt.public_url)}</code> · tema <code>${esc(nt.topic)}</code> → Suscribirse.</li>
+        <li>Pulsa «Probar móvil» aquí abajo.</li></ol></div>` : "";
+  const ntfyCard = nt.configured ? `
+      <p>Conectado ${nt.service ? `al ntfy del servidor (<b>${esc(nt.service)}</b>)` : `a <code>${esc(nt.url)}</code>`} · tema <code>${esc(nt.topic)}</code>${nt.token ? " · con llave" : ""}</p>
+      ${ntfyStatus}${phone}
+      <label class="chk-line"><input type="checkbox" name="ntfy_enabled" ${nt.enabled ? "checked" : ""}> Enviar avisos al móvil</label>
+      <label class="chk-line"><input type="checkbox" name="ntfy_urgent" ${nt.urgent ? "checked" : ""}> Los problemas graves con prioridad máxima (en la app puedes hacer que suenen aunque esté en silencio)</label>
+      <div class="upd-actions"><button type="button" class="btn sm" data-nt="test">Probar móvil</button>
+        ${nt.service ? '<button type="button" class="btn sm" data-nt="repass">Nueva contraseña del móvil</button>' : ""}</div>`
+    : catalogNtfy.length ? `
+      <p>Tienes ntfy instalado (<b>${esc(catalogNtfy[0].name)}</b>). Al conectarlo se protege: <b>todo denegado por defecto</b>, un usuario
+        <code>movil</code> que solo puede leer y una llave para NovaHub que solo puede escribir en su tema.</p>
+      <button type="button" class="btn primary" data-nt="setup" data-sid="${esc(catalogNtfy[0].id)}">Proteger y conectar</button>`
+    : `<p>Instala <b>ntfy</b> desde el <a href="#/nuevo/catalogo">catálogo de apps</a> y vuelve aquí para conectarlo con un clic.</p>`;
   const submit = setForm(body, `
-    <h2 class="set-title">Avisos por correo</h2>
-    <p class="set-sub">NovaHub te escribe cuando algo va mal. Como mucho un correo por servicio y tipo de aviso cada 10 minutos.</p>
-    ${status}
-    <h3 class="set-h">Cuenta de Gmail</h3>
-    <div class="set-grid">
-      <label class="field"><span>Tu Gmail</span><input name="user" type="email" autocomplete="off" placeholder="tu.cuenta@gmail.com" value="${esc(n.user)}"></label>
-      <label class="field"><span>Enviar a</span><input name="to" autocomplete="off" placeholder="${esc(n.user || "el mismo Gmail")}" value="${esc(n.to)}">
-        <small>Opcional. Varias direcciones separadas por comas.</small></label>
-    </div>
-    <label class="field"><span>Contraseña de aplicación</span>
-      <input name="app_password" type="password" autocomplete="new-password" spellcheck="false" placeholder="${n.configured ? "guardada · déjala vacía para mantenerla" : "16 letras"}">
-      <small>No es tu contraseña de Google: créala en <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>
-        (hace falta la verificación en dos pasos). Se guarda en el servidor y no se vuelve a mostrar.</small></label>
-    <h3 class="set-h">Avisarme cuando…</h3>
-    <div class="checks">${n.events.map((e) => `
-      <label><input type="checkbox" data-event="${esc(e.key)}" ${e.on ? "checked" : ""}><span><strong>${esc(e.label)}</strong></span></label>`).join("")}
-    </div>`, async (f) => {
-    const events = {};
+    <h2 class="set-title">Avisos</h2>
+    <p class="set-sub">NovaHub te avisa cuando algo va mal. Como mucho un aviso por servicio y tipo cada 10 minutos.</p>
+    <section class="upd-card"><header><h3>${ICON.phone}Móvil (ntfy)</h3><span>servidor propio, sin terceros</span></header>${ntfyCard}
+      ${nt.configured && !nt.service || !catalogNtfy.length ? `<details class="adv"><summary>Otro servidor ntfy (a mano)</summary><div class="inner">
+        <div class="set-grid"><label class="field"><span>Dirección</span><input name="ntfy_url" class="mono" spellcheck="false" placeholder="https://ntfy.tudominio.com" value="${esc(nt.url)}"></label>
+          <label class="field"><span>Tema</span><input name="ntfy_topic" class="mono" spellcheck="false" placeholder="novahub" value="${esc(nt.topic)}"></label></div>
+        <label class="field"><span>Llave (token)</span><input name="ntfy_token" type="password" class="mono" autocomplete="off" placeholder="${nt.token ? "guardada · vacía para mantenerla" : "tk_… (si el servidor pide usuario)"}"></label>
+      </div></details>` : ""}
+    </section>
+    <section class="upd-card"><header><h3>${ICON.mail}Correo (Gmail)</h3><span>opcional</span></header>
+      ${mailStatus}
+      <div class="set-grid">
+        <label class="field"><span>Tu Gmail</span><input name="user" type="email" autocomplete="off" placeholder="vacío = sin correo" value="${esc(n.user)}"></label>
+        <label class="field"><span>Enviar a</span><input name="to" autocomplete="off" placeholder="${esc(n.user || "el mismo Gmail")}" value="${esc(n.to)}"><small>Opcional, separadas por comas.</small></label>
+      </div>
+      <label class="field"><span>Contraseña de aplicación</span>
+        <input name="app_password" type="password" autocomplete="new-password" spellcheck="false" placeholder="${n.configured ? "guardada · déjala vacía para mantenerla" : "16 letras"}">
+        <small>No es tu contraseña de Google: créala en <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>.
+          Para dejar de usar Gmail, borra «Tu Gmail» y guarda.</small></label>
+      <div class="upd-actions"><button type="button" class="btn sm" id="set-test" ${n.configured ? "" : "disabled"}>Probar correo</button></div>
+    </section>
+    <h3 class="set-h">Qué avisar y por dónde</h3>
+    <table class="nt-events"><thead><tr><th></th><th>Móvil</th><th>Correo</th></tr></thead><tbody>${n.events.map((e) => `
+      <tr><td>${esc(e.label)}</td><td><input type="checkbox" data-nev="${esc(e.key)}" ${e.ntfy ? "checked" : ""} aria-label="${esc(e.label)} · móvil"></td>
+        <td><input type="checkbox" data-event="${esc(e.key)}" ${e.on ? "checked" : ""} aria-label="${esc(e.label)} · correo"></td></tr>`).join("")}</tbody></table>`, async (f) => {
+    const events = {}, nevents = {};
     f.querySelectorAll("[data-event]").forEach((c) => { events[c.dataset.event] = c.checked; });
-    await api("PUT", "/api/notify", { user: f.user.value.trim(), to: f.to.value.trim(), app_password: f.app_password.value, events });
-  }, '<button type="button" class="btn" id="set-test">Enviar correo de prueba</button>');
+    f.querySelectorAll("[data-nev]").forEach((c) => { nevents[c.dataset.nev] = c.checked; });
+    const ntfy = { events: nevents };
+    if (f.ntfy_enabled) ntfy.enabled = f.ntfy_enabled.checked;
+    if (f.ntfy_urgent) ntfy.urgent = f.ntfy_urgent.checked;
+    if (f.ntfy_url) Object.assign(ntfy, { url: f.ntfy_url.value.trim(), topic: f.ntfy_topic.value.trim(), token: f.ntfy_token.value.trim() });
+    await api("PUT", "/api/notify", { user: f.user.value.trim(), to: f.to.value.trim(), app_password: f.app_password.value, events, ntfy });
+  });
   $("#set-test", body).addEventListener("click", async (e) => {
     e.target.disabled = true;
-    try {
-      await submit();  // primero se guarda lo escrito
-      await api("POST", "/api/notify/test");
-      toast("Correo de prueba enviado: mira tu bandeja de entrada", "ok");
-      setNotify(body);
-    } catch (err) { const el = $("#set-error", body); if (el) el.textContent = err.message; }
+    try { await submit(); await api("POST", "/api/notify/test"); toast("Correo de prueba enviado: mira tu bandeja de entrada", "ok"); setNotify(body); }
+    catch (err) { const el = $("#set-error", body); if (el) el.textContent = err.message; }
     e.target.disabled = false;
   });
+  body.onclick = async (e) => {
+    const b = e.target.closest("[data-nt]");
+    if (!b) return;
+    try {
+      if (b.dataset.nt === "copy") navigator.clipboard?.writeText($("#ntfy-pass", body).textContent).then(() => toast("Contraseña copiada", "ok"), () => {});
+      else if (b.dataset.nt === "test") { await submit(); await api("POST", "/api/notify/ntfy/test"); toast("Aviso de prueba enviado: mira el móvil", "ok"); setNotify(body, shownPass); }
+      else if (b.dataset.nt === "setup" || b.dataset.nt === "repass") {
+        if (b.dataset.nt === "repass" && !(await confirmDialog("Nueva contraseña del móvil", "La contraseña actual del usuario «movil» deja de valer: tendrás que poner la nueva en la app.", "Cambiar"))) return;
+        b.disabled = true; b.textContent = "Conectando… (ntfy se reinicia)";
+        const r = await api("POST", "/api/notify/ntfy/setup", { service: b.dataset.sid || nt.service });
+        toast("ntfy protegido y conectado", "ok");
+        setNotify(body, r.phone_password);
+      }
+    } catch (err) { toast(err.message, "error"); b.disabled = false; }
+  };
 }
 
 async function setHeartbeat(body) {

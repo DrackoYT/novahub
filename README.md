@@ -423,15 +423,20 @@ legible sin ella.
 - **Túnel**: arranca con `--metrics 127.0.0.1:20241` y su comprobación de salud usa `/ready`, que solo
   responde 200 si hay conexión con Cloudflare.
 
-## Avisos por correo (Gmail)
+## Avisos
 
-En **⚙ Ajustes** de la cabecera: tu Gmail, una *contraseña de aplicación* (créala en
-<https://myaccount.google.com/apppasswords>; necesita la verificación en dos pasos) y qué avisos quieres:
-caídas, servicios que no responden, exceso de memoria, encendido/apagado del servidor y actualizaciones
-fallidas. Cada correo incluye las últimas líneas de la consola y un enlace a la ficha del servicio.
-Como mucho un correo por servicio y tipo de aviso cada 10 minutos (y 30 por hora en total).
-La configuración se guarda en `data/notify.json` (permisos 600). Para los enlaces se usa la dirección
-pública del panel según el túnel, o `NOVAHUB_PUBLIC_URL` si la defines.
+Ajustes → **Avisos**: NovaHub te avisa cuando un servicio se cae, deja de responder o se pasa de memoria, cuando el
+servidor se enciende o se apaga, si falla una copia, una tarea o una actualización, y cuando hay actualizaciones. Como
+mucho un aviso por servicio y tipo cada 10 minutos. Para cada tipo eliges si va al móvil, al correo o a los dos.
+
+- **Móvil con ntfy** (recomendado, sin terceros): instala **ntfy** desde el catálogo y pulsa **«Proteger y conectar»**.
+  ntfy queda con todo denegado por defecto, un usuario `movil` que solo puede leer y una llave para NovaHub que solo
+  puede publicar en su tema. NovaHub le envía los avisos por dentro del servidor (no depende del túnel), con prioridad
+  máxima para los problemas graves. En el móvil, la app **ntfy** (Google Play o F-Droid; en iPhone, App Store) con la
+  dirección pública, el usuario `movil` y el tema `novahub`. También vale cualquier otro servidor ntfy (dirección, tema
+  y llave a mano).
+- **Correo con Gmail** (opcional): una [contraseña de aplicación](https://myaccount.google.com/apppasswords) de Google
+  (no tu contraseña normal). Correos en HTML con las últimas líneas de la consola. Sin cuenta, desactivado.
 
 ## Apagar el servidor (y el enchufe Tapo)
 

@@ -100,11 +100,14 @@
    "env": {
     "NTFY_BASE_URL": "{url}",
     "NTFY_CACHE_FILE": "/var/cache/ntfy/cache.db",
-    "NTFY_BEHIND_PROXY": "true"
+    "NTFY_BEHIND_PROXY": "true",
+    "NTFY_AUTH_FILE": "/var/cache/ntfy/user.db",
+    "NTFY_AUTH_DEFAULT_ACCESS": "deny-all",
+    "NTFY_ENABLE_LOGIN": "true"
    },
    "ccmd": "serve",
    "health": "http",
-   "notes": "1. Instala la app «ntfy» en el móvil (también como APK desde F-Droid, sin Google Play).\n2. En la app, añade tu servidor ({url}) y suscríbete a un tema, p. ej. «casa».\n3. Prueba: curl -d \"Hola\" {url}/casa"
+   "notes": "1. Se instala protegido: sin usuario no se puede leer ni publicar nada.\n2. Ve a Ajustes → Avisos → «Proteger y conectar»: crea el usuario del móvil y conecta los avisos de NovaHub.\n3. Instala la app «ntfy» en el móvil (también como APK desde F-Droid, sin Google Play) y sigue los pasos que salen en Ajustes → Avisos."
   },
   {
    "id": "searxng",

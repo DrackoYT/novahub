@@ -6,6 +6,14 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- **Avisos al móvil con ntfy** (Ajustes → Avisos): ntfy como canal de avisos junto al correo, eligiendo qué avisos van
+  por cada uno. «Proteger y conectar» deja el ntfy del catálogo con todo denegado por defecto, un usuario `movil` de solo
+  lectura y una llave de solo escritura para NovaHub, que publica por dentro del servidor. Prioridad máxima para los
+  problemas graves, botón de prueba y cambio de contraseña del móvil. Gmail pasa a ser opcional.
+- El ntfy del catálogo se instala ya protegido (sin usuario no se puede leer ni publicar).
+- Si un contenedor anterior se queda a medias (Podman lo pierde pero sus procesos siguen ocupando el puerto), al arrancar
+  el servicio se cierran esos restos en vez de fallar con «Address already in use».
+
 ## 1.0.3 — 2026-10-07
 
 - **Catálogo de apps** (Nuevo servicio → Catálogo de apps): 20 apps autoalojadas ya configuradas (Vaultwarden, Immich,

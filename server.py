@@ -297,6 +297,53 @@ def prepare_container(sid, svc, cwd):
     for host, _, _ in parse_volumes(svc.get("volumes")):
         full = os.path.join(cwd, os.path.expanduser(host)) if not os.path.isabs(os.path.expanduser(host)) else os.path.expanduser(host)
         os.makedirs(full, exist_ok=True)
+    if svc.get("port") and svc["port"] in listening_ports():
+        killed = kill_container_orphans(sid, svc["port"])
+        if killed:
+            MANAGER.log(sid, f"\x1b[33mrestos de un contenedor anterior ocupaban el puerto {svc['port']}: cerrados ({len(killed)} procesos)\x1b[0m")
+
+
+def kill_container_orphans(sid, port):
+    """Procesos de un contenedor que Podman ya no tiene registrado (p. ej. tras un --replace a medias) pero siguen vivos
+    ocupando su puerto: conmon con su nombre, sus hijos y el pasta (red) de ese puerto. Solo si Podman no conoce ningún
+    contenedor con ese nombre ni que publique ese puerto."""
+    name = container_name(sid)
+    if subprocess.run(["podman", "container", "exists", name], capture_output=True, timeout=15).returncode == 0:
+        return []  # lo conoce: --replace se encarga
+    ports = subprocess.run(["podman", "ps", "--format", "{{.Ports}}"], capture_output=True, text=True, timeout=15).stdout
+    if port and re.search(rf":{port}->", ports):
+        return []  # el puerto es de otro contenedor que sí existe
+    procs = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != os.getuid():
+                continue
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                args = [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+            st = proc_stat(pid)
+        except OSError:
+            continue
+        if args and st:
+            procs[int(pid)] = (os.path.basename(args[0]), args, int(st[1]))
+    roots = [p for p, (exe, args, _) in procs.items()
+             if (exe == "conmon" and "-n" in args and args[args.index("-n") + 1:args.index("-n") + 2] == [name])
+             or (port and exe.startswith("pasta") and any(a.startswith(f"{port}-{port}:") for a in args))]
+    victims = set(roots)
+    while True:  # y sus hijos (el propio programa del contenedor)
+        more = {p for p, (_, _, ppid) in procs.items() if ppid in victims} - victims
+        if not more:
+            break
+        victims |= more
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for p in victims:
+            try:
+                os.kill(p, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+        time.sleep(2)
+    return sorted(victims)
 
 
 def stop_containers(sid, svc, timeout):
@@ -2733,9 +2780,14 @@ def email_html(subject, text, level, service, host, stamp, tail, link):
 </body></html>"""
 
 
+NTFY_PRIORITY = {"danger": 5, "warning": 4, "info": 3, "ok": 2}
+NTFY_TAGS = {"danger": "rotating_light", "warning": "warning", "info": "information_source", "ok": "white_check_mark"}
+NTFY_TOPIC = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
 class Notifier:
-    """Correos de aviso por SMTP de Gmail con una contraseña de aplicación.
-    Se encolan y los envía un hilo propio: nada del panel espera nunca a Gmail."""
+    """Avisos por dos canales: el móvil con ntfy (servidor propio, sin terceros) y el correo con Gmail
+    (contraseña de aplicación). Se encolan y los envía un hilo propio: nada del panel espera nunca a un envío."""
 
     def __init__(self):
         self.queue = queue.Queue()
@@ -2744,6 +2796,8 @@ class Notifier:
         self.sent = []        # momentos de los correos de la última hora
         self.last_error = None
         self.last_sent = None
+        self.ntfy_error = None
+        self.ntfy_sent = None
 
     def config(self):
         return read_json(NOTIFY_FILE, {})
@@ -2752,11 +2806,22 @@ class Notifier:
         cfg = cfg or self.config()
         return bool(cfg.get("user") and cfg.get("app_password"))
 
+    @staticmethod
+    def ntfy_cfg(cfg):
+        n = cfg.get("ntfy") or {}
+        return n if n.get("url") and n.get("topic") and n.get("enabled", True) else None
+
     def public(self):
         cfg = self.config()
         events = cfg.get("events") or {}
+        n = cfg.get("ntfy") or {}
+        nev = n.get("events") or {}
         return {"configured": self.configured(cfg), "user": cfg.get("user", ""), "to": cfg.get("to", ""),
-                "events": [{"key": k, "label": v, "on": events.get(k, True)} for k, v in NOTIFY_EVENTS.items()],
+                "events": [{"key": k, "label": v, "on": events.get(k, True), "ntfy": nev.get(k, True)} for k, v in NOTIFY_EVENTS.items()],
+                "ntfy": {"configured": bool(self.ntfy_cfg(cfg)), "enabled": n.get("enabled", True), "url": n.get("url", ""),
+                         "public_url": n.get("public_url", ""), "topic": n.get("topic", ""), "token": bool(n.get("token")),
+                         "service": n.get("service"), "phone_user": n.get("phone_user"), "urgent": n.get("urgent", True),
+                         "last_sent": self.ntfy_sent, "last_error": self.ntfy_error},
                 "last_error": self.last_error, "last_sent": self.last_sent,
                 "heartbeat_url": cfg.get("heartbeat_url", ""),
                 "heartbeat_last": SUPERVISOR.last_ping, "heartbeat_error": SUPERVISOR.ping_error}
@@ -2783,6 +2848,8 @@ class Notifier:
         # sin «events» en la petición se conservan los guardados (no se reactivan todos)
         events = data["events"] if isinstance(data.get("events"), dict) else (cfg.get("events") or {})
         cfg.update(user=user, to=to, events={k: bool(events.get(k, True)) for k in NOTIFY_EVENTS})
+        if isinstance(data.get("ntfy"), dict):
+            cfg["ntfy"] = self._clean_ntfy(data["ntfy"], cfg.get("ntfy") or {})
         if password:
             cfg["app_password"] = password   # vacío = se mantiene la guardada
         if not user:
@@ -2790,7 +2857,58 @@ class Notifier:
         write_json(NOTIFY_FILE, cfg)
         return self.public()
 
+    @staticmethod
+    def _clean_ntfy(d, old):
+        n = dict(old)
+        if "url" in d:
+            url = str(d.get("url") or "").strip().rstrip("/")
+            if url and not re.fullmatch(r"https?://[A-Za-z0-9.\-\[\]:]+(/[\w./-]*)?", url):
+                raise ApiError(400, "La dirección de ntfy debe ser como http://127.0.0.1:8093 o https://ntfy.tudominio.com")
+            n["url"] = url
+        if "topic" in d:
+            topic = str(d.get("topic") or "").strip()
+            if topic and not NTFY_TOPIC.fullmatch(topic):
+                raise ApiError(400, "El tema solo puede tener letras, números, guion y _")
+            n["topic"] = topic
+        if d.get("token"):  # vacío = se mantiene la guardada
+            token = str(d["token"]).strip()
+            if not re.fullmatch(r"tk_[A-Za-z0-9]{20,64}", token):
+                raise ApiError(400, "La llave de ntfy empieza por tk_")
+            n["token"] = token
+        if d.get("clear_token"):
+            n.pop("token", None)
+        for k in ("enabled", "urgent"):
+            if k in d:
+                n[k] = bool(d[k])
+        if isinstance(d.get("events"), dict):
+            n["events"] = {k: bool(d["events"].get(k, True)) for k in NOTIFY_EVENTS}
+        return n
+
     # ── componer y enviar ──
+    def ntfy_payload(self, n, subject, text, sid=None, log=False, level="info"):
+        tail = log_tail(sid, 12) if sid and log else ""
+        link = (f"{PANEL_URL}/#/s/{sid}" if sid else PANEL_URL) if PANEL_URL else None
+        prio = NTFY_PRIORITY.get(level, 3)
+        if prio == 5 and not n.get("urgent", True):
+            prio = 4
+        body = text + (f"\n\nÚltimas líneas de la consola:\n{tail}" if tail else "")
+        p = {"topic": n["topic"], "title": re.sub(r"[\r\n]+", " ", subject), "message": body[:3800], "priority": prio,
+             "tags": [NTFY_TAGS.get(level, "information_source")]}
+        if link:
+            p["click"] = link
+        return p
+
+    @staticmethod
+    def deliver_ntfy(n, payload):
+        """Publicación JSON en ntfy (admite acentos y emojis en el título); con la llave si la hay."""
+        import urllib.request
+        headers = {"Content-Type": "application/json", "User-Agent": "NovaHub"}
+        if n.get("token"):
+            headers["Authorization"] = f"Bearer {n['token']}"
+        req = urllib.request.Request(n["url"], data=json.dumps(payload).encode(), headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            r.read(10000)
+
     def compose(self, cfg, subject, text, sid=None, log=False, level="info"):
         """Correo con versión en texto y en HTML (estilo NovaHub, con el orbe incrustado)."""
         tail = log_tail(sid) if sid and log else ""
@@ -2835,7 +2953,10 @@ class Notifier:
     def _notify(self, event, sid, subject, text, log=False, key="", level=None):
         level = level or ("danger" if key == "gaveup" or event == "novahub" else "info" if event == "power" else "warning")
         cfg = self.config()
-        if not self.configured(cfg) or not (cfg.get("events") or {}).get(event, True):
+        n = self.ntfy_cfg(cfg)
+        to_mail = self.configured(cfg) and (cfg.get("events") or {}).get(event, True)
+        to_ntfy = bool(n) and (n.get("events") or {}).get(event, True)
+        if not to_mail and not to_ntfy:
             return
         now = time.time()
         with self.lock:
@@ -2847,11 +2968,21 @@ class Notifier:
                 return
             self.last[k] = now
             self.sent.append(now)
-        self.queue.put(self.compose(cfg, subject, text, sid, log, level))
+        if to_ntfy:
+            self.queue.put(("ntfy", self.ntfy_payload(n, subject, text, sid, log, level)))
+        if to_mail:
+            self.queue.put(("email", self.compose(cfg, subject, text, sid, log, level)))
 
     def send_now(self, event, subject, text, level="info"):
         """Envío inmediato (p. ej. justo antes de apagar el servidor): no se puede dejar en la cola."""
         cfg = self.config()
+        n = self.ntfy_cfg(cfg)
+        if n and (n.get("events") or {}).get(event, True):
+            try:
+                self.deliver_ntfy(n, self.ntfy_payload(n, subject, text, level=level))
+                self.ntfy_sent, self.ntfy_error = time.time(), None
+            except Exception as e:  # noqa: BLE001
+                self.ntfy_error = f"{datetime.now():%H:%M} · {e}"
         if not self.configured(cfg) or not (cfg.get("events") or {}).get(event, True):
             return
         try:
@@ -2859,6 +2990,21 @@ class Notifier:
             self.last_sent, self.last_error = time.time(), None
         except Exception as e:  # noqa: BLE001
             self.last_error = f"{datetime.now():%H:%M} · {e}"
+
+    def test_ntfy(self):
+        n = self.ntfy_cfg(self.config())
+        if not n:
+            raise ApiError(400, "Primero configura ntfy (dirección y tema)")
+        try:
+            self.deliver_ntfy(n, self.ntfy_payload(n, "Aviso de prueba", "Los avisos de NovaHub llegan a tu móvil. 👋", level="ok"))
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            if "403" in msg or "401" in msg:
+                msg = "ntfy ha rechazado el envío: revisa la llave (tk_…) y que tenga permiso de escritura en el tema"
+            self.ntfy_error = f"{datetime.now():%H:%M} · {msg}"
+            raise ApiError(502, f"No se pudo enviar a ntfy: {msg}")
+        self.ntfy_sent, self.ntfy_error = time.time(), None
+        return self.public()
 
     def test(self):
         cfg = self.config()
@@ -2880,17 +3026,28 @@ class Notifier:
 
     def loop(self):
         while True:
-            msg = self.queue.get()
-            for attempt in range(3):  # Gmail puede fallar un momento: dos reintentos espaciados
+            channel, msg = self.queue.get()
+            for attempt in range(3):  # un envío puede fallar un momento: dos reintentos espaciados
                 try:
-                    self.deliver(self.config(), msg)
-                    self.last_sent, self.last_error = time.time(), None
+                    if channel == "ntfy":
+                        n = self.ntfy_cfg(self.config())
+                        if n:
+                            self.deliver_ntfy(n, msg)
+                            self.ntfy_sent, self.ntfy_error = time.time(), None
+                    else:
+                        self.deliver(self.config(), msg)
+                        self.last_sent, self.last_error = time.time(), None
                     break
                 except Exception as e:  # noqa: BLE001
-                    self.last_error = f"{datetime.now():%H:%M} · {e}"
-                    print(f"[avisos] no se pudo enviar «{msg['Subject']}»: {e}", flush=True)
-                    if isinstance(e, smtplib.SMTPAuthenticationError):
-                        break  # con la contraseña mal, reintentar no sirve
+                    err = f"{datetime.now():%H:%M} · {e}"
+                    if channel == "ntfy":
+                        self.ntfy_error = err
+                    else:
+                        self.last_error = err
+                    title = msg["title"] if channel == "ntfy" else msg["Subject"]
+                    print(f"[avisos] no se pudo enviar por {channel} «{title}»: {e}", flush=True)
+                    if isinstance(e, smtplib.SMTPAuthenticationError) or "403" in str(e) or "401" in str(e):
+                        break  # con la contraseña o la llave mal, reintentar no sirve
                     time.sleep(30 * (attempt + 1))
 
 
@@ -4429,6 +4586,77 @@ class Catalog:
 CATALOG = Catalog()
 
 
+def ntfy_setup(sid):
+    """Protege el ntfy instalado desde el catálogo y lo conecta a los avisos de NovaHub:
+    usuarios activados y todo denegado por defecto; «movil» solo puede leer el tema y NovaHub solo escribir en él
+    (con una llave). NovaHub publica por dentro del servidor (127.0.0.1): no depende del túnel."""
+    svc = MANAGER.services.get(sid)
+    if not svc or svc.get("catalog") != "ntfy" or svc.get("kind") != "container":
+        raise ApiError(400, "Ese servicio no es un ntfy instalado desde el catálogo")
+    topic = "novahub"
+    env_add = {"NTFY_AUTH_FILE": "/var/cache/ntfy/user.db", "NTFY_AUTH_DEFAULT_ACCESS": "deny-all", "NTFY_ENABLE_LOGIN": "true"}
+    with MANAGER.lock:
+        svc = MANAGER.services[sid]
+        changed = any((svc.get("env") or {}).get(k) != v for k, v in env_add.items())
+        svc["env"] = {**(svc.get("env") or {}), **env_add}
+        svc["command"] = container_command(sid, svc)
+        MANAGER.save_services()
+    old_pid = (MANAGER.state.get(sid) or {}).get("pid") if MANAGER.running(sid) else None
+    if changed or not old_pid:
+        MANAGER.log(sid, "\x1b[35mactivando los usuarios de ntfy (todo denegado por defecto) y reiniciando…\x1b[0m")
+        if old_pid:
+            MANAGER.restart(sid)  # en segundo plano: hay que esperar al proceso nuevo, no fiarse del viejo
+        else:
+            MANAGER.start(sid)
+    else:
+        old_pid = None
+    import urllib.request
+    end = time.time() + 150
+    while True:  # esperar al contenedor nuevo (otro proceso) y a que responda
+        time.sleep(2)
+        if time.time() > end:
+            raise ApiError(504, "ntfy no ha vuelto a arrancar: mira su consola")
+        pid = (MANAGER.state.get(sid) or {}).get("pid")
+        if sid in MANAGER.transition or not MANAGER.running(sid) or (old_pid and pid == old_pid):
+            continue
+        if subprocess.run(["podman", "container", "exists", container_name(sid)], capture_output=True, timeout=15).returncode != 0:
+            continue
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{svc['port']}/v1/health", timeout=5) as r:
+                if json.loads(r.read()).get("healthy"):
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+
+    def ntfy(*args, password=None):
+        cmd = ["podman", "exec", *(["-e", f"NTFY_PASSWORD={password}"] if password else []), container_name(sid), "ntfy", *args]
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+    phone_pass = secrets.token_urlsafe(12)
+    res = ntfy("user", "add", "--role=user", "movil", password=phone_pass)
+    if res.returncode != 0:  # ya existía: se le pone la contraseña nueva
+        res = ntfy("user", "change-pass", "movil", password=phone_pass)
+        if res.returncode != 0:
+            raise ApiError(500, f"No se pudo crear el usuario del móvil: {(res.stderr or res.stdout).strip()}")
+    ntfy("user", "add", "--role=user", "novahub", password=secrets.token_urlsafe(24))
+    for user, perm in (("movil", "read-only"), ("novahub", "write-only")):
+        res = ntfy("access", user, topic, perm)
+        if res.returncode != 0:
+            raise ApiError(500, f"No se pudieron dar los permisos en ntfy: {(res.stderr or res.stdout).strip()}")
+    res = ntfy("token", "add", "novahub")
+    m = re.search(r"tk_[A-Za-z0-9]+", res.stdout + res.stderr)
+    if not m:
+        raise ApiError(500, f"No se pudo crear la llave de NovaHub en ntfy: {(res.stderr or res.stdout).strip()}")
+    cfg = NOTIFIER.config()
+    old = cfg.get("ntfy") or {}
+    public = (svc.get("env") or {}).get("NTFY_BASE_URL") or f"http://{lan_ip()}:{svc['port']}"
+    cfg["ntfy"] = {**old, "url": f"http://127.0.0.1:{svc['port']}", "public_url": public, "topic": topic, "token": m.group(0),
+                   "enabled": True, "service": sid, "phone_user": "movil"}
+    write_json(NOTIFY_FILE, cfg)
+    MANAGER.log(sid, "ntfy protegido: el usuario «movil» puede leer el tema «novahub» y NovaHub publicar en él")
+    return {**NOTIFIER.public(), "phone_password": phone_pass}
+
+
 # ───────────────────────────── copias fuera de casa ─────────────────────────────
 # Las copias locales (novahub-copias) y la configuración de NovaHub (data/) van cifradas con restic a un disco USB o a
 # otro servidor tuyo por SSH (p. ej. por Tailscale). Sin servicios de terceros ni suscripciones. Copia diaria con
@@ -5933,6 +6161,10 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(405, "Método no permitido")
         if path == "/api/notify/test" and method == "POST":
             return self.send_json(NOTIFIER.test())
+        if path == "/api/notify/ntfy/test" and method == "POST":
+            return self.send_json(NOTIFIER.test_ntfy())
+        if path == "/api/notify/ntfy/setup" and method == "POST":
+            return self.send_json(ntfy_setup(str(self.read_body().get("service") or "")))
         if path == "/api/templates" and method == "GET":
             return self.send_json(templates_public())
         if path == "/api/templates/create" and method == "POST":

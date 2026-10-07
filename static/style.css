@@ -638,6 +638,16 @@ body.remote-mode .srv-btn { background: var(--nova); color: #fff; border-color: 
 .upd-banner .grow { flex: 1; }
 .set-body .upd-card + .upd-card, .set-body .upd-card { margin-top: 12px; }
 
+/* avisos */
+.nt-events { width: 100%; border-collapse: collapse; font-size: 14px; }
+.nt-events th { font: 500 11px var(--f-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--soft); text-align: center; padding: 6px; }
+.nt-events td { padding: 8px 6px; border-top: 1px solid var(--line); }
+.nt-events td:not(:first-child) { text-align: center; width: 80px; }
+.nt-events input { width: 18px; height: 18px; accent-color: var(--nova); }
+.ntfy-phone ol { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-weight: 500; }
+.ntfy-phone li:not(.tok-show) code { display: inline; margin: 0; padding: 1px 6px; font-size: 12.5px; }
+.ntfy-phone .tok-show code { margin: 0; }
+
 /* copias fuera de casa */
 .upd-card > header h3 { display: flex; align-items: center; gap: 8px; }
 .upd-card > header h3 svg { width: 18px; height: 18px; color: var(--nova-text); }
