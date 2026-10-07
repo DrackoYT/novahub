@@ -588,6 +588,17 @@ dialog .app-ico { width: 30px; height: 30px; border-radius: 8px; font-size: 12px
 .app-meta { font-size: 12px; color: var(--faint); margin-top: auto; }
 .signups { display: grid; gap: 10px; }
 .signups .btn { justify-self: start; }
+/* invitaciones */
+.user-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.inv-list { display: grid; gap: 0; }
+.inv-row .status { margin-left: 4px; }
+.inv-share { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; margin-top: 12px; }
+.inv-qr { width: 168px; height: 168px; }
+.inv-side { flex: 1; min-width: 220px; display: grid; gap: 10px; justify-items: start; }
+.inv-link { font-size: 13px; letter-spacing: 0; word-break: break-all; }
+.inv-side .git-note a { color: inherit; text-decoration: underline; }
+.inv-foot { margin-top: 12px; text-align: center; }
+
 /* registro de actividad */
 .side-info { display: contents; }
 .act-filters { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
@@ -778,7 +789,7 @@ body.remote-mode .srv-btn { background: var(--nova); color: #fff; border-color: 
   .srv-btn { width: 38px; padding: 0; justify-content: center; }
   .host-chip { display: none; }
 }
-@media (max-width: 440px) { .wordmark { display: none; } }
+@media (max-width: 440px) { .topbar .wordmark { display: none; } }  /* en la barra no cabe; en la tarjeta de entrada sí */
 @media (max-width: 640px) {  /* en el móvil, el menú de servidores ocupa el ancho de la pantalla bajo la cabecera */
   .srv-menu { position: fixed; top: 64px; left: 12px; right: 12px; min-width: 0; }
   .srv-menu button, .srv-menu a { padding: 12px; font-size: 15px; }

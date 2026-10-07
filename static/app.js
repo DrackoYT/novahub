@@ -128,6 +128,14 @@ function fmtBytes(b) {
   while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
   return `${b.toFixed(b < 10 && i ? 1 : 0)} ${u[i]}`;
 }
+function fmtIn(epoch) {  // fechas futuras: «en 3 días»
+  const s = epoch - Date.now() / 1000;
+  if (s <= 0) return "ya";
+  if (s < 3600) return `en ${Math.max(1, Math.round(s / 60))} min`;
+  if (s < 86400) return `en ${Math.round(s / 3600)} h`;
+  return `en ${Math.round(s / 86400)} días`;
+}
+
 function fmtAgo(epoch) {
   if (!epoch) return "—";
   const s = Math.max(0, Date.now() / 1000 - epoch);
@@ -282,6 +290,65 @@ function showLogin(reason = "") {
       btn.disabled = false;
       if (!$("#login-step2").hidden) { $("#code").value = ""; $("#code").focus(); }
     }
+  });
+}
+
+// Aceptar una invitación (#/invitacion/<enlace>): sin sesión; la persona elige su usuario y contraseña.
+async function showInvite(token) {
+  clearView();
+  ui.locked = true;
+  app.innerHTML = `
+    <div class="login-wrap">
+      <div class="login module">
+        <div class="brand">${BRAND}</div>
+        <p class="sub" id="inv-sub">Comprobando la invitación…</p>
+        <form id="inv-form" hidden novalidate>
+          <div class="form-error" id="inv-error"></div>
+          <label class="field"><span>Usuario</span><input name="username" class="mono" autocomplete="username" autocapitalize="off" spellcheck="false" required
+            placeholder="p. ej. ana"><small>Minúsculas, números, punto o guion. Es con lo que entrarás.</small></label>
+          <label class="field"><span>Nombre</span><input name="name" autocomplete="name" placeholder="Cómo quieres que salga"></label>
+          <label class="field"><span>Contraseña</span><input name="password" type="password" autocomplete="new-password" required><small>Al menos 8 caracteres.</small></label>
+          <label class="field"><span>Repítela</span><input name="again" type="password" autocomplete="new-password" required></label>
+          <button class="btn primary" type="submit">Crear mi cuenta</button>
+        </form>
+        <p class="dim-text inv-foot" id="inv-foot" hidden><a href="#/">Ir al inicio de sesión</a></p>
+      </div>
+    </div>`;
+  const sub = $("#inv-sub"), f = $("#inv-form");
+  let info;
+  try {
+    const res = await fetch(`/api/invite/${encodeURIComponent(token)}`, { credentials: "same-origin" });
+    info = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(info.error || `Error ${res.status}`);
+  } catch (err) {
+    sub.innerHTML = `<span class="bad-text">${esc(err.message)}</span>`;
+    $("#inv-foot").hidden = false;
+    return;
+  }
+  sub.innerHTML = `<b>${esc(info.by)}</b> te invita a entrar en el panel como <b>${esc(info.role_label)}</b> (${esc(info.services)}).
+    La invitación vale hasta el ${esc(new Date(info.expires * 1000).toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "short" }))}.`;
+  f.hidden = false;
+  if (info.name) f.name.value = info.name;
+  f.username.focus();
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = f.querySelector("[type=submit]");
+    if (f.password.value !== f.again.value) { $("#inv-error").textContent = "Las dos contraseñas no coinciden"; return; }
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/invite/${encodeURIComponent(token)}`, { method: "POST", credentials: "same-origin",
+        headers: { "X-NovaHub": "1", "Content-Type": "application/json" },
+        body: JSON.stringify({ username: f.username.value.trim().toLowerCase(), name: f.name.value.trim(), password: f.password.value }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || `Error ${res.status}`);
+      try { localStorage.setItem("nh-user", f.username.value.trim().toLowerCase()); } catch { /* sin almacenamiento */ }
+      history.replaceState(null, "", "#/");  // el enlace ya no vale: que no se quede en la barra
+      ui.unlocked = true;
+      ui.locked = false;
+      ui.lastActivity = Date.now();
+      toast("Cuenta creada. ¡Bienvenido!", "ok");
+      start();
+    } catch (err) { $("#inv-error").textContent = err.message; btn.disabled = false; }
   });
 }
 
@@ -2458,10 +2525,78 @@ async function setUsers(body) {
     </form>`;
   body.innerHTML = `
     <h2 class="set-title">Usuarios</h2>
-    <p class="set-sub">Quién puede entrar al panel y qué puede hacer. Para que alguien llegue desde internet, añade también su correo
-      a la regla de Cloudflare Access (Zero Trust → Access → Applications → la de NovaHub → Policies).</p>
+    <p class="set-sub">Quién puede entrar al panel y qué puede hacer. Lo más cómodo es invitar: mandas un enlace y la persona elige su
+      usuario y contraseña. Para que llegue desde internet, añade también su correo a la regla de Cloudflare Access.</p>
     <div class="user-list">${users.map(row).join("")}</div>
-    <div id="user-editor"><button type="button" class="btn" data-uact="new">${ICON.plus}Añadir usuario</button></div>`;
+    <div id="user-editor" class="user-actions"><button type="button" class="btn primary" data-uact="invite">${ICON.mail}Invitar a alguien</button>
+      <button type="button" class="btn" data-uact="new">${ICON.plus}Añadir usuario a mano</button></div>
+    <h3 class="set-h">Invitaciones</h3>
+    <div class="inv-list" id="inv-list"><p class="dim-text">Cargando…</p></div>`;
+  const drawInvites = (list) => {
+    const el = $("#inv-list", body);
+    if (!el) return;
+    const st = { pendiente: "starting", usada: "running", caducada: "", revocada: "" };
+    el.innerHTML = list.length ? list.map((i) => `<div class="user-row inv-row" data-inv="${esc(i.id)}" data-status="${st[i.state]}">
+        <div class="user-main"><b>${esc(i.name || "Invitación")}</b> <span class="status">${esc(i.state)}</span>
+          <small>${esc(i.role_label)}${i.role === "admin" ? "" : ` · ${i.services === "*" ? "todos los servicios" : `${i.services.length} servicio${i.services.length === 1 ? "" : "s"}`}`}
+            · de ${esc(i.created_by)} ${fmtAgo(i.created)}${i.used_by ? ` · la usó <b>${esc(i.used_by)}</b> ${fmtAgo(i.used_at)}` : i.state === "pendiente" ? ` · caduca ${fmtIn(i.expires)}` : ""}</small></div>
+        ${i.state === "pendiente" ? '<button type="button" class="btn sm ghost" data-uact="revoke">Revocar</button>' : ""}
+      </div>`).join("") : '<p class="dim-text">No hay invitaciones. Con «Invitar a alguien» creas un enlace de un solo uso.</p>';
+  };
+  api("GET", "/api/invites").then((d) => drawInvites(d.invites)).catch(() => {});
+  const openInvite = () => {
+    $("#user-editor", body).innerHTML = `
+      <form class="user-edit" id="inv-form" novalidate>
+        <h3 class="set-h">Invitar a alguien</h3>
+        <p class="dim-text task-help">Se crea un enlace de un solo uso. Quien lo abra elige su usuario y su contraseña, con el rol y los servicios de aquí.</p>
+        <label class="field"><span>Para quién (opcional)</span><input name="name" placeholder="p. ej. Ana" maxlength="60"><small>Sale en la lista y como nombre sugerido.</small></label>
+        <div class="field"><span>Rol</span><div class="kind-pick">
+          ${Object.entries({ viewer: "Solo ver estado, gráficas y logs", operator: "Ver, encender, apagar, reiniciar y escribir en la consola", admin: "Todo: servicios, archivos, ajustes y usuarios" })
+            .map(([k, d]) => `<label><input type="radio" name="role" value="${k}" ${k === "viewer" ? "checked" : ""}><span><strong>${esc(roles[k])}</strong><small>${d}</small></span></label>`).join("")}
+        </div></div>
+        <div class="field" id="inv-svc"><span>Servicios a los que tendrá acceso</span>
+          <label class="chk-line"><input type="checkbox" name="all" checked> Todos (también los que crees después)</label>
+          <div class="svc-checks">${services.map((x) => `<label class="chk-line"><input type="checkbox" name="svc" value="${esc(x.id)}"> ${esc(x.name)}</label>`).join("")}</div>
+        </div>
+        <label class="field"><span>El enlace vale</span><select name="hours">
+          <option value="24">1 día</option><option value="72" selected>3 días</option><option value="168">7 días</option><option value="720">30 días</option></select></label>
+        <div class="form-error" id="user-error"></div>
+        <footer class="set-foot"><button type="button" class="btn ghost" data-uact="cancel">Cancelar</button><span class="grow"></span>
+          <button type="submit" class="btn primary">Crear el enlace</button></footer>
+      </form>`;
+    const f = $("#inv-form", body);
+    const sync = () => {
+      $("#inv-svc", body).hidden = f.querySelector('[name="role"]:checked').value === "admin";
+      f.querySelectorAll('[name="svc"]').forEach((c) => { c.disabled = f.all.checked; });
+    };
+    f.addEventListener("change", sync);
+    sync();
+    f.name.focus();
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        const r = await api("POST", "/api/invites", { name: f.name.value.trim(), role: f.querySelector('[name="role"]:checked').value, hours: f.hours.value,
+          services: f.all.checked ? "*" : [...f.querySelectorAll('[name="svc"]:checked')].map((c) => c.value), origin: location.origin });
+        drawInvites(r.invites);
+        $("#user-editor", body).innerHTML = `
+          <div class="user-edit inv-made">
+            <h3 class="set-h">Enlace de invitación listo</h3>
+            <div class="nt-ok tok-show"><b>Cópialo ahora: solo se muestra esta vez.</b> Sirve una sola vez, hasta ${esc(new Date(r.invite.expires * 1000).toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "short" }))}.</div>
+            <div class="inv-share">
+              <div class="totp-qr inv-qr" aria-label="Código QR del enlace">${r.qr}</div>
+              <div class="inv-side">
+                <code class="totp-secret inv-link" id="inv-link">${esc(r.link)}</code>
+                <button type="button" class="btn sm" data-uact="copy-link">Copiar el enlace</button>
+                <p class="git-note">Para que pueda llegar desde internet, añade también su correo a la regla de <b>Cloudflare Access</b> de NovaHub
+                  (Zero Trust → Access → Applications → NovaHub → Policies). <a href="https://one.dash.cloudflare.com/" target="_blank" rel="noopener">Abrir Cloudflare ↗</a></p>
+              </div>
+            </div>
+            <footer class="set-foot"><span class="grow"></span><button type="button" class="btn" data-uact="cancel">Hecho</button></footer>
+          </div>`;
+        toast("Invitación creada", "ok");
+      } catch (err) { $("#user-error", body).textContent = err.message; }
+    });
+  };
   const openEditor = (u) => {
     $("#user-editor", body).innerHTML = editor(u);
     const f = $("#user-form", body);
@@ -2492,6 +2627,14 @@ async function setUsers(body) {
     const name = e.target.closest("[data-user]")?.dataset.user;
     const u = users.find((x) => x.username === name);
     if (act === "new") openEditor(null);
+    else if (act === "invite") { openInvite(); $("#user-editor", body).scrollIntoView({ block: "nearest", behavior: "smooth" }); }
+    else if (act === "copy-link") { await navigator.clipboard.writeText($("#inv-link", body).textContent).catch(() => {}); toast("Enlace copiado", "ok"); }
+    else if (act === "revoke") {
+      const id = e.target.closest("[data-inv]")?.dataset.inv;
+      if (await confirmDialog("Revocar invitación", "El enlace dejará de valer al momento.", "Revocar")) {
+        try { drawInvites((await api("DELETE", `/api/invites/${id}`)).invites); toast("Invitación revocada", "ok"); } catch (err) { toast(err.message, "error"); }
+      }
+    }
     else if (act === "edit") { openEditor(u); $("#user-editor", body).scrollIntoView({ block: "nearest", behavior: "smooth" }); }
     else if (act === "cancel") setUsers(body);
     else if (act === "del" && await confirmDialog("Borrar usuario", `«${u.name}» (${u.username}) no podrá volver a entrar. Sus sesiones se cierran al momento.`, "Borrar")) {
@@ -4286,6 +4429,8 @@ function route() {
 }
 
 async function start() {
+  const inv = location.hash.match(/^#\/invitacion\/([A-Za-z0-9_-]{20,100})$/);
+  if (inv) { showInvite(inv[1]); return; }
   let me;
   try {
     me = await api("GET", "/api/me");

@@ -297,6 +297,12 @@ Bitwarden, 2FAS…) y confirmas con un primer código. Desde entonces, al entrar
   códigos: `python3 server.py reset-totp <usuario>` en el servidor.
 - Las llaves de acceso entre paneles (Acceso remoto) no la piden: ya son secretos largos.
 
+## Invitaciones
+
+Ajustes → **Usuarios** → **Invitar a alguien**: rol, servicios y duración (1 a 30 días). Sale un enlace de un solo uso
+(con QR) en el que la persona elige su usuario y contraseña. Del enlace solo se guarda su huella; se puede revocar y
+caduca. Recuerda añadir su correo a Cloudflare Access.
+
 ## Registro de actividad
 
 Ajustes → **Actividad** (solo administradores): quién encendió, apagó, editó, borró o restauró qué y cuándo, y las

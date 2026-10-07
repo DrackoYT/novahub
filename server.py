@@ -6845,6 +6845,106 @@ def _template_job(job, t, dest, values, service, start):
 JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
 TODO_ROUTE = re.compile(r"/api/roadmap/todo/([0-9a-f]{8})")
+# ───────────────────────────── invitaciones ─────────────────────────────
+# Enlace de un solo uso con rol y servicios: la persona elige su usuario y contraseña. Del enlace solo se guarda la
+# huella (SHA-256), así que nadie puede sacarlo de data/invites.json; caduca, se puede revocar y no sirve dos veces.
+
+INVITES_FILE = os.path.join(DATA_DIR, "invites.json")
+INVITE_HOURS = (1, 24 * 30)   # duración mínima y máxima del enlace
+INVITE_ROUTE = re.compile(r"/api/invite/([A-Za-z0-9_-]{20,100})")
+INVITES_ROUTE = re.compile(r"/api/invites/([0-9a-f]{8})")
+
+
+class Invites:
+    def __init__(self):
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def _load():
+        now = time.time()
+        # las usadas o caducadas se guardan 30 días para verlas en la lista; después se olvidan
+        return [i for i in read_json(INVITES_FILE, []) if now - max(i.get("expires", 0), i.get("used_at") or 0) < 30 * 86400]
+
+    @staticmethod
+    def _out(i):
+        now = time.time()
+        state = "usada" if i.get("used_by") else "revocada" if i.get("revoked") else "caducada" if i["expires"] < now else "pendiente"
+        return {k: i.get(k) for k in ("id", "role", "services", "name", "created_by", "created", "expires", "used_by", "used_at")} | \
+            {"state": state, "role_label": ROLE_LABELS.get(i["role"], i["role"])}
+
+    def public(self):
+        with self.lock:
+            return sorted((self._out(i) for i in self._load()), key=lambda x: -x["created"])
+
+    def create(self, data, actor):
+        role = data.get("role", "viewer")
+        if role not in ROLES:
+            raise ApiError(400, "Rol desconocido")
+        services = data.get("services", "*")
+        if role == "admin":
+            services = "*"
+        elif services != "*":
+            if not isinstance(services, list):
+                raise ApiError(400, "Lista de servicios no válida")
+            services = sorted({str(x) for x in services if str(x) in MANAGER.services})
+        try:
+            hours = int(data["hours"]) if data.get("hours") not in (None, "") else 72
+        except (TypeError, ValueError):
+            raise ApiError(400, "La duración debe ser un número de horas")
+        if not INVITE_HOURS[0] <= hours <= INVITE_HOURS[1]:
+            raise ApiError(400, "El enlace puede durar entre 1 hora y 30 días")
+        name = re.sub(r"[\x00-\x1f\x7f]", "", str(data.get("name") or "")).strip()[:60]
+        token = secrets.token_urlsafe(24)
+        inv = {"id": secrets.token_hex(4), "hash": hashlib.sha256(token.encode()).hexdigest(), "role": role,
+               "services": services, "name": name, "created_by": actor, "created": time.time(), "expires": time.time() + hours * 3600}
+        with self.lock:
+            items = self._load()
+            items.append(inv)
+            write_json(INVITES_FILE, items)
+        origin = str(data.get("origin") or "")  # si el panel no está publicado: la dirección desde la que se abrió
+        base = PANEL_URL or (origin if re.fullmatch(r"https?://[A-Za-z0-9.\-]+(:\d{1,5})?|https?://\[[0-9a-fA-F:]+\](:\d{1,5})?", origin) else "")
+        link = f"{base.rstrip('/')}/#/invitacion/{token}"
+        return {"link": link, "qr": qr_svg(link), "invite": self._out(inv), "invites": self.public()}
+
+    def revoke(self, iid):
+        with self.lock:
+            items = self._load()
+            inv = next((i for i in items if i["id"] == iid), None)
+            if not inv:
+                raise ApiError(404, "Esa invitación no existe")
+            inv["revoked"] = True
+            write_json(INVITES_FILE, items)
+        return self.public()
+
+    def _valid(self, items, token):
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        inv = next((i for i in items if hmac.compare_digest(i["hash"], digest)), None)
+        if not inv or inv.get("used_by") or inv.get("revoked") or inv["expires"] < time.time():
+            raise ApiError(404, "Esta invitación ya no vale: ha caducado, ya se usó o se ha revocado. Pide otra.")
+        return inv
+
+    def peek(self, token):
+        with self.lock:
+            inv = self._valid(self._load(), token)
+        services = "todos los servicios" if inv["services"] == "*" else f"{len(inv['services'])} servicio{'s' if len(inv['services']) != 1 else ''}"
+        return {"role": inv["role"], "role_label": ROLE_LABELS.get(inv["role"], inv["role"]), "name": inv.get("name") or "",
+                "services": services, "expires": inv["expires"], "by": inv["created_by"]}
+
+    def accept(self, token, data):
+        """Crea el usuario de la invitación y la gasta (todo con el lock: dos peticiones a la vez no crean dos usuarios)."""
+        with self.lock:
+            items = self._load()
+            inv = self._valid(items, token)
+            user = AUTH.create_user({"username": data.get("username"), "password": data.get("password"),
+                                     "name": data.get("name") or inv.get("name"), "role": inv["role"], "services": inv["services"]})
+            inv.update(used_by=user["username"], used_at=time.time())
+            write_json(INVITES_FILE, items)
+        return user["username"], inv
+
+
+INVITES = Invites()
+
+
 # ───────────────────────────── registro de actividad ─────────────────────────────
 # Quién hizo qué y cuándo: cada petición que cambia algo y sale bien, más las entradas al panel. Una línea JSON por
 # acción en data/activity.jsonl (al pasar de 5 MB se guarda como .1 y se empieza otro). Nunca se apuntan secretos:
@@ -6882,6 +6982,9 @@ ACTIVITY_RULES = [
     ("POST", r"/api/deploy/clone", "apps", "Desplegó {b:repo} desde GitHub"),
     ("POST", r"/api/templates/create", "apps", "Creó un servicio desde la plantilla {b:template}"),
     ("POST", r"/api/users", "usuarios", "Creó el usuario {b:username}"),
+    ("POST", r"/api/invites", "usuarios", "Creó una invitación ({b:role})"),
+    ("DELETE", r"/api/invites/([0-9a-f]{8})", "usuarios", "Revocó una invitación"),
+    ("*", r"/api/invite/.*", None, None),  # el enlace es secreto: nunca a la actividad (al aceptarla se apunta aparte)
     ("PUT", r"/api/users/([a-z0-9._-]+)", "usuarios", "Editó el usuario {1}"),
     ("DELETE", r"/api/users/([a-z0-9._-]+)", "usuarios", "Borró el usuario {1}"),
     ("PUT", r"/api/account", "acceso", "Cambió su contraseña"),
@@ -6934,6 +7037,8 @@ def describe_action(method, path, body, query, names):
             v = query(key) if src is None else v
             if v in (None, ""):
                 return "—"
+            if key == "role":
+                v = ROLE_LABELS.get(str(v), v)
             v = re.sub(r"://[^/@\s]+@", "://", str(v))  # https://usuario:llave@github.com/… → sin la llave
             return re.sub(r"[\x00-\x1f\x7f]", " ", v)[:80]
         text = tpl.replace("{svc}", names.get(sid) or sid or "?")
@@ -7267,6 +7372,25 @@ class Handler(BaseHTTPRequestHandler):
                 AUTH.failed(ip)
                 raise ApiError(401, "Código incorrecto" if state == "código" else "Usuario o contraseña incorrectos")
             return self.send_json({"ok": True}, cookie=self.session_cookie(AUTH.make_token(username)))
+        m = INVITE_ROUTE.fullmatch(path)
+        if m:  # aceptar una invitación: sin sesión, con el mismo freno que el login
+            ip = self.client_ip()
+            if getattr(self.server, "remote_only", False):
+                raise ApiError(404, "No encontrado")
+            if AUTH.throttled(ip):
+                raise ApiError(429, "Demasiados intentos. Espera unos minutos.")
+            try:
+                if method == "GET":
+                    return self.send_json(INVITES.peek(m.group(1)))
+                if method != "POST":
+                    raise ApiError(405, "Método no permitido")
+                username, inv = INVITES.accept(m.group(1), self.read_body())
+            except ApiError as e:
+                if e.code == 404:
+                    AUTH.failed(ip)  # enlaces inventados: cuentan como intentos fallidos
+                raise
+            ACTIVITY.record(username, ip, "usuarios", f"Se unió con una invitación de {inv['created_by']} ({ROLE_LABELS.get(inv['role'], inv['role'])})")
+            return self.send_json({"ok": True}, cookie=self.session_cookie(AUTH.make_token(username)))
         if path == "/api/logout" and method == "POST":
             AUTH.revoke(self.session_token())
             return self.send_json({"ok": True}, cookie=self.session_cookie("", 0))
@@ -7328,6 +7452,15 @@ class Handler(BaseHTTPRequestHandler):
         if m and method == "DELETE":
             TOKENS.revoke(m.group(1))
             return self.send_json({"tokens": TOKENS.public()})
+        if path == "/api/invites":
+            if method == "GET":
+                return self.send_json({"invites": INVITES.public()})
+            if method == "POST":
+                return self.send_json(INVITES.create(self.read_body(), self.user["username"]), 201)
+            raise ApiError(405, "Método no permitido")
+        m = INVITES_ROUTE.fullmatch(path)
+        if m and method == "DELETE":
+            return self.send_json({"invites": INVITES.revoke(m.group(1))})
         if path == "/api/users":
             if method == "GET":
                 return self.send_json({"users": AUTH.list_users(), "roles": ROLE_LABELS})
