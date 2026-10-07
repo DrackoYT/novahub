@@ -237,8 +237,15 @@ function showLogin(reason = "") {
         <form id="login-form">
           ${reason ? `<p class="nt-ok login-note">${esc(reason)}</p>` : ""}
           <div class="form-error" id="login-error"></div>
-          <label class="field"><span>Usuario</span><input id="user" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
-          <label class="field"><span>Contraseña</span><input id="pw" type="password" name="password" autocomplete="current-password" required></label>
+          <div id="login-step1">
+            <label class="field"><span>Usuario</span><input id="user" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+            <label class="field"><span>Contraseña</span><input id="pw" type="password" name="password" autocomplete="current-password" required></label>
+          </div>
+          <div id="login-step2" hidden>
+            <p class="login-2fa">${ICON.lock}<span>Escribe el código de 6 cifras de tu app de verificación.</span></p>
+            <label class="field"><span>Código</span><input id="code" name="code" class="code-input" inputmode="numeric" autocomplete="one-time-code"
+              maxlength="11" spellcheck="false" placeholder="123 456"><small>¿Sin el móvil? Escribe uno de tus códigos de recuperación.</small></label>
+          </div>
           <button class="btn primary" type="submit">Entrar</button>
         </form>
       </div>
@@ -253,7 +260,16 @@ function showLogin(reason = "") {
     btn.disabled = true;
     try {
       const username = e.target.username.value.trim().toLowerCase();
-      await api("POST", "/api/login", { username, password: e.target.password.value });
+      const step2 = !$("#login-step2").hidden;
+      const res = await api("POST", "/api/login", { username, password: e.target.password.value, ...(step2 ? { code: e.target.code.value } : {}) });
+      if (res.totp_required) {  // contraseña bien: falta el código de la app
+        $("#login-step1").hidden = true;
+        $("#login-step2").hidden = false;
+        $("#login-error").textContent = "";
+        $("#code").focus();
+        btn.disabled = false;
+        return;
+      }
       try { localStorage.setItem("nh-user", username); } catch { /* sin almacenamiento */ }
       ui.unlocked = true;
       ui.locked = false;
@@ -262,6 +278,7 @@ function showLogin(reason = "") {
     } catch (err) {
       $("#login-error").textContent = err.message;
       btn.disabled = false;
+      if (!$("#login-step2").hidden) { $("#code").value = ""; $("#code").focus(); }
     }
   });
 }
@@ -1563,7 +1580,7 @@ async function openGithub() {
 // Cada categoría se guarda por separado.
 
 const SETTINGS = [
-  ["cuenta", "Mi cuenta", "Tu contraseña", ICON.user, null],
+  ["cuenta", "Mi cuenta", "Contraseña y verificación", ICON.user, null],
   ["actualizaciones", "Actualizaciones", "NovaHub, sistema y servicios", ICON.download, "admin"],
   ["fuera", "Copias fuera de casa", "Cifradas, en un USB u otro servidor", ICON.archive, "admin"],
   ["usuarios", "Usuarios", "Quién entra y qué puede hacer", ICON.users, "admin"],
@@ -1720,14 +1737,16 @@ async function setSession(body) {
     <h2 class="set-title">Sesión</h2>
     <p class="set-sub">Cuándo vuelve a pedir la contraseña. Antes del panel está además tu cuenta de Google (Cloudflare Access).</p>
     <div class="checks one"><label><input type="checkbox" name="reload" ${s.lock_on_reload ? "checked" : ""}>
-      <span><strong>Pedir la contraseña al recargar la página</strong><small>También al abrir el panel en una pestaña nueva o abrir la app del móvil.</small></span></label></div>
+      <span><strong>Pedir la contraseña al recargar la página</strong><small>También al abrir el panel en una pestaña nueva o abrir la app del móvil.</small></span></label>
+      <label><input type="checkbox" name="admin_totp" ${s.admin_totp ? "checked" : ""}>
+      <span><strong>Verificación en dos pasos obligatoria para los administradores</strong><small>Quien no la tenga solo podrá mirar hasta activarla en Mi cuenta. Para marcarlo, actívala antes en tu cuenta.</small></span></label></div>
     <div class="set-grid">
       <label class="field"><span>Cerrar tras… sin usarlo (minutos)</span><input name="idle" inputmode="numeric" value="${s.idle_minutes}">
         <small>Sin clics ni teclas en el panel. Las actualizaciones automáticas de la pantalla no cuentan.</small></label>
       <label class="field"><span>Duración máxima (horas)</span><input name="max" inputmode="numeric" value="${s.max_hours}">
         <small>Aunque lo estés usando, pasado este tiempo vuelve a pedirla.</small></label>
     </div>`, async (f) => {
-    await api("PUT", "/api/session-settings", { lock_on_reload: f.reload.checked, idle_minutes: f.idle.value.trim(), max_hours: f.max.value.trim() });
+    await api("PUT", "/api/session-settings", { lock_on_reload: f.reload.checked, admin_totp: f.admin_totp.checked, idle_minutes: f.idle.value.trim(), max_hours: f.max.value.trim() });
   });
 }
 
@@ -1987,6 +2006,110 @@ async function setAccount(body) {
     await api("PUT", "/api/account", { current: f.current.value, password: f.password.value });
     f.reset();
   });
+  const box = document.createElement("section");
+  box.className = "totp";
+  box.id = "totp";
+  body.prepend(box);  // lo primero: es lo que más protege
+  drawTotp(box, await api("GET", "/api/account/totp"));
+}
+
+// Verificación en dos pasos de mi cuenta. mode: "setup" (QR y confirmar) o "codes" (códigos de recuperación recién creados)
+function drawTotp(box, st, mode = null, data = null) {
+  const head = `<h2 class="set-title">Verificación en dos pasos</h2>`;
+  if (mode === "setup") {
+    box.innerHTML = `${head}
+      <ol class="totp-steps">
+        <li>Abre tu app de verificación (Aegis, Google Authenticator, Bitwarden, 2FAS…) y añade una cuenta escaneando el código.</li>
+        <li>Escribe aquí el código de 6 cifras que te muestra.</li>
+      </ol>
+      <div class="totp-setup">
+        <div class="totp-qr" aria-label="Código QR para la app">${data.qr}</div>
+        <div class="totp-side">
+          <p class="dim-text">¿No puedes escanear? Escribe esta clave en la app (tipo «basada en tiempo»):</p>
+          <code class="totp-secret" id="totp-secret">${esc(data.secret)}</code>
+          <button type="button" class="btn sm" data-totp="copy-secret">Copiar la clave</button>
+          <form id="totp-confirm" class="totp-confirm" novalidate>
+            <label class="field"><span>Código de la app</span><input name="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123 456"></label>
+            <div class="form-error" id="totp-error"></div>
+            <div class="totp-btns"><button type="button" class="btn ghost" data-totp="cancel">Cancelar</button><button class="btn primary" type="submit">Confirmar y activar</button></div>
+          </form>
+        </div>
+      </div>`;
+    box.querySelector("[name=code]").focus();
+    box.querySelector("#totp-confirm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        const res = await api("POST", "/api/account/totp/enable", { code: e.target.code.value });
+        ui.me.totp = true;
+        toast("Verificación en dos pasos activada", "ok");
+        drawTotp(box, res, "codes", res);
+      } catch (err) { $("#totp-error", box).textContent = err.message; }
+    });
+  } else if (mode === "codes") {
+    const codes = data.recovery_codes;
+    box.innerHTML = `${head}
+      <div class="nt-ok tok-show"><b>Guarda estos códigos de recuperación ahora (en Bitwarden o en papel). No se volverán a mostrar.</b>
+        Cada uno sirve una sola vez para entrar si pierdes el móvil.</div>
+      <div class="totp-codes mono">${codes.map((c) => `<span>${esc(c)}</span>`).join("")}</div>
+      <div class="totp-btns"><button type="button" class="btn sm" data-totp="copy-codes">Copiar</button>
+        <button type="button" class="btn sm" data-totp="download-codes">Descargar .txt</button><span class="grow"></span>
+        <button type="button" class="btn primary sm" data-totp="done">Ya los he guardado</button></div>`;
+  } else if (st.enabled) {
+    box.innerHTML = `${head}
+      <p class="nt-ok totp-on">${ICON.lock}<span><b>Activada</b> desde ${fmtTime(st.since)}. Al entrar se pide un código de tu app.
+        Te quedan <b>${st.recovery_left}</b> código${st.recovery_left === 1 ? "" : "s"} de recuperación${st.recovery_left <= 2 ? " (crea nuevos)" : ""}.</span></p>
+      <div class="totp-btns"><button type="button" class="btn sm" data-totp="ask-recovery">Nuevos códigos de recuperación</button>
+        ${st.required ? '<span class="dim-text">Obligatoria para administradores</span>' : '<button type="button" class="btn sm ghost danger-text" data-totp="ask-disable">Desactivar</button>'}</div>
+      <form id="totp-pass" class="totp-pass" hidden novalidate>
+        <label class="field"><span>Tu contraseña</span><input name="password" type="password" autocomplete="current-password"></label>
+        <label class="field" data-only="disable"><span>Código de la app o de recuperación</span><input name="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="11"></label>
+        <div class="form-error" id="totp-error"></div>
+        <div class="totp-btns"><button type="button" class="btn ghost sm" data-totp="cancel">Cancelar</button><button class="btn primary sm" type="submit">Seguir</button></div>
+      </form>`;
+    const f = box.querySelector("#totp-pass");
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        if (f.dataset.mode === "disable") {
+          drawTotp(box, await api("POST", "/api/account/totp/disable", { password: f.password.value, code: f.code.value }));
+          ui.me.totp = false;
+          toast("Verificación en dos pasos desactivada", "ok");
+        } else {
+          const res = await api("POST", "/api/account/totp/recovery", { password: f.password.value });
+          drawTotp(box, res, "codes", res);
+        }
+      } catch (err) { $("#totp-error", box).textContent = err.message; }
+    });
+  } else {
+    box.innerHTML = `${head}
+      ${st.required ? '<p class="git-note bad">Es obligatoria para los administradores: hasta que la actives solo puedes mirar.</p>' : ""}
+      <p class="set-sub">Además de la contraseña, al entrar se pide un código de 6 cifras de una app del móvil. Si alguien averigua tu contraseña,
+        sin tu móvil no puede entrar. Sirve cualquier app de códigos: Aegis, Google Authenticator, Bitwarden, 2FAS…</p>
+      <button type="button" class="btn primary" data-totp="setup">${ICON.lock}Activar</button>`;
+  }
+  box.onclick = async (e) => {
+    const act = e.target.closest("[data-totp]")?.dataset.totp;
+    if (!act) return;
+    try {
+      if (act === "setup") drawTotp(box, st, "setup", await api("POST", "/api/account/totp/setup"));
+      else if (act === "cancel" || act === "done") drawTotp(box, await api("GET", "/api/account/totp"));
+      else if (act === "copy-secret") { await navigator.clipboard.writeText($("#totp-secret", box).textContent.replace(/\s/g, "")); toast("Clave copiada", "ok"); }
+      else if (act === "copy-codes") { await navigator.clipboard.writeText(data.recovery_codes.join("\n")); toast("Códigos copiados", "ok"); }
+      else if (act === "download-codes") {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([`Códigos de recuperación de NovaHub (${ui.me.username})\nCada uno sirve una vez.\n\n${data.recovery_codes.join("\n")}\n`], { type: "text/plain" }));
+        a.download = "novahub-codigos-recuperacion.txt";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      } else if (act === "ask-disable" || act === "ask-recovery") {
+        const f = $("#totp-pass", box);
+        f.hidden = false;
+        f.dataset.mode = act === "ask-disable" ? "disable" : "recovery";
+        f.querySelector("[data-only=disable]").hidden = act !== "ask-disable";
+        f.password.focus();
+      }
+    } catch (err) { toast(err.message, "error"); }
+  };
 }
 
 async function setUsers(body) {
@@ -1995,7 +2118,7 @@ async function setUsers(body) {
   const svcName = (id) => services.find((s) => s.id === id)?.name || id;
   const row = (u) => `
     <div class="user-row" data-user="${esc(u.username)}">
-      <div class="user-main"><b>${esc(u.name)}</b> <span class="dim-text mono">${esc(u.username)}</span>${u.username === ui.me.username ? ' <span class="status svc">tú</span>' : ""}
+      <div class="user-main"><b>${esc(u.name)}</b> <span class="dim-text mono">${esc(u.username)}</span>${u.username === ui.me.username ? ' <span class="status svc">tú</span>' : ""}${u.totp ? ' <span class="status svc ok-badge" title="Verificación en dos pasos activada">2 pasos</span>' : ""}
         <small>${esc(u.role_label)}${u.role === "admin" ? " · todo" : ` · ${u.services === "*" ? "todos los servicios" : u.services.map(svcName).map(esc).join(", ") || "ningún servicio"}`}
           · ${u.last_login ? `entró ${fmtAgo(u.last_login)}` : "aún no ha entrado"}</small></div>
       <button type="button" class="btn sm" data-uact="edit">${ICON.edit}Editar</button>
@@ -2020,6 +2143,7 @@ async function setUsers(body) {
       </div>
       <label class="field"><span>${u ? "Nueva contraseña" : "Contraseña"}</span><input name="password" type="password" autocomplete="new-password"
         placeholder="${u ? "vacía = no cambiarla" : "al menos 8 caracteres"}"><small>${u ? "Si la cambias, o cambias su rol o servicios, sus sesiones abiertas se cierran." : "Pásasela por un canal seguro; podrá cambiarla en Ajustes → Mi cuenta."}</small></label>
+      ${u?.totp && u.username !== ui.me.username ? `<label class="chk-line"><input type="checkbox" name="reset_totp"> Quitarle la verificación en dos pasos (ha perdido el móvil): entrará solo con la contraseña y deberá volver a activarla</label>` : ""}
       <div class="form-error" id="user-error"></div>
       <footer class="set-foot"><button type="button" class="btn ghost" data-uact="cancel">Cancelar</button><span class="grow"></span>
         <button type="submit" class="btn primary">${u ? "Guardar" : "Crear usuario"}</button></footer>
@@ -2046,6 +2170,7 @@ async function setUsers(body) {
       const data = { name: f.name.value.trim(), role: f.querySelector('[name="role"]:checked').value,
         services: f.all.checked ? "*" : [...f.querySelectorAll('[name="svc"]:checked')].map((c) => c.value) };
       if (f.password.value) data.password = f.password.value;
+      if (f.reset_totp?.checked) data.reset_totp = true;
       try {
         if (u) await api("PUT", `/api/users/${encodeURIComponent(u.username)}`, data);
         else await api("POST", "/api/users", { ...data, username: f.username.value.trim().toLowerCase() });
@@ -3855,6 +3980,10 @@ async function start() {
   ui.locked = false;
   shell();
   await loadServers();
+  if (me.admin_totp && me.user.role === "admin" && !me.user.totp) {
+    location.hash = "#/ajustes/cuenta";
+    toast("Activa la verificación en dos pasos: es obligatoria para los administradores", "error");
+  }
   route();
 }
 

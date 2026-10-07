@@ -588,6 +588,27 @@ dialog .app-ico { width: 30px; height: 30px; border-radius: 8px; font-size: 12px
 .app-meta { font-size: 12px; color: var(--faint); margin-top: auto; }
 .signups { display: grid; gap: 10px; }
 .signups .btn { justify-self: start; }
+/* verificación en dos pasos */
+.totp { padding-bottom: 22px; margin-bottom: 22px; border-bottom: 1px solid var(--line); display: grid; gap: 12px; justify-items: start; }
+.totp .set-title { margin: 0; }
+.totp .set-sub { margin: 0; }
+.totp-steps { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 14px; }
+.totp-setup { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; width: 100%; }
+.totp-qr { width: 196px; height: 196px; flex: none; padding: 8px; border-radius: var(--r-sm); background: #fff; border: 1px solid var(--line-hi); }
+.totp-qr svg { width: 100%; height: 100%; display: block; }
+.totp-side { flex: 1; min-width: 220px; display: grid; gap: 10px; justify-items: start; }
+.totp-side p { margin: 0; font-size: 14px; }
+.totp-secret { font: 600 15px/1.5 var(--f-mono); letter-spacing: .04em; padding: 8px 10px; border-radius: var(--r-sm); background: var(--sunk); overflow-wrap: anywhere; }
+.totp-confirm, .totp-pass { width: 100%; max-width: 360px; display: grid; gap: 8px; }
+.code-input { font: 600 20px/1.2 var(--f-mono) !important; letter-spacing: .18em; }
+.totp-btns { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; }
+.totp-codes { display: grid; grid-template-columns: repeat(2, minmax(0, max-content)); gap: 8px 28px; padding: 14px 18px; border-radius: var(--r-sm);
+  background: var(--sunk); font-size: 16px; font-weight: 600; letter-spacing: .06em; }
+.totp-on { display: flex; gap: 10px; align-items: flex-start; margin: 0; }
+.totp-on svg, .login-2fa svg { width: 18px; height: 18px; flex: none; margin-top: 2px; }
+.login-2fa { display: flex; gap: 10px; margin: 0 0 12px; font-size: 14px; color: var(--soft); }
+.danger-text { color: var(--err) !important; }
+.ok-badge { background: var(--ok-bg) !important; color: var(--ok) !important; }
 .first-steps p { margin: 8px 0 0; white-space: pre-line; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
 
 /* tipo de servicio y contenedores */

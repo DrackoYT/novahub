@@ -6,6 +6,11 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- **Verificación en dos pasos (TOTP)**: en Mi cuenta, con código QR (generado en el propio servidor, sin dependencias) y
+  8 códigos de recuperación de un solo uso. Al entrar se pide el código tras la contraseña; ninguno sirve dos veces.
+  Opción para que sea obligatoria para los administradores (sin ella solo pueden mirar), quitársela a un usuario que
+  perdió el móvil desde Usuarios y `python3 server.py reset-totp <usuario>` para la última salida.
+
 ## 1.0.11 — 2026-10-07
 
 - Copias fuera de casa: un destino en un disco de `/etc/fstab` que no está montado cuenta como «no conectado» (y no se

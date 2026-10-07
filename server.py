@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import codecs
 import getpass
 import glob
@@ -61,7 +62,7 @@ SESSION_FILE = os.path.join(DATA_DIR, "session.json")
 
 LOG_MAX_BYTES = 5 * 1024 * 1024    # al superarlo, el log se rota a <id>.log.1
 LOG_TAIL_BYTES = 64 * 1024         # lo que se envía al abrir la consola
-SESSION_DEFAULTS = {"idle_minutes": 15, "max_hours": 12, "lock_on_reload": True}
+SESSION_DEFAULTS = {"idle_minutes": 15, "max_hours": 12, "lock_on_reload": True, "admin_totp": False}
 MAX_AUTO_RESTARTS = 5              # reinicios rápidos seguidos; después se reintenta en modo lento
 SLOW_RETRY = 300                   # modo lento: un intento cada 5 min, sin rendirse nunca
 BOOT_WINDOW = 300                  # primeros 5 min tras encender el servidor: fallos pasajeros sin correo
@@ -1088,6 +1089,209 @@ ROLE_LABELS = {"admin": "Administrador", "operator": "Operador", "viewer": "Lect
 USERNAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{1,31}")
 
 
+# ───────────────────────────── verificación en dos pasos (TOTP, RFC 6238) ─────────────────────────────
+
+TOTP_STEP, TOTP_DIGITS, TOTP_WINDOW = 30, 6, 1   # códigos de 30 s; se acepta el anterior y el siguiente (relojes)
+RECOVERY_CODES = 8
+
+
+def totp_code(secret, counter):
+    key = base64.b32decode(secret + "=" * (-len(secret) % 8))
+    digest = hmac.new(key, counter.to_bytes(8, "big"), hashlib.sha1).digest()
+    off = digest[-1] & 0x0F
+    value = int.from_bytes(digest[off:off + 4], "big") & 0x7FFFFFFF
+    return str(value % 10 ** TOTP_DIGITS).zfill(TOTP_DIGITS)
+
+
+def totp_match(secret, code, after=-1, now=None):
+    """El contador del código si es válido y posterior a `after` (un código no se puede usar dos veces); si no, None."""
+    code = re.sub(r"\s", "", str(code or ""))
+    if not re.fullmatch(rf"\d{{{TOTP_DIGITS}}}", code):
+        return None
+    now_c = int((now if now is not None else time.time()) // TOTP_STEP)
+    for c in range(now_c - TOTP_WINDOW, now_c + TOTP_WINDOW + 1):
+        if c > after and hmac.compare_digest(totp_code(secret, c), code):
+            return c
+    return None
+
+
+# Código QR (modo byte, corrección M, versiones 1–10): para el enlace otpauth:// que leen las apps.
+# Tablas de la norma ISO/IEC 18004: [códigos de corrección por bloque, [(nº de bloques, códigos de datos por bloque)…]]
+QR_BLOCKS = {1: (10, [(1, 16)]), 2: (16, [(1, 28)]), 3: (26, [(1, 44)]), 4: (18, [(2, 32)]), 5: (24, [(2, 43)]),
+             6: (16, [(4, 27)]), 7: (18, [(4, 31)]), 8: (22, [(2, 38), (2, 39)]), 9: (22, [(3, 36), (2, 37)]),
+             10: (26, [(4, 43), (1, 44)])}
+QR_ALIGN = {1: [], 2: [6, 18], 3: [6, 22], 4: [6, 26], 5: [6, 30], 6: [6, 34], 7: [6, 22, 38], 8: [6, 24, 42],
+            9: [6, 26, 46], 10: [6, 28, 50]}
+
+
+def _rs_remainder(data, degree):
+    exp, log = [0] * 512, [0] * 256
+    x = 1
+    for i in range(255):
+        exp[i], log[x] = x, i
+        x = (x << 1) ^ (0x11D if x & 0x80 else 0)
+    for i in range(255, 512):
+        exp[i] = exp[i - 255]
+    gen = [1]
+    for i in range(degree):  # (x − α^0)(x − α^1)…
+        gen = [a ^ (exp[log[b] + i] if b else 0) for a, b in zip(gen + [0], [0] + gen)]
+    rem = [0] * degree
+    for byte in data:
+        factor = byte ^ rem[0]
+        rem = rem[1:] + [0]
+        if factor:
+            for j in range(degree):
+                if gen[j + 1]:
+                    rem[j] ^= exp[log[gen[j + 1]] + log[factor]]
+    return rem
+
+
+def qr_matrix(text):
+    data = text.encode()
+    version = next((v for v, (_, g) in QR_BLOCKS.items() if sum(n * k for n, k in g) - 2 - (v >= 10) >= len(data)), None)
+    if not version:
+        raise ValueError("texto demasiado largo para el código QR")
+    ec_len, groups = QR_BLOCKS[version]
+    capacity = sum(n * k for n, k in groups)
+    bits = "0100" + format(len(data), "016b" if version >= 10 else "08b") + "".join(format(b, "08b") for b in data)
+    bits += "0" * min(4, capacity * 8 - len(bits))
+    bits += "0" * (-len(bits) % 8)
+    words = [int(bits[i:i + 8], 2) for i in range(0, len(bits), 8)]
+    words += [0xEC, 0x11] * ((capacity - len(words)) // 2) + [0xEC] * ((capacity - len(words)) % 2)
+    blocks, pos = [], 0
+    for n, k in groups:
+        for _ in range(n):
+            blocks.append(words[pos:pos + k])
+            pos += k
+    eccs = [_rs_remainder(b, ec_len) for b in blocks]
+    final = [b[i] for i in range(max(map(len, blocks))) for b in blocks if i < len(b)]
+    final += [e[i] for i in range(ec_len) for e in eccs]
+
+    size = version * 4 + 17
+    mods = [[False] * size for _ in range(size)]
+    func = [[False] * size for _ in range(size)]
+
+    def put(x, y, dark):
+        mods[y][x], func[y][x] = dark, True
+
+    for i in range(size):  # temporización
+        put(6, i, i % 2 == 0)
+        put(i, 6, i % 2 == 0)
+    for cx, cy in ((3, 3), (size - 4, 3), (3, size - 4)):  # patrones de posición con su separador
+        for dy in range(-4, 5):
+            for dx in range(-4, 5):
+                x, y = cx + dx, cy + dy
+                if 0 <= x < size and 0 <= y < size:
+                    put(x, y, max(abs(dx), abs(dy)) not in (2, 4))
+    al = QR_ALIGN[version]
+    for i, ax in enumerate(al):
+        for j, ay in enumerate(al):
+            if (i == 0 and j == 0) or (i == 0 and j == len(al) - 1) or (i == len(al) - 1 and j == 0):
+                continue
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
+                    put(ax + dx, ay + dy, max(abs(dx), abs(dy)) != 1)
+
+    def draw_format(mask):
+        data5 = (0 << 3) | mask  # corrección M = 00
+        rem = data5
+        for _ in range(10):
+            rem = (rem << 1) ^ ((rem >> 9) * 0x537)
+        fbits = ((data5 << 10) | rem) ^ 0x5412
+        bit = lambda i: (fbits >> i) & 1 == 1  # noqa: E731
+        for i in range(6):
+            put(8, i, bit(i))
+        put(8, 7, bit(6))
+        put(8, 8, bit(7))
+        put(7, 8, bit(8))
+        for i in range(9, 15):
+            put(14 - i, 8, bit(i))
+        for i in range(8):
+            put(size - 1 - i, 8, bit(i))
+        for i in range(8, 15):
+            put(8, size - 15 + i, bit(i))
+        put(8, size - 8, True)  # módulo oscuro fijo
+
+    draw_format(0)  # reserva las zonas de formato
+    if version >= 7:
+        rem = version
+        for _ in range(12):
+            rem = (rem << 1) ^ ((rem >> 11) * 0x1F25)
+        vbits = (version << 12) | rem
+        for i in range(18):
+            dark = (vbits >> i) & 1 == 1
+            a, b = size - 11 + i % 3, i // 3
+            put(a, b, dark)
+            put(b, a, dark)
+
+    i, total = 0, len(final) * 8
+    right = size - 1
+    while right >= 1:  # datos en zigzag de dos columnas, de abajo arriba y de arriba abajo
+        if right == 6:
+            right = 5
+        for vert in range(size):
+            for j in range(2):
+                x = right - j
+                y = size - 1 - vert if ((right + 1) & 2) == 0 else vert
+                if not func[y][x] and i < total:
+                    mods[y][x] = (final[i >> 3] >> (7 - (i & 7))) & 1 == 1
+                    i += 1
+        right -= 2
+
+    masks = [lambda x, y: (x + y) % 2 == 0, lambda x, y: y % 2 == 0, lambda x, y: x % 3 == 0,
+             lambda x, y: (x + y) % 3 == 0, lambda x, y: (x // 3 + y // 2) % 2 == 0,
+             lambda x, y: x * y % 2 + x * y % 3 == 0, lambda x, y: (x * y % 2 + x * y % 3) % 2 == 0,
+             lambda x, y: ((x + y) % 2 + x * y % 3) % 2 == 0]
+
+    def apply(m):
+        for y in range(size):
+            for x in range(size):
+                if not func[y][x] and masks[m](x, y):
+                    mods[y][x] = not mods[y][x]
+
+    def penalty():
+        score = 0
+        lines = mods + [list(col) for col in zip(*mods)]
+        for line in lines:  # tramos de 5 o más iguales y patrones parecidos a los de posición
+            run, prev = 0, None
+            for v in line:
+                run = run + 1 if v == prev else 1
+                prev = v
+                if run == 5:
+                    score += 3
+                elif run > 5:
+                    score += 1
+            txt = "".join("1" if v else "0" for v in line)
+            score += 40 * (txt.count("10111010000") + txt.count("00001011101"))
+        for y in range(size - 1):
+            for x in range(size - 1):
+                if mods[y][x] == mods[y][x + 1] == mods[y + 1][x] == mods[y + 1][x + 1]:
+                    score += 3
+        dark = sum(map(sum, mods))
+        score += 10 * (abs(dark * 20 - size * size * 10) // (size * size))
+        return score
+
+    best = None
+    for m in range(8):
+        apply(m)
+        draw_format(m)
+        p = penalty()
+        if best is None or p < best[0]:
+            best = (p, m)
+        apply(m)  # deshace la máscara (es un XOR)
+    apply(best[1])
+    draw_format(best[1])
+    return mods
+
+
+def qr_svg(text):
+    mods = qr_matrix(text)
+    n, q = len(mods), 4  # zona en blanco de 4 módulos
+    path = "".join(f"M{x + q},{y + q}h1v1h-1z" for y, row in enumerate(mods) for x, v in enumerate(row) if v)
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {n + 2 * q} {n + 2 * q}" shape-rendering="crispEdges">'
+            f'<rect width="100%" height="100%" fill="#fff"/><path d="{path}" fill="#000"/></svg>')
+
+
 class Auth:
     """Usuarios con contraseña (PBKDF2) y sesiones firmadas «emitido:caduca:usuario:versión.firma».
     La versión cambia al cambiar la contraseña o el rol del usuario: así se cierran sus sesiones abiertas."""
@@ -1162,8 +1366,10 @@ class Auth:
             self._save_users()
             return username
 
-    def login(self, username, password):
-        """El usuario si la contraseña es correcta; si no, None (con el mismo coste aunque el usuario no exista)."""
+    def login(self, username, password, code=None):
+        """(usuario, estado): estado «ok», «falta-código» (contraseña bien; tiene la verificación en dos pasos y aún no
+        ha mandado el código), «código» (código incorrecto) o «contraseña» (usuario o contraseña incorrectos, con el
+        mismo coste aunque el usuario no exista)."""
         self._fresh()
         username = str(username or "").strip().lower()
         if not username and len(self.users) == 1:
@@ -1171,18 +1377,120 @@ class Auth:
         u = self.users.get(username)
         ok = self._verify(u["password"] if u else f"pbkdf2_sha256${self.ITERATIONS}${'0' * 32}${'0' * 64}", password)
         if not (u and ok):
-            return None
+            return None, "contraseña"
+        if (u.get("totp") or {}).get("secret"):
+            if not str(code or "").strip():
+                return None, "falta-código"
+            if not self.second_factor(username, code):
+                return None, "código"
         with self.lock:
             u["last_login"] = time.time()
             self._save_users()
-        return username
+        return username, "ok"
+
+    # ── verificación en dos pasos ──
+    def second_factor(self, username, code):
+        """Código de la app (no repetido) o uno de recuperación (se gasta). True si vale."""
+        with self.lock:
+            t = self.users[username].get("totp") or {}
+            if not t.get("secret"):
+                return False
+            counter = totp_match(t["secret"], code, after=t.get("last", -1))
+            if counter is not None:
+                t["last"] = counter
+                self._save_users()
+                return True
+            clean = re.sub(r"[^0-9a-z]", "", str(code or "").lower())
+            if len(clean) == 10:
+                digest = hashlib.sha256(clean.encode()).hexdigest()
+                for h in t.get("recovery") or []:
+                    if hmac.compare_digest(h, digest):
+                        t["recovery"].remove(h)
+                        self._save_users()
+                        return True
+            return False
+
+    @staticmethod
+    def _recovery_codes():
+        codes = [secrets.token_hex(5) for _ in range(RECOVERY_CODES)]  # 10 caracteres: «a1b2c-3d4e5»
+        return [f"{c[:5]}-{c[5:]}" for c in codes], [hashlib.sha256(c.encode()).hexdigest() for c in codes]
+
+    def totp_status(self, username):
+        t = self.users[username].get("totp") or {}
+        return {"enabled": bool(t.get("secret")), "since": t.get("since"), "recovery_left": len(t.get("recovery") or []),
+                "required": self.settings()["admin_totp"] and self.users[username]["role"] == "admin"}
+
+    def totp_setup(self, username):
+        """Clave nueva pendiente de confirmar (no sustituye a la actual hasta que se confirma con un código)."""
+        from urllib.parse import quote
+        secret = base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
+        with self.lock:
+            self.users[username]["totp_pending"] = {"secret": secret, "at": time.time()}
+            self._save_users()
+        issuer = f"NovaHub ({socket.gethostname()})"
+        uri = (f"otpauth://totp/{quote(issuer)}:{quote(username)}?secret={secret}&issuer={quote(issuer)}"
+               f"&algorithm=SHA1&digits={TOTP_DIGITS}&period={TOTP_STEP}")
+        return {"secret": " ".join(secret[i:i + 4] for i in range(0, len(secret), 4)), "uri": uri, "qr": qr_svg(uri)}
+
+    def totp_enable(self, username, code):
+        with self.lock:
+            u = self.users[username]
+            pend = u.get("totp_pending") or {}
+            if not pend or time.time() - pend.get("at", 0) > 1800:
+                raise ApiError(400, "Vuelve a empezar: la clave ha caducado (30 min)")
+            counter = totp_match(pend["secret"], code)
+            if counter is None:
+                raise ApiError(400, "El código no es correcto. Comprueba que la hora del móvil es la buena y prueba con el siguiente.")
+            shown, hashed = self._recovery_codes()
+            u["totp"] = {"secret": pend["secret"], "since": time.time(), "last": counter, "recovery": hashed}
+            u.pop("totp_pending", None)
+            self._save_users()
+        return {**self.totp_status(username), "recovery_codes": shown}
+
+    def _check_password(self, username, password):
+        if not self._verify(self.users[username]["password"], str(password or "")):
+            raise ApiError(400, "La contraseña no es correcta")
+
+    def totp_disable(self, username, password, code):
+        self._check_password(username, password)
+        if self.settings()["admin_totp"] and self.users[username]["role"] == "admin":  # antes de gastar el código
+            raise ApiError(400, "Es obligatoria para los administradores: quítalo antes en Ajustes → Sesión")
+        if not self.second_factor(username, code):
+            raise ApiError(400, "El código no es correcto (vale uno de la app o uno de recuperación)")
+        with self.lock:
+            self.users[username].pop("totp", None)
+            self._save_users()
+        return self.totp_status(username)
+
+    def totp_new_recovery(self, username, password):
+        self._check_password(username, password)
+        with self.lock:
+            t = self.users[username].get("totp")
+            if not t:
+                raise ApiError(400, "No tienes activada la verificación en dos pasos")
+            shown, t["recovery"] = self._recovery_codes()
+            self._save_users()
+        return {**self.totp_status(username), "recovery_codes": shown}
+
+    def reset_totp(self, username):
+        """Quita la verificación en dos pasos de un usuario (móvil perdido) y cierra sus sesiones."""
+        with self.lock:
+            self._fresh()
+            u = self.users.get(username)
+            if not u:
+                raise ApiError(404, "Ese usuario no existe")
+            u.pop("totp", None)
+            u.pop("totp_pending", None)
+            u["ver"] = u.get("ver", 0) + 1
+            self._save_users()
 
     # ── usuarios (solo administradores) ──
     def public_user(self, username):
         u = self.users[username]
         return {"username": username, "name": u.get("name") or username, "role": u["role"], "role_label": ROLE_LABELS[u["role"]],
                 "services": u.get("services", "*"), "perms": sorted(ROLES[u["role"]]),
-                "created": u.get("created"), "last_login": u.get("last_login")}
+                "created": u.get("created"), "last_login": u.get("last_login"),
+                "totp": bool((u.get("totp") or {}).get("secret"))}
 
     def list_users(self):
         return [self.public_user(n) for n in sorted(self.users)]
@@ -1235,6 +1543,9 @@ class Auth:
                     raise ApiError(400, "Tiene que quedar al menos un administrador")
             changed = role != u["role"] or services != u.get("services", "*")
             u.update(name=name or username, role=role, services=services)
+            if data.get("reset_totp") and u.get("totp"):  # perdió el móvil: entra solo con la contraseña y la vuelve a activar
+                u.pop("totp", None)
+                changed = True
             if data.get("password"):
                 self._check_password_rules(str(data["password"]))
                 u["password"] = self._hash(str(data["password"]))
@@ -1273,10 +1584,9 @@ class Auth:
     def settings():
         cfg = {**SESSION_DEFAULTS, **read_json(SESSION_FILE, {})}
         return {"idle_minutes": int(cfg["idle_minutes"]), "max_hours": int(cfg["max_hours"]),
-                "lock_on_reload": bool(cfg["lock_on_reload"])}
+                "lock_on_reload": bool(cfg["lock_on_reload"]), "admin_totp": bool(cfg["admin_totp"])}
 
-    @staticmethod
-    def save_settings(data):
+    def save_settings(self, data, actor=None):
         cfg = Auth.settings()
         try:
             idle = int(data.get("idle_minutes", cfg["idle_minutes"]))
@@ -1287,7 +1597,11 @@ class Auth:
             raise ApiError(400, "El cierre por inactividad debe estar entre 1 minuto y 24 horas")
         if not 1 <= max_hours <= 24 * 30:
             raise ApiError(400, "La duración máxima de la sesión debe estar entre 1 hora y 30 días")
-        cfg.update(idle_minutes=idle, max_hours=max_hours,
+        admin_totp = bool(data.get("admin_totp", cfg["admin_totp"]))
+        if admin_totp and not cfg["admin_totp"]:
+            if actor and not (self.users.get(actor, {}).get("totp") or {}).get("secret"):
+                raise ApiError(400, "Actívala primero en tu cuenta (Ajustes → Mi cuenta), para no quedarte fuera")
+        cfg.update(idle_minutes=idle, max_hours=max_hours, admin_totp=admin_totp,
                    lock_on_reload=bool(data.get("lock_on_reload", cfg["lock_on_reload"])))
         write_json(SESSION_FILE, cfg)
         return cfg
@@ -6415,7 +6729,7 @@ SERVICE_OPERATE = {"start", "stop", "restart", "backups/run", "tasks/run"}
 
 def route_permission(method, path, service_param=""):
     """(permiso, servicio) que exige cada petición de la API; None = cualquier usuario con sesión."""
-    if path == "/api/me" or (path == "/api/account" and method == "PUT"):
+    if path == "/api/me" or (path == "/api/account" and method == "PUT") or path.startswith("/api/account/totp"):
         return None, None
     if method == "GET" and path in ("/api/system", "/api/services", "/api/app/android", "/api/hardware"):
         return "view", None
@@ -6613,10 +6927,12 @@ class Handler(BaseHTTPRequestHandler):
             if AUTH.throttled(ip):
                 raise ApiError(429, "Demasiados intentos. Espera unos minutos.")
             body = self.read_body()
-            username = AUTH.login(body.get("username"), str(body.get("password") or ""))
+            username, state = AUTH.login(body.get("username"), str(body.get("password") or ""), body.get("code"))
+            if state == "falta-código":
+                return self.send_json({"totp_required": True})  # contraseña bien: falta el código de la app
             if not username:
                 AUTH.failed(ip)
-                raise ApiError(401, "Usuario o contraseña incorrectos")
+                raise ApiError(401, "Código incorrecto" if state == "código" else "Usuario o contraseña incorrectos")
             return self.send_json({"ok": True}, cookie=self.session_cookie(AUTH.make_token(username)))
         if path == "/api/logout" and method == "POST":
             AUTH.revoke(self.session_token())
@@ -6632,10 +6948,24 @@ class Handler(BaseHTTPRequestHandler):
             return self.proxy(m.group(1), m.group(2))
         perm, psid = route_permission(method, path, self.query("service"))
         self.need(perm, psid)  # todo lo que no está en route_permission es solo para administradores
+        if (method != "GET" and self.user["role"] == "admin" and not self.user["totp"] and AUTH.settings()["admin_totp"]
+                and not path.startswith("/api/account") and not (self.headers.get("Authorization") or "").startswith("Bearer ")):
+            raise ApiError(403, "Activa la verificación en dos pasos (Ajustes → Mi cuenta): hasta entonces solo puedes mirar")
 
         if path == "/api/me":
             return self.send_json({"ok": True, **AUTH.settings(), "user": self.user,
                                    "roadmap": ROADMAP.enabled() and self.can("admin")})
+        if path == "/api/account/totp" and method == "GET":
+            return self.send_json(AUTH.totp_status(self.user["username"]))
+        if path == "/api/account/totp/setup" and method == "POST":
+            return self.send_json(AUTH.totp_setup(self.user["username"]))
+        if path == "/api/account/totp/enable" and method == "POST":
+            return self.send_json(AUTH.totp_enable(self.user["username"], self.read_body().get("code")))
+        if path == "/api/account/totp/disable" and method == "POST":
+            body = self.read_body()
+            return self.send_json(AUTH.totp_disable(self.user["username"], body.get("password"), body.get("code")))
+        if path == "/api/account/totp/recovery" and method == "POST":
+            return self.send_json(AUTH.totp_new_recovery(self.user["username"], self.read_body().get("password")))
         if path == "/api/account" and method == "PUT":
             body = self.read_body()
             AUTH.change_own_password(self.user["username"], body.get("current"), body.get("password"))
@@ -6681,7 +7011,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET":
                 return self.send_json(AUTH.settings())
             if method == "PUT":
-                return self.send_json(AUTH.save_settings(self.read_body()))
+                return self.send_json(AUTH.save_settings(self.read_body(), self.user["username"]))
             raise ApiError(405, "Método no permitido")
         if path == "/api/hardware" and method == "GET":
             return self.send_json(HARDWARE.public())
@@ -7152,7 +7482,7 @@ def remote_listener():
 def main():
     global MANAGER, AUTH, PUBLISHER, GATEWAY
     parser = argparse.ArgumentParser(description="NovaHub — gestor de servicios")
-    parser.add_argument("command", nargs="?", default="serve", choices=["serve", "set-password"])
+    parser.add_argument("command", nargs="?", default="serve", choices=["serve", "set-password", "reset-totp"])
     parser.add_argument("user", nargs="?", help="con set-password: el usuario (por defecto, el primer administrador)")
     parser.add_argument("--host", default=os.environ.get("NOVAHUB_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("NOVAHUB_PORT", "8686")))
@@ -7162,6 +7492,15 @@ def main():
         os.makedirs(d, mode=0o700, exist_ok=True)
 
     AUTH = Auth()
+    if args.command == "reset-totp":  # móvil perdido y sin códigos de recuperación
+        if not args.user:
+            sys.exit("Uso: python3 server.py reset-totp <usuario>")
+        try:
+            AUTH.reset_totp(args.user.lower())
+        except ApiError as e:
+            sys.exit(e.msg)
+        print(f"Verificación en dos pasos de «{args.user}» quitada: entra con la contraseña y vuelve a activarla.")
+        return
     if args.command == "set-password":
         try:
             name = AUTH.set_password(ask_password(), (args.user or "").lower() or None)
