@@ -6,6 +6,10 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- «Discos y temperatura» rediseñado: una sola tarjeta con las temperaturas arriba y una fila por disco (estado, temperatura,
+  datos clave y motivos), y el botón «Leer SMART» junto a la hora de la última lectura.
+- El desgaste de un SSD sano (reserva intacta, sin errores) avisa como «Atención» desde el 80 % y solo es «Peligro» al
+  llegar al 100 % o si hay errores o poca reserva.
 ## 1.0.9 — 2026-10-07
 
 - **Salud de los discos y temperatura** (Resumen): SMART de cada disco cada 30 min con `novahub-sistema discos` (solo

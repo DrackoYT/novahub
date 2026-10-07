@@ -223,10 +223,49 @@ a.net-card:hover { background: var(--hover); }
 .net-card .readout { margin-top: 4px; }
 .net-card p { margin: 4px 0; font-size: 14px; }
 .net-foot { font-size: 12px; }
-.hw-grid .git-note { font-size: 13px; padding: 8px 10px; }
-.hw-setup pre { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.hw-actions { display: flex; align-items: center; }
-.hw-mounts { font-size: 13px; font-weight: 500; }
+/* discos y temperatura */
+.hw { overflow: hidden; }
+.hw-head { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+.hw-temps { display: flex; flex-wrap: wrap; gap: 10px 32px; padding: 14px 18px; background: var(--sunk); border-bottom: 1px solid var(--line); }
+.hw-t { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.hw-t svg { width: 17px; height: 17px; color: var(--soft); }
+.hw-t-name { color: var(--soft); }
+.hw-t-val { font-variant-numeric: tabular-nums; min-width: 4.2ch; }
+.hw-t .meter { width: 90px; }
+.hw-t-max { font-size: 12px; }
+.hw-disk { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 14px; align-items: start; padding: 16px 18px; border-top: 1px solid var(--line); }
+.hw-temps + .hw-disk { border-top: 0; }
+.hw-ico { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 10px; background: var(--off-bg); color: var(--soft); }
+.hw-ico svg { width: 22px; height: 22px; }
+[data-status="running"] .hw-ico { background: var(--ok-bg); color: var(--ok); }
+[data-status="starting"] .hw-ico { background: var(--warn-bg); color: var(--warn); }
+[data-status="crashed"] .hw-ico { background: var(--err-bg); color: var(--err); }
+.hw-main { min-width: 0; display: grid; gap: 3px; }
+.hw-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.hw-name b { font-size: 15.5px; }
+.hw-name .dim-text { font-size: 13px; }
+.hw-model { font-size: 12.5px; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hw-facts { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 4px; font-size: 13px; }
+.hw-fact span { color: var(--soft); margin-right: 5px; }
+.hw-fact b { font-weight: 650; font-variant-numeric: tabular-nums; }
+.hw-why { margin: 6px 0 0; padding-left: 18px; font-size: 13.5px; font-weight: 600; display: grid; gap: 2px; }
+.hw-right { display: grid; justify-items: end; gap: 6px; }
+.hw-temp { font-weight: 750; font-size: 24px; line-height: 1; font-variant-numeric: tabular-nums; }
+.hw-temp small { font-size: 13px; font-weight: 600; color: var(--soft); margin-left: 1px; }
+.hw-note { font-size: 12px; }
+.hw-setup { border-top: 1px solid var(--line); padding: 0 18px; }
+.hw-setup > summary { padding: 13px 0; cursor: pointer; font-weight: 700; font-size: 14px; }
+.hw-setup p { margin: 0 0 8px; font-size: 14px; }
+.hw-setup pre { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.hw-setup[open] { padding-bottom: 10px; }
+@media (max-width: 640px) {
+  .hw-temps { gap: 10px 20px; padding: 12px 14px; }
+  .hw-t .meter { width: 60px; }
+  .hw-disk { grid-template-columns: 34px minmax(0, 1fr) auto; gap: 12px; padding: 14px; }
+  .hw-ico { width: 34px; height: 34px; }
+  .hw-ico svg { width: 19px; height: 19px; }
+  .hw-temp { font-size: 20px; }
+}
 .mono-value { font-family: var(--f-mono); font-size: 24px; font-weight: 600; }
 .warn-text { color: var(--warn); }
 .net-host .row-name { color: var(--nova-text); }

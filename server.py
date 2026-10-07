@@ -5840,10 +5840,12 @@ def evaluate_smart(sm, prev=None):
             bump("danger", "El SSD tiene un aviso crítico activo (poco espacio de reserva, solo lectura o temperatura).")
         if spare is not None and spare_min is not None and spare < spare_min:
             bump("danger", f"Le queda poca reserva ({spare} %, mínimo {spare_min} %): está cerca del final de su vida.")
-        if used is not None and used >= 90:
-            bump("danger", f"Desgaste del {used} %: cámbialo pronto.")
-        elif used is not None and used >= 70:
-            bump("warn", f"Desgaste del {used} %: ve pensando en cambiarlo.")
+        healthy = not warnbits and not media and (spare is None or spare_min is None or spare >= spare_min)
+        if used is not None and used >= 100:
+            bump("danger", f"Ha gastado el {used} % de la vida prevista por el fabricante: cámbialo pronto.")
+        elif used is not None and used >= 80:
+            bump("warn", f"Ha gastado el {used} % de la vida prevista por el fabricante"
+                         + (". Sigue sano (reserva intacta y sin errores), pero planea cambiarlo y ten las copias al día." if healthy else "."))
         if media:
             bump("warn", f"{media} error{'es' if media != 1 else ''} del medio (datos que no pudo leer bien).")
     else:
