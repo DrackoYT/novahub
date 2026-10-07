@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.0.12 — 2026-10-07
+
 - **Verificación en dos pasos (TOTP)**: en Mi cuenta, con código QR (generado en el propio servidor, sin dependencias) y
   8 códigos de recuperación de un solo uso. Al entrar se pide el código tras la contraseña; ninguno sirve dos veces.
   Opción para que sea obligatoria para los administradores (sin ella solo pueden mirar), quitársela a un usuario que
