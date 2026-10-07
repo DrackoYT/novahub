@@ -843,6 +843,18 @@ body.remote-mode .srv-btn { background: var(--nova); color: #fff; border-color: 
 
 /* ───────── mejoras ───────── */
 .rm-list { overflow: hidden; }
+.todo { overflow: hidden; }
+.todo-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 16px 18px 0; }
+.todo-head h2 { margin: 0; font-size: 17px; }
+.todo-sub { margin: 4px 18px 10px; font-size: 14px; }
+.todo .rm-list { border-top: 1px solid var(--line); }
+.todo-acts { flex: none; display: flex; gap: 2px; margin-left: auto; }
+.todo-note { white-space: pre-line; overflow-wrap: anywhere; }
+.todo-add { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+.todo-add input { flex: 1; min-width: 0; }
+.todo-done { border-top: 1px solid var(--line); }
+.todo-done > summary { padding: 12px 18px; cursor: pointer; color: var(--soft); font-size: 14px; }
+.todo-done .rm-list { border-top: 1px solid var(--line); }
 .rm-list[hidden] { display: none; }
 .rm-item { display: flex; align-items: flex-start; gap: 14px; padding: 14px 18px; border-top: 1px solid var(--line); cursor: pointer; transition: background .12s; }
 .rm-item:first-child { border-top: 0; }
@@ -882,13 +894,13 @@ dialog::backdrop { background: rgba(20, 14, 36, .45); backdrop-filter: blur(3px)
 .field > span { font: 500 11px/1.4 var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--soft); }
 .field small { color: var(--faint); font-size: 13px; }
 .field small code { color: var(--soft); }
-.field input, .field textarea, .field select {
+.field input, .field textarea, .field select, .todo-add input {
   width: 100%; padding: 10px 12px; border-radius: var(--r-sm); resize: vertical; outline: none;
   background: var(--sunk); border: 1px solid var(--line-hi); box-shadow: inset 0 1px 2px rgba(0, 0, 0, .06);
 }
-.field input:focus, .field textarea:focus { border-color: var(--nova); box-shadow: 0 0 0 3px var(--nova-soft); }
+.field input:focus, .field textarea:focus, .todo-add input:focus { border-color: var(--nova); box-shadow: 0 0 0 3px var(--nova-soft); }
 .field select { font: inherit; color: inherit; cursor: pointer; }
-.field input::placeholder, .field textarea::placeholder { color: var(--faint); }
+.field input::placeholder, .field textarea::placeholder, .todo-add input::placeholder { color: var(--faint); }
 .field textarea.mono, .field input.mono { font-family: var(--f-mono); font-size: 13px; }
 .affix { display: flex; align-items: stretch; }
 .affix input { flex: 1; min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
@@ -974,6 +986,7 @@ details.adv .inner { display: flex; flex-direction: column; gap: 14px; }
   .tab svg { display: none; }  /* sin iconos caben más pestañas; el resto se desliza */
   .tabs { scrollbar-width: none; }
   .rm-item { flex-wrap: wrap; gap: 10px 12px; padding: 12px 14px; }
+  .rm-item.todo-item { flex-wrap: nowrap; }
   .rm-text { flex-basis: calc(100% - 80px); }
   .rm-item .tag { margin-left: 64px; }
   .rm-add { flex-direction: column; align-items: stretch; }

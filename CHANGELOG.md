@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+- **Pendientes** en la página de Mejoras: una lista de tareas sueltas para hacer a mano (instalar algo, conectar el
+  móvil…), con nota opcional para comandos o detalles, editar, borrar y las hechas en un desplegable.
 ## 1.0.7 — 2026-10-07
 
 - **Fotos propias (Immich)**: el catálogo pide la carpeta de las fotos, por defecto en el disco duro de datos

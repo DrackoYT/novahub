@@ -746,6 +746,17 @@ function viewRoadmap() {
       <div class="rm-head-actions"><div id="rm-progress"></div>
         <button type="button" class="btn sm" id="rm-close" hidden title="Guardar las hechas bajo una versión para que no se vean">Cerrar versión…</button></div>
     </section>
+    <section class="module todo" id="todo">
+      <header class="todo-head"><h2>Pendientes</h2><span class="dim-text" id="todo-count"></span></header>
+      <p class="dim-text todo-sub">Cosas que hacer a mano (instalar algo, conectar el móvil…) para no olvidarlas.</p>
+      <div class="rm-list" id="todo-list"></div>
+      <form class="todo-add" id="todo-add">
+        <input id="todo-text" maxlength="160" placeholder="Apuntar un pendiente…" autocomplete="off" aria-label="Nuevo pendiente">
+        <button class="btn sm" type="submit">${ICON.plus}Apuntar</button>
+      </form>
+      <details class="todo-done" id="todo-done" hidden><summary></summary><div class="rm-list done" id="todo-done-list"></div></details>
+    </section>
+    <div class="section-title"><h2>Mejoras</h2></div>
     <section class="module rm-list" id="rm-todo"></section>
     <form class="module rm-add" id="rm-add">
       <label class="field"><span>Apuntar una idea nueva</span>
@@ -793,7 +804,81 @@ function viewRoadmap() {
       toast("Mejora apuntada al final de la lista", "ok");
     } catch (err) { toast(err.message, "error"); }
   });
-  api("GET", "/api/roadmap").then((d) => { ui.roadmapItems = d.items; drawRoadmap(); }).catch((e) => toast(e.message, "error"));
+  const todoHandler = async (e) => {
+    const box = e.target.closest("[data-todo-done]");
+    const del = e.target.closest("[data-todo-del]");
+    const edit = e.target.closest("[data-todo-edit]");
+    try {
+      if (box && e.type === "change") ui.todos = (await api("PUT", `/api/roadmap/todo/${box.dataset.todoDone}`, { done: box.checked })).todos;
+      else if (del && e.type === "click") {
+        e.preventDefault();
+        if (!await confirmDialog("Borrar pendiente", "Se quitará de la lista.", "Borrar")) return;
+        ui.todos = (await api("DELETE", `/api/roadmap/todo/${del.dataset.todoDel}`)).todos;
+      } else if (edit && e.type === "click") { e.preventDefault(); return editTodo(edit.dataset.todoEdit); }
+      else return;
+      drawTodos();
+    } catch (err) { toast(err.message, "error"); }
+  };
+  for (const ev of ["change", "click"]) { $("#todo-list").addEventListener(ev, todoHandler); $("#todo-done-list").addEventListener(ev, todoHandler); }
+  $("#todo-add").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = $("#todo-text");
+    try {
+      ui.todos = (await api("POST", "/api/roadmap/todo", { text: input.value })).todos;
+      input.value = "";
+      drawTodos();
+    } catch (err) { toast(err.message, "error"); }
+  });
+  api("GET", "/api/roadmap").then((d) => { ui.roadmapItems = d.items; ui.todos = d.todos || []; drawRoadmap(); drawTodos(); })
+    .catch((e) => toast(e.message, "error"));
+}
+
+function drawTodos() {
+  const all = ui.todos || [];
+  const open = all.filter((t) => !t.done);
+  const done = all.filter((t) => t.done).sort((a, b) => (b.done_at || 0) - (a.done_at || 0));
+  const row = (t) => `
+    <label class="rm-item todo-item">
+      <input type="checkbox" data-todo-done="${esc(t.id)}" ${t.done ? "checked" : ""} aria-label="Marcar «${esc(t.text)}» como hecho">
+      <span class="rm-check" aria-hidden="true"></span>
+      <span class="rm-text">
+        <span class="rm-title">${esc(t.text)}</span>
+        ${t.note ? `<span class="rm-desc todo-note">${esc(t.note)}</span>` : ""}
+        ${t.done && t.done_at ? `<span class="rm-desc">Hecho ${fmtAgo(t.done_at)}</span>` : ""}
+      </span>
+      <span class="todo-acts">
+        <button type="button" class="btn sm icon ghost" data-todo-edit="${esc(t.id)}" title="Editar" aria-label="Editar «${esc(t.text)}»">${ICON.edit}</button>
+        <button type="button" class="btn sm icon ghost" data-todo-del="${esc(t.id)}" title="Borrar" aria-label="Borrar «${esc(t.text)}»">${ICON.trash}</button>
+      </span>
+    </label>`;
+  $("#todo-count").textContent = open.length ? `${open.length} por hacer` : "nada por hacer";
+  $("#todo-list").innerHTML = open.map(row).join("") || '<div class="row-empty">No queda nada pendiente.</div>';
+  const det = $("#todo-done");
+  det.hidden = !done.length;
+  det.querySelector("summary").textContent = `Hechos · ${done.length}`;
+  $("#todo-done-list").innerHTML = done.map(row).join("");
+}
+
+function editTodo(id) {
+  const t = (ui.todos || []).find((x) => x.id === id);
+  if (!t) return;
+  const dlg = modal(`<form id="todo-form" novalidate><header><h2>Editar pendiente</h2>
+      <button type="button" class="btn ghost icon" data-close aria-label="Cerrar">${ICON.close}</button></header>
+    <div class="body">
+      <label class="field"><span>Pendiente</span><input name="text" maxlength="160" value="${esc(t.text)}"></label>
+      <label class="field"><span>Nota</span><textarea name="note" rows="5" maxlength="1000" placeholder="Detalles, comandos, enlaces…">${esc(t.note || "")}</textarea></label>
+    </div>
+    <footer><button type="button" class="btn ghost" data-close>Cancelar</button><button type="submit" class="btn primary">Guardar</button></footer></form>`, "small");
+  const f = $("#todo-form", dlg);
+  f.text.focus();
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      ui.todos = (await api("PUT", `/api/roadmap/todo/${id}`, { text: f.text.value, note: f.note.value })).todos;
+      dlg.close();
+      drawTodos();
+    } catch (err) { toast(err.message, "error"); }
+  });
 }
 
 function drawRoadmap() {

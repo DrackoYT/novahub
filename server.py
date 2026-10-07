@@ -54,6 +54,7 @@ SERVICES_FILE = os.path.join(DATA_DIR, "services.json")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 AUTH_FILE = os.path.join(DATA_DIR, "auth.json")
 ROADMAP_FILE = os.path.join(DATA_DIR, "roadmap.json")
+TODO_FILE = os.path.join(DATA_DIR, "roadmap-todo.json")  # pendientes sueltos (cosas que hacer a mano), aparte de las mejoras
 NOTIFY_FILE = os.path.join(DATA_DIR, "notify.json")
 SESSION_FILE = os.path.join(DATA_DIR, "session.json")
 
@@ -2646,6 +2647,53 @@ class Roadmap:
             if len(rest) == len(items):
                 raise ApiError(404, "Esa mejora no existe")
             write_json(ROADMAP_FILE, rest)
+            return rest
+
+    # ── pendientes: tareas sueltas que no son mejoras (instalar algo a mano, conectar el móvil…) ──
+    def todos(self):
+        if not self.enabled():
+            raise ApiError(404, "No encontrado")
+        return read_json(TODO_FILE, [])
+
+    @staticmethod
+    def _todo_fields(data, item):
+        for key, size in (("text", 160), ("note", 1000)):
+            if key in data:
+                val = str(data[key] or "").strip()[:size]
+                val = re.sub(r"[\x00-\x09\x0b-\x1f\x7f]", " ", val) if key == "note" else re.sub(r"[\x00-\x1f\x7f]", " ", val)
+                if key == "text" and not val:
+                    raise ApiError(400, "Escribe qué queda pendiente")
+                item[key] = val
+
+    def add_todo(self, data):
+        with self.lock:
+            todos = self.todos()
+            item = {"id": secrets.token_hex(4), "text": "", "note": "", "done": False, "done_at": None, "created": time.time()}
+            self._todo_fields({"text": "", **data}, item)
+            todos.append(item)
+            write_json(TODO_FILE, todos)
+            return todos
+
+    def update_todo(self, tid, data):
+        with self.lock:
+            todos = self.todos()
+            item = next((t for t in todos if t["id"] == tid), None)
+            if not item:
+                raise ApiError(404, "Ese pendiente no existe")
+            if "done" in data:
+                item["done"] = bool(data["done"])
+                item["done_at"] = time.time() if item["done"] else None
+            self._todo_fields(data, item)
+            write_json(TODO_FILE, todos)
+            return todos
+
+    def delete_todo(self, tid):
+        with self.lock:
+            todos = self.todos()
+            rest = [t for t in todos if t["id"] != tid]
+            if len(rest) == len(todos):
+                raise ApiError(404, "Ese pendiente no existe")
+            write_json(TODO_FILE, rest)
             return rest
 
 
@@ -6019,6 +6067,7 @@ def _template_job(job, t, dest, values, service, start):
         job["status"] = "error"
 JOB_ROUTE = re.compile(r"/api/deploy/jobs/([0-9a-f]+)")
 ROADMAP_ROUTE = re.compile(r"/api/roadmap/([a-z0-9-]+)")
+TODO_ROUTE = re.compile(r"/api/roadmap/todo/([0-9a-f]{8})")
 SERVICE_ROUTE = re.compile(r"/api/services/([a-z0-9-]+)(?:/(start|stop|restart|input|logs/stream|logs/clear|logs/download"
                            r"|files|file|file/download|git|git/commit|git/push|git/pull|update|mode"
                            r"|backups|backups/run|backups/restore|backups/delete|backups/download|tasks|tasks/run|logs/search|env|signups))?")
@@ -6401,9 +6450,22 @@ class Handler(BaseHTTPRequestHandler):
         m = JOB_ROUTE.fullmatch(path)
         if m and method == "GET":
             return self.send_json(DEPLOYER.job(m.group(1)))
+        if path == "/api/roadmap/todo":
+            if method == "GET":
+                return self.send_json({"todos": ROADMAP.todos()})
+            if method == "POST":
+                return self.send_json({"todos": ROADMAP.add_todo(self.read_body())}, 201)
+            raise ApiError(405, "Método no permitido")
+        m = TODO_ROUTE.fullmatch(path)
+        if m:
+            if method == "PUT":
+                return self.send_json({"todos": ROADMAP.update_todo(m.group(1), self.read_body())})
+            if method == "DELETE":
+                return self.send_json({"todos": ROADMAP.delete_todo(m.group(1))})
+            raise ApiError(405, "Método no permitido")
         if path == "/api/roadmap":
             if method == "GET":
-                return self.send_json({"items": ROADMAP.list()})
+                return self.send_json({"items": ROADMAP.list(), "todos": ROADMAP.todos()})
             if method == "POST":
                 return self.send_json({"items": ROADMAP.add(self.read_body())}, 201)
             raise ApiError(405, "Método no permitido")
