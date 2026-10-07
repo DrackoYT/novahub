@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.0.15 — 2026-10-07
+
 - **Revisión 6 del código** (todo lo publicado desde la 1.0). Correcciones:
   - La verificación en dos pasos ya activada no se puede sustituir por otra sin desactivarla antes (pide contraseña y
     código): una sesión robada no puede pasarla a otro móvil.
@@ -17,6 +19,7 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
   - Al actualizar NovaHub a una versión estable, la rama avanza en vez de quedarse «suelta» (detached).
   - Los enlaces `//dominio` de la documentación se abren como externos.
   - Crear un servicio aparece en la actividad de su ficha.
+
 ## 1.0.14 — 2026-10-07
 
 - **Registro de actividad** (Ajustes → Actividad): quién hizo qué, cuándo y desde qué IP, apuntado en un único punto del
