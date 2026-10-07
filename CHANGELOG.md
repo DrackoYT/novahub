@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.0.5 — 2026-10-07
+
 - **Gestor de contraseñas propio (Vaultwarden)**: se instala desde el catálogo proponiendo publicarlo con HTTPS
   (`vault.<dominio>`), con copias diarias activadas desde el primer día y el registro de cuentas controlado: NovaHub lo
   cierra solo en cuanto se crea tu cuenta y la ficha permite abrirlo para una cuenta más. Panel /admin desactivado.
