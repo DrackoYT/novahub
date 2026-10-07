@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.0.7 — 2026-10-07
+
 - **Fotos propias (Immich)**: el catálogo pide la carpeta de las fotos, por defecto en el disco duro de datos
   (`/mnt/dades/immich`), con la base de datos en el SSD. Las copias fuera de casa se llevan las fotos directamente
   (incremental, sin miniaturas) y la copia de la base de datos que Immich hace cada noche; la copia local nunca copia la
