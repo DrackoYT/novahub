@@ -29,6 +29,7 @@ python3 -m py_compile server.py
 git add CHANGELOG.md server.py
 git commit -qm "Versión $V"
 git tag -a "v$V" -m "NovaHub $V"
-git push -q && git push -q origin "v$V"
+git push -q                 # en líneas separadas: con «a && b», set -e no se para si falla «a»
+git push -q origin "v$V"
 gh release create "v$V" --verify-tag --title "NovaHub $V" --notes "$NOTES"
 echo "Publicada NovaHub $V"
