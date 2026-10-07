@@ -4935,6 +4935,24 @@ def restic_bin():
     return os.environ.get("NOVAHUB_RESTIC") or shutil.which("restic")
 
 
+def fstab_mount_for(path):
+    """Punto de montaje de /etc/fstab que contiene la ruta (el más largo), o None. Sirve para saber si un disco
+    externo está montado: si no lo está, su carpeta es una carpeta vacía del disco del sistema."""
+    best = None
+    try:
+        with open("/etc/fstab") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 2 or parts[0].startswith("#") or parts[1] in ("/", "none", "swap"):
+                    continue
+                mp = parts[1].rstrip("/")
+                if (path == mp or path.startswith(mp + "/")) and (not best or len(mp) > len(best)):
+                    best = mp
+    except OSError:
+        pass
+    return best
+
+
 class Offsite:
     def __init__(self):
         self.lock = threading.Lock()
@@ -5000,6 +5018,9 @@ class Offsite:
     def available(self, d):
         """(sí/no, motivo): un disco USB desconectado no es un error, se espera a la próxima vez."""
         if d["type"] == "local":
+            mp = fstab_mount_for(d["path"])
+            if mp and not os.path.ismount(mp):  # sin montar, la carpeta estaría en el disco del sistema
+                return False, f"el disco de {mp} no está montado"
             if not os.path.isdir(d["path"]):
                 return False, "el disco no está conectado (o la carpeta no existe)"
             return True, ""
@@ -5034,6 +5055,9 @@ class Offsite:
                 o = os.path.realpath(own)
                 if path == o or path.startswith(o + os.sep):
                     raise ApiError(400, "El destino no puede estar dentro de lo que se copia (data/ o novahub-copias)")
+            mp = fstab_mount_for(path)
+            if mp and not os.path.ismount(mp):
+                raise ApiError(400, f"El disco de {mp} no está montado: conéctalo (sudo mount {mp}) y vuelve a probar")
             if not os.path.isdir(os.path.dirname(path)):
                 raise ApiError(400, "No existe esa carpeta: conecta el disco y comprueba la ruta")
             os.makedirs(path, mode=0o700, exist_ok=True)
