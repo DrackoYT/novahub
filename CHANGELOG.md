@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.0.13 — 2026-10-07
+
 - **Documentación al estilo GitBook** (pestaña **Docs**): 26 páginas por temas en `docs/guia/`, con el índice en
   `SUMMARY.md` (formato de GitBook). Índice lateral por secciones, «En esta página» que sigue la lectura, buscador sin
   tildes ni mayúsculas, anterior y siguiente, enlaces entre páginas y apartados, avisos de colores, tablas, bloques de
