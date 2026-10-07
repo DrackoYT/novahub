@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.0.3 — 2026-10-07
+
 - **Catálogo de apps** (Nuevo servicio → Catálogo de apps): 20 apps autoalojadas ya configuradas (Vaultwarden, Immich,
   Nextcloud, Radicale, ntfy, SearXNG, Jellyfin, Navidrome, Calibre-Web, Paperless-ngx, Mealie, Actual Budget, FreshRSS,
   Stirling-PDF, File Browser, Syncthing, Forgejo, Home Assistant, Uptime Kuma y Minecraft), con búsqueda y categorías.
