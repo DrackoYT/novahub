@@ -6,6 +6,8 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+## 1.0.14 — 2026-10-07
+
 - **Registro de actividad** (Ajustes → Actividad): quién hizo qué, cuándo y desde qué IP, apuntado en un único punto del
   servidor para todas las acciones que salen bien, más las entradas y los intentos fallidos de entrar. Buscador, filtros
   por usuario y tipo, «Cargar más» y la actividad reciente en la ficha de cada servicio. Sin secretos: ni contraseñas,
