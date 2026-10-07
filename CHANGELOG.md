@@ -6,6 +6,18 @@ terminado es un parche (1.0.1, 1.0.2…); un bloque grande de mejoras, tras su r
 
 ## Sin publicar
 
+**Versión 1.1**: el bloque de mejoras de la 1.0.1 a la 1.0.15, revisado en la revisión 6 del código
+([`docs/REVISIONES.md`](docs/REVISIONES.md)). Lo nuevo respecto a la 1.0:
+
+- **Centro de actualizaciones** de NovaHub (con vuelta atrás automática), del sistema y de los servicios.
+- **Copias fuera de casa** cifradas con restic, a un disco USB u otro servidor, sin servicios de terceros.
+- **Catálogo de apps** (20 apps), con **Vaultwarden** (registro que se cierra solo) e **Immich** (fotos en el disco duro).
+- **Avisos al móvil con ntfy** propio y protegido; Gmail pasa a ser opcional.
+- **Salud de los discos (SMART) y temperaturas** en el Resumen, con avisos.
+- **Verificación en dos pasos (TOTP)** con QR y códigos de recuperación, opcionalmente obligatoria para administradores.
+- **Documentación al estilo GitBook** en la pestaña Docs (27 páginas).
+- **Registro de actividad** y **Pendientes** en la página de Mejoras.
+- Copias coherentes de bases de datos SQLite, limpieza de contenedores huérfanos y pasarela/salud por IPv4.
 ## 1.0.15 — 2026-10-07
 
 - **Revisión 6 del código** (todo lo publicado desde la 1.0). Correcciones:
